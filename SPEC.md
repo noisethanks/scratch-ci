@@ -94,17 +94,34 @@ this file states the decision and marks what's still a placeholder.
 
 - Own `CShader` program(s), own render-pass element, registered per monitor
   (matches how `hypr-dynamic-cursors` and core's own pass elements work).
-- **Per-frame driver: `Event::bus()->m_events.render.stage` at
-  `RENDER_LAST_MOMENT`**, not a function hook. It fires once per
-  `renderMonitor`, cursor visible or not, after the cursor and before
-  `endRender()`, so elements and render damage added there reach the current
-  frame. The earlier hook on `CPointerManager::renderSoftwareCursorsFor` isn't
-  called while the cursor is hidden, which would freeze a trail mid-fade.
-  Mirror monitors are skipped. `cursor:no_hardware_cursors = 1` is still
-  required: with a hardware cursor, motion from idle damages nothing, so no
-  frame starts to sample it.
+- **Per-frame driver, exactly once per render of each monitor:**
+  - **Primary: hook on `CPointerManager::renderSoftwareCursorsFor`**, running
+    the trail lifecycle (sample/insert, damage, add element) *before* calling
+    the original, so the trail is added right before the cursor texture and
+    draws directly beneath it (§7). Skipped for screencopy calls.
+  - **Fallback: `Event::bus()->m_events.render.stage` at
+    `RENDER_LAST_MOMENT`**, for renders where the hook didn't run (cursor
+    hidden: `renderMonitor` only calls the cursor function when
+    `shouldRenderCursor()`), so a trail still fades after a hide.
+  - "Hook ran for this render" is keyed to a per-monitor serial bumped at
+    `RENDER_BEGIN`, not a boolean, so a missed clear can't make a later
+    render skip its lifecycle. No return path exists between `RENDER_BEGIN`,
+    the cursor call and `RENDER_LAST_MOMENT`.
+  - Mirror monitors are skipped.
+- **Motion damage (hardware cursors):** `Event::bus()->m_events.input.mouse.move`
+  damages a radius-sized box at the new pointer position on each monitor it
+  touches, so a render happens even when moving the hardware cursor plane
+  doesn't schedule one (Aquamarine's Wayland backend, i.e. nested). The render
+  then runs the normal lifecycle. Monitors where
+  `shouldSkipScheduleFrameOnMouseEvent()` holds are skipped, same as core, to
+  not break fullscreen VRR. `cursor:no_hardware_cursors` is **not** required.
+- **Direct scanout (known behavior, not a bug):** with hardware cursors, a
+  fullscreen client eligible for direct scanout bypasses composition entirely
+  (`renderMonitor` returns before any render stage), so no trail draws over
+  it. Software cursors block direct scanout, so this only applies with
+  hardware cursors.
 - **GL state goes through Hyprland's caches** (`useShader`, `scissor`,
-  `bindArrayBuffer`, `blend`), never raw `glUseProgram`/`glEnable`/`glBindBuffer`
+  `blend`; `bindArrayBuffer` where the pinned version has it), never raw `glUseProgram`/`glEnable`/`glBindBuffer`
   on cached state. Draw only inside the element's damage rects.
 - **Blending is premultiplied alpha** (`GL_ONE, GL_ONE_MINUS_SRC_ALPHA`); the
   fragment shader outputs `vec4(rgb * a, a)`.
@@ -208,10 +225,15 @@ this file states the decision and marks what's still a placeholder.
 - **Session lock:** no trail while the session is locked (no inserts, no
   element; the last box is damaged once to clear). This deliberately differs
   from core, which keeps drawing the cursor over the lock screen.
-- **Draw order, must be resolved before this is usable:** the trail currently
-  draws above the cursor (and above the DPMS fade-to-black overlay, minor).
-  The newest point covers the pointer tip, which defeats the purpose of making
-  a small cursor easier to find. Needs the trail below the cursor.
+- **Draw order:** the trail draws directly beneath the cursor: above windows,
+  layers, lock screen (suppressed anyway), IME and notification/error
+  overlays, below the cursor and the DPMS fade overlay. Software cursors: via
+  the cursor hook (§4). Hardware cursors: the cursor plane is above composited
+  content, and the hook still places the trail for frames that fall back to
+  software (software locks from zoom or mirroring, tearing,
+  `cursor:invisible`, nvidia auto mode, hardware plane failure). Caveat: in
+  fallback-driver renders (cursor hidden) the trail is added after the DPMS
+  overlay, so it can show above a DPMS fade, rare and harmless.
 - **Idle/presence effects (stationary but visible cursor):** structurally out
   of reach of the ribbon pipeline as designed, it needs ≥2 distinct recent
   points to compute a tangent from; a stationary cursor stops producing new
@@ -314,7 +336,6 @@ this file states the decision and marks what's still a placeholder.
 - Config packaging format (§9)
 - Fade duration and curve (§4), placeholders 500ms linear; time-based fade
   built in stage 4, pending confirmation
-- Trail draws above the cursor, must move below it before this is usable (§7)
 - Rotated outputs untested (§8)
 - Color management: trail colors bypass core's `getConvertedColor`, may be
   off on HDR/color-managed outputs
