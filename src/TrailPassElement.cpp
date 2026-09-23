@@ -19,82 +19,20 @@ using namespace Render::GL;
 
 // ---------------------------------------------------------------- shader
 
-// Dot harness shader (stage 4: time-based fade). Reads only attribute set 0
-// (node i). Set 1 (node i + 1) is declared so the binding layout matches what
-// the ribbon will use; it's unused here, so the compiler is free to strip it.
-static const std::string TRAIL_VERT_SRC = R"glsl(
-#version 300 es
-precision highp float;
+// Stock trail shaders, embedded at build time from shaders/ (the Makefile
+// lists them as dependencies). Standalone files laid out like user-supplied
+// shaders; the contract is in their header comments.
+// Keep the files ASCII: GLSL ES drivers aren't reliable with UTF-8, even in
+// comments.
+static constexpr unsigned char TRAIL_VERT_DATA[] = {
+#embed "../shaders/trail.vert"
+};
+static constexpr unsigned char TRAIL_FRAG_DATA[] = {
+#embed "../shaders/trail.frag"
+};
 
-uniform mat3  proj;      // global layout px -> clip, per monitor
-uniform float radius;    // logical px
-uniform float speedRef;  // px/ms mapped to full red
-uniform float nowMs;     // same reference as a_birthMs, only differences matter
-uniform float fadeMs;
-
-layout(location = 0) in vec2  a_pos;
-layout(location = 1) in float a_birthMs;
-layout(location = 2) in vec2  a_vel;
-layout(location = 3) in vec2  a_nextPos;
-layout(location = 4) in float a_nextBirthMs;
-layout(location = 5) in vec2  a_nextVel;
-
-out vec2  v_local;
-out vec3  v_color;
-out float v_alpha;
-
-void main() {
-    // Time-based fade (SPEC §4): age from the node's own timestamp, not its
-    // position along the trail.
-    float age = nowMs - a_birthMs;
-    if (age >= fadeMs) {
-        // Fully faded: collapse all 4 corners to one point outside clip space,
-        // no fragments. Same test the CPU uses for visibleBounds().
-        gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
-        v_local     = vec2(0.0);
-        v_color     = vec3(0.0);
-        v_alpha     = 0.0;
-        return;
-    }
-
-    // Linear placeholder curve.
-    v_alpha = clamp(1.0 - age / fadeMs, 0.0, 1.0);
-
-    // TRIANGLE_STRIP corners: 0 (0,0), 1 (1,0), 2 (0,1), 3 (1,1)
-    vec2 corner = vec2(float(gl_VertexID & 1), float((gl_VertexID >> 1) & 1)) * 2.0 - 1.0;
-
-    float speed = clamp(length(a_vel) / speedRef, 0.0, 1.0);
-    v_color     = mix(vec3(0.1, 0.4, 1.0), vec3(1.0, 0.1, 0.1), speed);
-    v_local     = corner;
-
-    gl_Position = vec4(proj * vec3(a_pos + corner * radius, 1.0), 1.0);
-}
-)glsl";
-
-static const std::string TRAIL_FRAG_SRC = R"glsl(
-#version 300 es
-precision highp float;
-
-in vec2  v_local;
-in vec3  v_color;
-in float v_alpha;
-
-layout(location = 0) out vec4 fragColor;
-
-void main() {
-    // ~1px antialiased edge, inside the quad so the damage box still covers it.
-    float d   = length(v_local);
-    float w   = fwidth(d);
-    float cov = 1.0 - smoothstep(1.0 - w, 1.0, d);
-    if (cov <= 0.0)
-        discard;
-
-    // Hyprland blends premultiplied: GL_ONE, GL_ONE_MINUS_SRC_ALPHA
-    // (OpenGL.cpp:981-989).
-    float a   = v_alpha * cov;
-    fragColor = vec4(v_color * a, a);
-}
-)glsl";
+static const std::string TRAIL_VERT_SRC{reinterpret_cast<const char*>(TRAIL_VERT_DATA), sizeof(TRAIL_VERT_DATA)};
+static const std::string TRAIL_FRAG_SRC{reinterpret_cast<const char*>(TRAIL_FRAG_DATA), sizeof(TRAIL_FRAG_DATA)};
 
 // CShader::createProgram logs compile/link errors and discards the text
 // (Shader.cpp logShaderError), so compile and link once ourselves to capture
@@ -185,10 +123,11 @@ static bool ensureShader(STrailInstance& inst) {
 
     // Custom uniforms aren't in eShaderUniform, look them up directly.
     const auto prog = shader->program();
-    s.locRadius     = glGetUniformLocation(prog, "radius");
-    s.locSpeedRef   = glGetUniformLocation(prog, "speedRef");
     s.locNowMs      = glGetUniformLocation(prog, "nowMs");
     s.locFadeMs     = glGetUniformLocation(prog, "fadeMs");
+    s.locWidthPx    = glGetUniformLocation(prog, "widthPx");
+    s.locMiterLimit = glGetUniformLocation(prog, "miterLimit");
+    s.locSpeedRef   = glGetUniformLocation(prog, "speedRef");
     s.shader        = shader;
 
     Log::logger->log(Log::INFO, "[hyprtail] {} trail shader compiled ok, program id={}", inst.name, prog);
@@ -203,8 +142,8 @@ bool CTrailGpu::ensure(size_t ringCapacity, std::string& error) {
     if (m_vao)
         return true;
 
-    // +1 trailing node, see header.
-    m_vboNodes = ringCapacity + 1;
+    // Front and back pad, see header.
+    m_vboNodes = ringCapacity + 2;
 
     glGenVertexArrays(1, &m_vao);
     glGenBuffers(1, &m_vbo);
@@ -232,23 +171,26 @@ bool CTrailGpu::ensure(size_t ringCapacity, std::string& error) {
         return false;
     }
 
-    // Set 0 = node i at offset 0, set 1 = node i + 1 at offset one stride.
-    for (GLuint set = 0; set < 2; ++set) {
-        const size_t base = set * NODE_STRIDE;
-        const GLuint loc  = set * 3;
+    // One per-instance attribute: `components` floats of field at byteOffset
+    // within the node, `nodeOffset` nodes into the VBO.
+    const auto attrib = [](GLuint loc, GLint components, size_t nodeOffset, size_t fieldOffset) {
+        glEnableVertexAttribArray(loc);
+        glVertexAttribPointer(loc, components, GL_FLOAT, GL_FALSE, NODE_STRIDE, (void*)(nodeOffset * NODE_STRIDE + fieldOffset));
+        glVertexAttribDivisor(loc, 1);
+    };
 
-        glEnableVertexAttribArray(loc + 0);
-        glVertexAttribPointer(loc + 0, 2, GL_FLOAT, GL_FALSE, NODE_STRIDE, (void*)(base + offsetof(SGpuNode, posPx)));
-        glVertexAttribDivisor(loc + 0, 1);
-
-        glEnableVertexAttribArray(loc + 1);
-        glVertexAttribPointer(loc + 1, 1, GL_FLOAT, GL_FALSE, NODE_STRIDE, (void*)(base + offsetof(SGpuNode, birthMs)));
-        glVertexAttribDivisor(loc + 1, 1);
-
-        glEnableVertexAttribArray(loc + 2);
-        glVertexAttribPointer(loc + 2, 2, GL_FLOAT, GL_FALSE, NODE_STRIDE, (void*)(base + offsetof(SGpuNode, velocity)));
-        glVertexAttribDivisor(loc + 2, 1);
+    // prev = n(i-1), p0 = n(i), p1 = n(i+1), next = n(i+2); see header.
+    attrib(0, 2, 0, offsetof(SGpuNode, posPx));
+    attrib(1, 1, 0, offsetof(SGpuNode, flags));
+    for (GLuint end = 0; end < 2; ++end) {
+        const GLuint loc = 2 + end * 4;
+        attrib(loc + 0, 2, 1 + end, offsetof(SGpuNode, posPx));
+        attrib(loc + 1, 1, 1 + end, offsetof(SGpuNode, birthMs));
+        attrib(loc + 2, 2, 1 + end, offsetof(SGpuNode, velocity));
+        attrib(loc + 3, 1, 1 + end, offsetof(SGpuNode, flags));
     }
+    attrib(10, 2, 3, offsetof(SGpuNode, posPx));
+    attrib(11, 1, 3, offsetof(SGpuNode, flags));
 
     glBindVertexArray(0);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
@@ -265,7 +207,12 @@ void CTrailGpu::upload(const CTrailRing& ring) {
     // float keeps sub-ms precision regardless of how long the plugin has run.
     m_refMs = ring.newest().birthTimeMs;
     ring.orderedCopy(m_ordered, m_refMs);
-    m_ordered.push_back(m_ordered.back()); // trailing node for set 1
+
+    // Pads, see header: front = n0 as a segment start, back = newest.
+    SGpuNode front = m_ordered.front();
+    front.flags    = GPU_FLAG_SEGMENT_START;
+    m_ordered.insert(m_ordered.begin(), front);
+    m_ordered.push_back(m_ordered.back());
 
     const size_t n = std::min(m_ordered.size(), m_vboNodes);
 
@@ -303,7 +250,7 @@ double CTrailGpu::refMs() const {
 // ---------------------------------------------------------------- instance
 
 CBox trailBoxLocal(const STrailInstance& inst, const STrailBounds& b, const Vector2D& monitorPos) {
-    const float r = inst.radiusPx;
+    const float r = inst.padPx();
 
     return CBox{b.x1 - r - monitorPos.x, b.y1 - r - monitorPos.y, (b.x2 - b.x1) + 2.0 * r, (b.y2 - b.y1) + 2.0 * r};
 }
@@ -363,7 +310,10 @@ void CTrailPassElement::drawInternal() {
 
     m_inst->gpu.upload(m_inst->ring);
 
-    const auto count = sc<GLsizei>(m_inst->ring.size());
+    // One instance per segment.
+    if (m_inst->ring.size() < 2)
+        return;
+    const auto count = sc<GLsizei>(m_inst->ring.size() - 1);
 
     // Global layout px -> monitor-local px -> clip. projectBoxToTarget takes a
     // pixel-space box (Renderer.cpp:1842-1846); projectBox maps p to
@@ -380,10 +330,11 @@ void CTrailPassElement::drawInternal() {
     // Through Hyprland's program cache (OpenGL.cpp:2561-2569), not raw glUseProgram.
     auto shader = g_pHyprOpenGL->useShader(m_inst->shader.shader);
     shader->setUniformMatrix3fv(SHADER_PROJ, 1, GL_TRUE, proj.getMatrix());
-    glUniform1f(m_inst->shader.locRadius, m_inst->radiusPx);
-    glUniform1f(m_inst->shader.locSpeedRef, m_inst->speedRefPxPerMs);
     glUniform1f(m_inst->shader.locNowMs, sc<float>(m_nowMs - m_inst->gpu.refMs()));
     glUniform1f(m_inst->shader.locFadeMs, sc<float>(m_inst->fadeMs));
+    glUniform1f(m_inst->shader.locWidthPx, m_inst->widthPx);
+    glUniform1f(m_inst->shader.locMiterLimit, m_inst->miterLimit);
+    glUniform1f(m_inst->shader.locSpeedRef, m_inst->speedRefPxPerMs);
 
     // Premultiplied blending through Hyprland's cap-status cache (OpenGL.cpp:981-989).
     // Blend state is whatever the previous element left, so set it explicitly.

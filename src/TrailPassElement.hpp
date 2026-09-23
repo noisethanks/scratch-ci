@@ -18,14 +18,18 @@ namespace Monitor {
 
 // GPU mirror of one CTrailRing: its own VAO + VBO of SGpuNode.
 //
-// Attribute layout (both sets read the same VBO, divisor 1):
-//   locations 0..2  node i     (offset 0)          pos, birthMs, velocity
-//   locations 3..5  node i + 1 (offset one stride) pos, birthMs, velocity
-// So instance i sees the segment node[i] -> node[i+1], and gl_VertexID picks
-// the quad corner. The dot harness draws size() instances and reads only set
-// 0; the ribbon (SPEC §4) will draw size() - 1 instances and use both.
-// The VBO holds one extra trailing node (a copy of the newest) so set 1 never
-// reads past the uploaded data, for any instance count up to size().
+// VBO: [front pad, n0 .. n(count-1), back pad]. The front pad is a copy of n0
+// flagged as a segment start, the back pad a copy of the newest node, so the
+// ends have a zero-length neighbor ("no neighbor" in the shader).
+//
+// Four bindings of the same VBO, divisor 1, at consecutive node offsets, so
+// instance i sees prev = n(i-1), p0 = n(i), p1 = n(i+1), next = n(i+2):
+//   locations 0..1   prev  (VBO offset 0 strides)  pos, flags
+//   locations 2..5   p0    (1 stride)              pos, birthMs, velocity, flags
+//   locations 6..9   p1    (2 strides)             pos, birthMs, velocity, flags
+//   locations 10..11 next  (3 strides)             pos, flags
+// The ribbon draws size() - 1 instances, one per segment p0 -> p1; the
+// shader contract is documented in shaders/trail.vert.
 class CTrailGpu {
   public:
     // No GL in the destructor: destroy() runs explicitly while the context is
@@ -50,10 +54,11 @@ class CTrailGpu {
 
 struct STrailShader {
     SP<CShader> shader;
-    GLint       locRadius   = -1;
-    GLint       locSpeedRef = -1;
-    GLint       locNowMs    = -1;
-    GLint       locFadeMs   = -1;
+    GLint       locNowMs      = -1;
+    GLint       locFadeMs     = -1;
+    GLint       locWidthPx    = -1;
+    GLint       locMiterLimit = -1;
+    GLint       locSpeedRef   = -1;
 };
 
 struct SMonitorTrailState {
@@ -71,8 +76,24 @@ struct STrailInstance {
     STrailShader                                               shader;
 
     double                                                     fadeMs;
-    float                                                      radiusPx        = 6.F; // logical, also the damage padding
-    float                                                      speedRefPxPerMs = 2.F; // speed mapped to full red
+
+    // Placeholders (SPEC §4/§5).
+    float widthPx         = 8.F; // full ribbon width at age 0, logical px, tapers with age
+    float miterLimit      = 2.F; // max miter length in half-widths
+    float speedRefPxPerMs = 2.F; // speed mapped to the fast end of the palette
+    float minSpacingPx    = 2.F; // min distance between inserted nodes, limits inner-miter folding
+    bool  interpolateWarps = false; // warps via CPointerController connect (true) or start a new segment (false)
+
+    // Damage padding around the node extent: widest possible miter plus the
+    // ~1px antialiased edge. Must cover everything the shader can draw.
+    float padPx() const {
+        return 0.5F * widthPx * miterLimit + 1.F;
+    }
+
+    // Next insert starts a new segment (not connected to the previous node):
+    // set on workspace changes, lock, pointer constraints, and warps unless
+    // interpolateWarps.
+    bool pendingBreak = false;
 
     std::unordered_map<Monitor::CMonitor*, SMonitorTrailState> monState;
 
@@ -90,10 +111,10 @@ void trailDisable(STrailInstance& inst, std::string_view key, std::string_view m
 // GL context must be current (inside a render, or PLUGIN_EXIT).
 void trailReleaseGpu(STrailInstance& inst);
 
-// Bounds padded by radiusPx, logical, monitor-local.
+// Bounds padded by padPx(), logical, monitor-local.
 CBox trailBoxLocal(const STrailInstance& inst, const STrailBounds& bounds, const Vector2D& monitorPos);
 
-// Dot harness: faded dots from the instance's VBO.
+// Trail ribbon from the instance's VBO, one instance per segment.
 class CTrailPassElement : public IPassElement {
   public:
     // nowMs is the same instant the caller used for visibility/damage, so

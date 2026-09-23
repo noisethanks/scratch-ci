@@ -2,6 +2,8 @@ PLUGIN_NAME := hyprtail-stage1
 
 SOURCE_FILES := $(wildcard src/*.cpp)
 HEADER_FILES := $(wildcard src/*.hpp)
+# Embedded into the plugin with #embed (src/TrailPassElement.cpp).
+SHADER_FILES := $(wildcard shaders/*.vert shaders/*.frag)
 OBJECT_FILES := $(patsubst src/%.cpp, out/%.o, $(SOURCE_FILES))
 
 HYPRLAND_SRC := $(CURDIR)/external/Hyprland
@@ -30,7 +32,7 @@ all: $(OUTPUT)
 $(OUTPUT): $(OBJECT_FILES)
 	$(CXX) -shared $^ $(LDFLAGS) -o $@
 
-out/%.o: src/%.cpp $(HEADER_FILES) | check-pin
+out/%.o: src/%.cpp $(HEADER_FILES) $(SHADER_FILES) | check-pin
 	@mkdir -p out
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 

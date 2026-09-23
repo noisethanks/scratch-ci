@@ -52,11 +52,13 @@ this file states the decision and marks what's still a placeholder.
       SVec2f posPx;               // global layout pixel space, NOT per-monitor normalized
       double birthTimeMs;         // ms since plugin load
       SVec2f velocity;            // px/ms, precomputed once per node on write, not per-pixel in shader
+      bool   segmentStart;        // not connected to the previous node (§7)
   };
-  struct SGpuNode {               // GPU (VBO) layout, 20 bytes, static_assert'd
+  struct SGpuNode {               // GPU (VBO) layout, 24 bytes, static_assert'd
       SVec2f posPx;
       float  birthMs;             // relative to a reference chosen at upload
       SVec2f velocity;
+      float  flags;               // bit 0: segment start
   };
   ```
   (`SVec2f` is a plain two-float struct; glm isn't a dependency.)
@@ -112,9 +114,16 @@ this file states the decision and marks what's still a placeholder.
   damages a radius-sized box at the new pointer position on each monitor it
   touches, so a render happens even when moving the hardware cursor plane
   doesn't schedule one (Aquamarine's Wayland backend, i.e. nested). The render
-  then runs the normal lifecycle. Monitors where
-  `shouldSkipScheduleFrameOnMouseEvent()` holds are skipped, same as core, to
-  not break fullscreen VRR. `cursor:no_hardware_cursors` is **not** required.
+  then runs the normal lifecycle. `cursor:no_hardware_cursors` is **not**
+  required. Skipped while locked or while the pointer is constrained.
+  **VRR gate:** with the cursor shown, monitors where core's
+  `shouldSkipScheduleFrameOnMouseEvent()` holds are skipped (fullscreen
+  no-break case). With the cursor hidden, core's check would skip every
+  adaptive-sync output (no cursor to draw), but the trail still follows the
+  pointer, so only its fullscreen part is kept: skip when adaptive sync is on
+  and the monitor has a fullscreen window, regardless of
+  `cursor:no_break_fs_vrr`. Fullscreen VRR is never broken; a non-fullscreen
+  VRR desktop gets renders while a hidden-cursor trail moves.
 - **Direct scanout (known behavior, not a bug):** with hardware cursors, a
   fullscreen client eligible for direct scanout bypasses composition entirely
   (`renderMonitor` returns before any render stage), so no trail draws over
@@ -126,11 +135,30 @@ this file states the decision and marks what's still a placeholder.
   on cached state. Draw only inside the element's damage rects.
 - **Blending is premultiplied alpha** (`GL_ONE, GL_ONE_MINUS_SRC_ALPHA`); the
   fragment shader outputs `vec4(rgb * a, a)`.
-- **VBO attribute layout (ribbon-ready):** the same VBO is bound twice, node i
-  at offset 0 (locations 0-2) and node i + 1 at offset one stride (locations
-  3-5), all divisor 1, so instance i is the segment node[i] -> node[i+1] and
-  `gl_VertexID` picks the corner. The VBO carries one trailing copy of the
-  newest node so the i + 1 set never reads past uploaded data.
+- **VBO attribute layout:** VBO = `[front pad, n0 .. n(count-1), back pad]`
+  (front pad = n0 flagged as a segment start, back pad = copy of the newest).
+  The same VBO is bound four times, divisor 1, at consecutive node offsets:
+  `prev` = n(i-1) (pos, flags), `p0` = n(i) and `p1` = n(i+1) (pos, birth,
+  velocity, flags), `next` = n(i+2) (pos, flags): 12 attribute locations of
+  the 16 GLES3 guarantees. Instance i is the segment p0 -> p1, `count - 1`
+  instances, `gl_VertexID` picks the corner. prev/next exist for joins.
+- **Ribbon geometry (stock shader):** miter joins computed from the incoming
+  and outgoing directions at each node, miter length clamped to
+  `miterLimit` half-widths. Both segments meeting at a node compute its
+  corners from the same inputs through the same functions, so joints are
+  watertight with no double blending of translucent pixels. Half-width tapers
+  with age like the alpha (tail pinches to a point as it fades).
+  Degenerate cases: a zero-length neighbor direction (trail ends, pads,
+  coincident nodes) falls back to the segment's own direction; a zero-length
+  segment, an unconnected segment (p1 starts a segment) or a segment with
+  both ends fully faded is collapsed outside clip space.
+- **Minimum insert spacing** (placeholder 2 logical px): segments much
+  shorter than the ribbon width make inner miters fold over neighbors
+  (double blending). The newest node can lag the pointer by less than that,
+  hidden under the cursor.
+- **Bounds for damage** include the node just older than the oldest visible
+  one when they're connected: that segment still draws, fading toward the
+  older end.
 - Point buffer is VBO-resident, not a uniform array, settled by the ribbon
   geometry technique below, which needs `next`/`prev` as real vertex
   attributes, not something expressible as a fixed-size uniform array.
@@ -154,9 +182,21 @@ this file states the decision and marks what's still a placeholder.
 ## 5. Shader extensibility contract
 
 - Shader authors may supply custom vertex and/or fragment shaders.
-- Plugin-provided per-vertex data: `position`, `next`, `prev`, `birthTimeMs`,
-  `velocity`. Exact uniform set (time, per-monitor resolution, etc.) TBD,
-  should stay minimal per the sparse-config goal.
+- **Shader files:** standalone GLSL ES 3.00 `.vert`/`.frag` files, laid out
+  exactly like user-supplied shaders will be. The stock pair lives in
+  `shaders/trail.vert` and `shaders/trail.frag`, embedded into the plugin at
+  build time with C++26 `#embed` (the Makefile lists them as dependencies).
+  The config loader will read the same kind of file from a user path. Their
+  header comments are the contract. Keep them ASCII (GLSL ES drivers aren't
+  reliable with UTF-8, even in comments).
+- Plugin-provided per-instance data (vertex contract, `shaders/trail.vert`):
+  `a_prevPos/Flags`, `a_p0Pos/BirthMs/Vel/Flags`, `a_p1Pos/BirthMs/Vel/Flags`,
+  `a_nextPos/Flags` at fixed locations 0-11. Uniforms: `proj`, `nowMs`,
+  `fadeMs`, `widthPx`, `miterLimit`, `speedRef`. Output is premultiplied
+  alpha. Should stay minimal per the sparse-config goal.
+- Stock damage padding is `widthPx / 2 * miterLimit + 1px` around the node
+  extent; the declared-padding setting below replaces it for shaders that
+  draw further out.
 - Prefab shader-utility imports, following the pattern Hyprland core already
   uses for its own shaders (`passthru.frag`/`quad.frag` as base includes,
   `blur1`→`blur2`→`blurfinish` as a chained pipeline): geometry helpers,
@@ -202,27 +242,43 @@ this file states the decision and marks what's still a placeholder.
 
 ## 7. Edge cases: teleportation, hide, idle
 
-- **Teleportation/warps:** hook `CPointerManager::warpTo`/`warpAbsolute`
-  directly (`onMouseWarp` event), a real deterministic signal distinct from
-  organic motion, not a distance/velocity heuristic (kept only as a backstop
-  for anything reaching cursor position outside this path). Response is
-  context-dependent, not one global rule: **interpolate** (sweep the trail
-  between old and new position) when both endpoints are on currently-visible,
-  simultaneously-rendered content (e.g. a cross-monitor focus jump, helps
-  track where focus went, not misleading since both points are real and
-  on-screen at once). **Break the polyline connection** (pre-teleport points
-  keep aging/fading independently, post-teleport starts a fresh unconnected
-  segment) when the visible content itself changed underneath the position
-  (e.g. a same-monitor workspace switch, an interpolated sweep there would
-  cross space that no longer shows what it showed a frame ago).
-  **Unconfirmed, blocks implementation of this distinction:** whether
-  `onMouseWarp`'s event payload carries enough context to tell these cases
-  apart, or just that a warp happened.
-- **Cursor hide:** keyed on `IHyprRenderer::shouldRenderCursor()` (same
-  state core uses to skip drawing the cursor). While hidden, **no new points
-  are inserted** (touch/tablet can move a hidden pointer), but the per-frame
-  driver keeps running, so an existing trail finishes fading normally. This
-  covers hide-on-keypress mid-motion as well as the idle-timeout case.
+- **Trail is decoupled from cursor visibility.** It follows pointer motion
+  whether the cursor is shown, hidden (inactivity timeout, key press,
+  touch/tablet hide) or `cursor:invisible`. `shouldRenderCursor()` no longer
+  gates insertion; while it's false the cursor hook doesn't run and the
+  `RENDER_LAST_MOMENT` fallback drives the lifecycle, and motion damage still
+  starts renders. A client-hidden cursor (null cursor surface) looks the same
+  to the plugin: core's `m_cursorHidden`/`m_cursorHasSurface` are protected,
+  so the two can't be told apart.
+- **Pointer constraints:** while `CInputManager::isConstrained()` (a client
+  has locked or confined the pointer, i.e. owns it: games, mostly) nothing is
+  inserted, motion damage is skipped, warps are ignored (constraints correct
+  the pointer through the warp path), and the next insert after the
+  constraint starts a new segment. This also keeps the trail off games that
+  hide the cursor. An unconstrained client that hides the cursor still gets a
+  trail following the pointer.
+- **Teleportation/warps: break vs. connect.** **Break the polyline
+  connection** (pre-jump points keep aging/fading independently, the next
+  point starts a fresh unconnected segment):
+  - unconditionally when the content underneath changed:
+    `Event::bus()->m_events.workspace.active`, `.specialActive`,
+    `.moveToMonitor`, and on session lock;
+  - after a pointer constraint (above);
+  - on a warp through `CPointerController::warpTo` (hooked; dispatchers,
+    layouts, focus changes) when **`interpolateWarps`** is false (placeholder
+    setting, default false). When true, such warps connect.
+
+  **Every other jump connects**, drawing the straight "interpolated" sweep
+  from the old to the new position. **Coverage gap:** warps through the four
+  sites that call `CPointerManager::warpTo` directly (pointer-warp protocol,
+  input capture, two internal ones) always connect, whatever
+  `interpolateWarps` says. No distance/velocity heuristic.
+  - Corrected: `onMouseWarp` is **not** a teleport signal. It handles
+    absolute-motion devices (tablets, VM pointers), i.e. continuous motion.
+    `CPointerManager::warpTo` carries no reason and is also called by
+    ordinary relative motion; `CPointerController::warpTo` (the programmatic
+    warp layer) only gets `(pos, force)`, and several warp sites bypass it.
+    The workspace events are the actual "content changed" signal.
 - **Session lock:** no trail while the session is locked (no inserts, no
   element; the last box is damaged once to clear). This deliberately differs
   from core, which keeps drawing the cursor over the lock screen.
@@ -361,6 +417,8 @@ this file states the decision and marks what's still a placeholder.
 - Rotated outputs untested (§8)
 - Color management: trail colors bypass core's `getConvertedColor`, may be
   off on HDR/color-managed outputs
+- **Backlog:** bezier curves for warp interpolation (`interpolateWarps`
+  currently draws a straight segment)
 - Cursor-warp tooling reliability for scripting the validation ladder
   (`hyprctl eval hl.dsp.movecursor` field names unconfirmed, `wlrctl`
   targeting issue unresolved), not urgent, manual drag testing has been

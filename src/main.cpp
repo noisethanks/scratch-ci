@@ -11,6 +11,9 @@
 #include <plugins/HookSystem.hpp>
 #include <render/Renderer.hpp>
 #include <pointer/PointerManager.hpp>
+#include <pointer/PointerController.hpp>
+#include <managers/input/InputManager.hpp>
+#include <managers/fullscreen/FullscreenController.hpp>
 #include <managers/SessionLockManager.hpp>
 #include <event/EventBus.hpp>
 #include <state/MonitorState.hpp>
@@ -44,6 +47,8 @@ static CBox outwardPixelBox(const CBox& logical, double scale) {
 }
 
 typedef void (*origRenderSoftwareCursorsFor)(void*, PHLMONITOR, const Time::steady_tp&, CRegion&, std::optional<Vector2D>, bool, bool);
+typedef void (*origControllerWarpTo)(const void*, const Vector2D&, bool);
+
 
 // Which render each monitor is in, and which render the cursor hook already
 // ran the lifecycle for. Keyed to a per-monitor serial bumped at RENDER_BEGIN
@@ -58,8 +63,12 @@ static uint64_t                                              s_frames = 0;
 static Time::steady_tp                                       s_epoch;
 static UP<STrailInstance>                                    s_motionTrail;
 static CFunctionHook*                                        s_cursorHook = nullptr;
+static CFunctionHook*                                        s_warpHook   = nullptr;
 static CHyprSignalListener                                   s_renderStageListener;
 static CHyprSignalListener                                   s_mouseMoveListener;
+static CHyprSignalListener                                   s_workspaceActiveListener;
+static CHyprSignalListener                                   s_specialActiveListener;
+static CHyprSignalListener                                   s_workspaceMovedListener;
 static std::unordered_map<Monitor::CMonitor*, SMonitorFrame> s_monFrame;
 
 static double                                                msSinceEpoch(const Time::steady_tp& tp) {
@@ -69,6 +78,17 @@ static double                                                msSinceEpoch(const 
 static bool sessionLocked() {
     return g_pSessionLockManager && g_pSessionLockManager->isSessionLocked();
 }
+
+static bool cursorHidden() {
+    return g_pHyprRenderer && !g_pHyprRenderer->shouldRenderCursor();
+}
+
+// A pointer constraint (lock or confine) means the client owns the pointer:
+// games, mostly. No trail while one is active (SPEC §7).
+static bool pointerConstrained() {
+    return g_pInputManager && g_pInputManager->isConstrained();
+}
+
 
 // Damage one logical, monitor-local box on this monitor: into the current
 // frame's render damage and into the monitor's damage ring. Only valid inside
@@ -109,14 +129,30 @@ static void runTrailLifecycle(const PHLMONITOR& pMonitor) {
     // faded one: no inserts, last box cleared once below, then idle.
     const bool off = locked || inst.disabled;
 
-    // Sample once per frame, insert only on real movement, and only while the
-    // cursor is visible: touch/tablet can move a hidden pointer. An existing
-    // trail keeps fading after a hide since the fallback still runs.
-    if (!off && g_pHyprRenderer->shouldRenderCursor()) {
+    // Sample once per frame, insert only on real movement (at least
+    // minSpacingPx from the newest node). The trail follows the pointer
+    // whether or not the cursor is shown (hidden by timeout / key press,
+    // cursor:invisible): it's decoupled from cursor visibility (SPEC §7).
+    //
+    // Breaks (SPEC §7): lock and workspace events (onContentChanged) break
+    // unconditionally; so does a pointer constraint, during which nothing is
+    // inserted. Warps break unless interpolateWarps (hkControllerWarpTo).
+    if (off || pointerConstrained())
+        inst.pendingBreak = true;
+    else {
         const Vector2D cursorPos = Pointer::mgr()->position();
         const SVec2f   pos{sc<float>(cursorPos.x), sc<float>(cursorPos.y)};
-        if (inst.ring.empty() || inst.ring.newest().posPx != pos)
-            inst.ring.insert(pos, nowMs);
+
+        bool           insert = inst.ring.empty();
+        if (!insert) {
+            const auto& newest = inst.ring.newest().posPx;
+            insert             = std::hypot(pos.x - newest.x, pos.y - newest.y) >= inst.minSpacingPx;
+        }
+
+        if (insert) {
+            inst.ring.insert(pos, nowMs, inst.pendingBreak);
+            inst.pendingBreak = false;
+        }
     }
 
     // Lifecycle (SPEC §6): while anything is visible, damage prev ∪ cur every
@@ -172,6 +208,31 @@ static void hkRenderSoftwareCursorsFor(void* thisptr, PHLMONITOR pMonitor, const
     (*(origRenderSoftwareCursorsFor)s_cursorHook->m_original)(thisptr, pMonitor, now, damage, overridePos, screencopy, forceRender);
 }
 
+// Programmatic warps (dispatchers, layouts, focus changes) go through here
+// (PointerController.cpp:16-29). With interpolateWarps off, a warp starts a
+// new segment; on, it connects (straight sweep). Only that decision is ours;
+// the original always runs, unwrapped.
+// Coverage gap: warp sites that call CPointerManager::warpTo directly bypass
+// this and always connect (PointerWarp.cpp:76, InputCapture.cpp:206,
+// InputManager.cpp:2248, WorkspacePlacementController.cpp:356).
+// Pointer constraints also warp through here (locked: back to the hint on
+// every motion, InputManager.cpp:318-320; confined: clamped at the region
+// edge, :306). Those are ignored: no trail while constrained anyway.
+static void hkControllerWarpTo(const void* thisptr, const Vector2D& pos, bool force) {
+    Vector2D from;
+    hyprtail::diag::guard("warp-hook-pre", [&] { from = Pointer::mgr()->position(); });
+
+    (*(origControllerWarpTo)s_warpHook->m_original)(thisptr, pos, force);
+
+    hyprtail::diag::guard("warp-hook", [&] {
+        if (!s_motionTrail || s_motionTrail->interpolateWarps || pointerConstrained())
+            return;
+        // Actual result, not the target: with cursor:no_warps nothing moves.
+        if (Pointer::mgr()->position() != from)
+            s_motionTrail->pendingBreak = true;
+    });
+}
+
 static void onRenderStageInternal(eRenderStage stage) {
     if ((stage != RENDER_BEGIN && stage != RENDER_LAST_MOMENT) || !g_pHyprRenderer || !s_motionTrail)
         return;
@@ -211,19 +272,35 @@ static void onRenderStage(eRenderStage stage) {
 // Damage a small box at the new point on each monitor it touches so a render
 // happens, where the normal lifecycle then samples and damages the trail.
 // Position is already updated when this fires (InputManager.cpp:155, :269).
+// Whether to skip scheduling a render for pointer motion on this monitor.
+// Core's check (Monitor.cpp:1161-1169) is
+//   (!shouldRenderCursor || noBreak) && adaptiveSync
+// With the cursor shown that's only the fullscreen no-break case, so use it
+// as is. With the cursor hidden it would skip on every adaptive-sync output,
+// fullscreen or not (core has no cursor to draw then), but the trail still
+// follows the pointer. Keep only the fullscreen part: skip when adaptive sync
+// is on and the monitor has a fullscreen window, regardless of
+// cursor:no_break_fs_vrr, so fullscreen VRR is never broken.
+static bool skipMotionFrame(const PHLMONITOR& m) {
+    if (!cursorHidden())
+        return m->shouldSkipScheduleFrameOnMouseEvent();
+
+    return m->m_output && m->m_output->state->state().adaptiveSync && Fullscreen::controller()->getFullscreenWindow(m);
+}
+
 static void onMouseMoveInternal() {
-    if (!s_motionTrail || s_motionTrail->disabled || sessionLocked())
+    if (!s_motionTrail || s_motionTrail->disabled || sessionLocked() || pointerConstrained())
         return;
 
     const Vector2D pos = Pointer::mgr()->position();
-    const double   r   = s_motionTrail->radiusPx;
+    const double   r   = s_motionTrail->padPx();
 
     for (const auto& m : State::monitorState()->monitors()) {
         if (!m || !m->m_enabled || m->isMirror())
             continue;
 
-        // Same check core uses to not break fullscreen VRR (Monitor.cpp:1161-1169).
-        if (m->shouldSkipScheduleFrameOnMouseEvent())
+        // Don't break fullscreen VRR, see skipMotionFrame.
+        if (skipMotionFrame(m))
             continue;
 
         const CBox local{pos.x - r - m->m_position.x, pos.y - r - m->m_position.y, 2.0 * r, 2.0 * r};
@@ -232,6 +309,19 @@ static void onMouseMoveInternal() {
 
         m->addDamage(outwardPixelBox(local, m->m_scale));
     }
+}
+
+// Visible content changed underneath the pointer (SPEC §7): workspace switch,
+// special workspace toggle, workspace moved to another monitor. The pointer
+// may also have been warped in the same call stack (Monitor.cpp:1497-1507),
+// before any render. Don't connect the old trail to the new position: the
+// next insert starts a new segment. Every other jump (e.g. a cross-monitor
+// focus warp) stays connected, which draws the straight "interpolated" sweep.
+static void onContentChanged() {
+    hyprtail::diag::guard("content-changed", [] {
+        if (s_motionTrail)
+            s_motionTrail->pendingBreak = true;
+    });
 }
 
 static void onMouseMove() {
@@ -254,6 +344,14 @@ static void* pmf_address(T pmf) {
     return reinterpret_cast<void*>(rep.ptr);
 }
 
+static void removeHook(CFunctionHook*& hook) {
+    if (!hook)
+        return;
+    hook->unhook();
+    HyprlandAPI::removeFunctionHook(s_handle, hook);
+    hook = nullptr;
+}
+
 // Undo everything PLUGIN_INIT set up. Also used when init fails: Hyprland then
 // ejects the plugin without calling PLUGIN_EXIT (PluginSystem.cpp:147-150,
 // :122-125) and dlcloses it, so listeners and deferred callbacks pointing
@@ -261,13 +359,13 @@ static void* pmf_address(T pmf) {
 static void teardown() noexcept {
     hyprtail::diag::guard("teardown", [] {
         // Stop callbacks first so nothing queues new elements during teardown.
+        s_workspaceActiveListener.reset();
+        s_specialActiveListener.reset();
+        s_workspaceMovedListener.reset();
         s_mouseMoveListener.reset();
         s_renderStageListener.reset();
-        if (s_cursorHook) {
-            s_cursorHook->unhook();
-            HyprlandAPI::removeFunctionHook(s_handle, s_cursorHook);
-            s_cursorHook = nullptr;
-        }
+        removeHook(s_cursorHook);
+        removeHook(s_warpHook);
 
         // Remove any queued elements before GPU resources go away so draw()
         // can't run against a deleted VAO/program.
@@ -285,24 +383,33 @@ static void teardown() noexcept {
     hyprtail::diag::shutdown();
 }
 
-// Hook for draw order. On failure the plugin keeps running in listener-only
-// mode (RENDER_LAST_MOMENT runs the lifecycle every render, trail above the
-// cursor) and says so, rather than refusing to load.
-static void installCursorHook() {
-    void* target = pmf_address(&Pointer::CPointerManager::renderSoftwareCursorsFor);
-    if (target)
-        s_cursorHook = HyprlandAPI::createFunctionHook(s_handle, target, reinterpret_cast<void*>(&hkRenderSoftwareCursorsFor));
+// Returns an active hook, or nullptr with nothing left registered.
+static CFunctionHook* installHook(void* target, void* detour) {
+    CFunctionHook* hook = target ? HyprlandAPI::createFunctionHook(s_handle, target, detour) : nullptr;
+    if (hook && hook->hook())
+        return hook;
+    if (hook)
+        HyprlandAPI::removeFunctionHook(s_handle, hook);
+    return nullptr;
+}
 
-    if (s_cursorHook && s_cursorHook->hook())
-        return;
 
-    if (s_cursorHook) {
-        HyprlandAPI::removeFunctionHook(s_handle, s_cursorHook);
-        s_cursorHook = nullptr;
-    }
+// Hooks degrade instead of refusing to load: each failure is reported with
+// what stops working.
+static void installHooks() {
+    // Draw order. Without it RENDER_LAST_MOMENT runs the lifecycle every
+    // render and the trail draws above the cursor.
+    s_cursorHook = installHook(pmf_address(&Pointer::CPointerManager::renderSoftwareCursorsFor), reinterpret_cast<void*>(&hkRenderSoftwareCursorsFor));
+    if (!s_cursorHook)
+        hyprtail::diag::report(eSeverity::WARN, "hook:cursor",
+                               "could not hook CPointerManager::renderSoftwareCursorsFor. Running degraded: the trail draws above the cursor instead of beneath it.");
 
-    hyprtail::diag::report(eSeverity::WARN, "hook",
-                           "could not hook CPointerManager::renderSoftwareCursorsFor. Running degraded: the trail draws above the cursor instead of beneath it.");
+    // Warp detection for interpolateWarps = false. Without it every warp
+    // connects (straight sweep).
+    s_warpHook = installHook(pmf_address(&Pointer::CPointerController::warpTo), reinterpret_cast<void*>(&hkControllerWarpTo));
+    if (!s_warpHook)
+        hyprtail::diag::report(eSeverity::WARN, "hook:warp",
+                               "could not hook CPointerController::warpTo. Warps will draw a connecting line instead of breaking the trail.");
 }
 
 static PLUGIN_DESCRIPTION_INFO pluginInit() {
@@ -311,7 +418,7 @@ static PLUGIN_DESCRIPTION_INFO pluginInit() {
 
     // Cursor hook for draw order. The host (LTO) build calls the target out of
     // line from renderMonitor, so the hook fires there too.
-    installCursorHook();
+    installHooks();
 
     // Serial at RENDER_BEGIN, fallback lifecycle at RENDER_LAST_MOMENT. The
     // cursor hook isn't called while the cursor is hidden
@@ -320,7 +427,12 @@ static PLUGIN_DESCRIPTION_INFO pluginInit() {
 
     s_mouseMoveListener = Event::bus()->m_events.input.mouse.move.listen([](Vector2D, Event::SCallbackInfo&) { onMouseMove(); });
 
-    Log::logger->log(Log::INFO, "[hyprtail] loaded, hook {}", s_cursorHook ? "active" : "unavailable (degraded draw order)");
+    // Teleport handling (SPEC §7): break the polyline on content changes.
+    s_workspaceActiveListener = Event::bus()->m_events.workspace.active.listen([] { onContentChanged(); });
+    s_specialActiveListener   = Event::bus()->m_events.workspace.specialActive.listen([] { onContentChanged(); });
+    s_workspaceMovedListener  = Event::bus()->m_events.workspace.moveToMonitor.listen([] { onContentChanged(); });
+
+    Log::logger->log(Log::INFO, "[hyprtail] loaded, cursor hook {}, warp hook {}", s_cursorHook ? "active" : "unavailable", s_warpHook ? "active" : "unavailable");
     HyprlandAPI::addNotification(s_handle, "[hyprtail] loaded", CHyprColor{0.2f, 1.0f, 0.2f, 1.0f}, 3000);
 
     // Damage the primary monitor to schedule an immediate first frame.
@@ -329,7 +441,7 @@ static PLUGIN_DESCRIPTION_INFO pluginInit() {
             g_pHyprRenderer->damageMonitor(m);
     }
 
-    return {"hyprtail", "Cursor trail (stage 4 harness: faded dots beneath the cursor)", "dev", "0.1"};
+    return {"hyprtail", "Cursor trail (ribbon, beneath the cursor)", "dev", "0.1"};
 }
 
 APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
