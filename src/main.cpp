@@ -1,5 +1,6 @@
 #include <chrono>
 #include <cmath>
+#include <format>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -52,28 +53,29 @@ static void damageLocalBox(const PHLMONITOR& pMonitor, const CBox& boxLocal) {
 
     const CBox px = outwardPixelBox(boxLocal, pMonitor->m_scale);
 
-    // Current frame: beginRender already captured the damage ring, so this
-    // frame only sees damage added to the render region directly.
+    // Current frame: beginRender already read and rotated the damage ring
+    // (Renderer.cpp:1782-1783), so this frame only sees damage added to the
+    // render region directly.
     g_pHyprRenderer->m_renderData.damage.add(px);
 
-    // Damage ring: lands in m_current, captured by the next frame's
-    // transaction and rotated into history, so older swapchain buffers
-    // (age > 1) also repaint this box. Also schedules that next frame
-    // (Monitor.cpp:1128-1129), which is what keeps a fading trail animating
+    // Damage ring: lands in m_current, read by the next frame's beginRender
+    // and rotated into history, so older swapchain buffers (age > 1) also
+    // repaint this box. Also schedules that next frame
+    // (Monitor.cpp:1157-1158), which is what keeps a fading trail animating
     // with the cursor stationary.
     pMonitor->addDamage(px);
 }
 
 // Runs once per renderMonitor, with or without a visible cursor
-// (Renderer.cpp:2296), after the cursor and before endRender(), so pass
+// (Renderer.cpp:2227), after the cursor and before endRender(), so pass
 // elements and render damage added here still reach this frame.
 static void onRenderLastMoment(const PHLMONITOR& pMonitor) {
     auto&        inst  = *s_motionTrail;
     const double nowMs = msSinceEpoch(Time::steadyNow());
 
     // Core keeps drawing the cursor over the lock screen: the cursor is
-    // rendered after renderLockscreen with no lock check (Renderer.cpp:2245
-    // vs :2282-2285). This deliberately diverges from core: no trail while
+    // rendered after renderLockscreen with no lock check (Renderer.cpp:2176
+    // vs :2212-2216). This deliberately diverges from core: no trail while
     // locked.
     const bool locked = g_pSessionLockManager && g_pSessionLockManager->isSessionLocked();
 
@@ -115,7 +117,7 @@ static void onRenderStage(eRenderStage stage) {
 
     ++s_frames;
     if (s_frames <= 3 || s_frames % 600 == 0)
-        LOG(Log::INFO, "[hyprtail-s4] render stage #{} monitor={}", s_frames, pMonitor->m_name);
+        Log::logger->log(Log::INFO, "[hyprtail-s4] render stage #{} monitor={}", s_frames, pMonitor->m_name);
 
     onRenderLastMoment(pMonitor);
 }
@@ -139,11 +141,11 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     s_motionTrail = makeUnique<STrailInstance>(TRAIL_CAPACITY, TRAIL_FADE_MS);
 
     // Replaces the stage 1-3 hook on renderSoftwareCursorsFor, which isn't
-    // called while the cursor is hidden (Renderer.cpp:2282-2285, 3055-3057)
+    // called while the cursor is hidden (Renderer.cpp:2212-2216, 2976-2978)
     // and would freeze a trail mid-fade.
     s_renderStageListener = Event::bus()->m_events.render.stage.listen([](eRenderStage stage) { onRenderStage(stage); });
 
-    LOG(Log::INFO, "[hyprtail-s4] loaded — stage 4 time-based fade");
+    Log::logger->log(Log::INFO, "[hyprtail-s4] loaded — stage 4 time-based fade");
     HyprlandAPI::addNotification(handle,
         "[hyprtail-s4] loaded — dots should fade out over time",
         CHyprColor{0.2f, 1.0f, 0.2f, 1.0f}, 5000);
@@ -158,7 +160,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
 }
 
 APICALL EXPORT void PLUGIN_EXIT() {
-    LOG(Log::INFO, "[hyprtail-s4] unloading after {} render stages", s_frames);
+    Log::logger->log(Log::INFO, "[hyprtail-s4] unloading after {} render stages", s_frames);
     s_frames = 0;
 
     // Stop callbacks first so nothing queues new elements during teardown.
@@ -174,7 +176,7 @@ APICALL EXPORT void PLUGIN_EXIT() {
         s_motionTrail.reset();
     }
 
-    LOG(Log::INFO, "[hyprtail-s4] unloaded");
+    Log::logger->log(Log::INFO, "[hyprtail-s4] unloaded");
 }
 
 APICALL EXPORT std::string PLUGIN_API_VERSION() {

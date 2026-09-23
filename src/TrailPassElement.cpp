@@ -85,7 +85,7 @@ void main() {
         discard;
 
     // Hyprland blends premultiplied: GL_ONE, GL_ONE_MINUS_SRC_ALPHA
-    // (OpenGL.cpp:1080-1083).
+    // (OpenGL.cpp:981-989).
     float a   = v_alpha * cov;
     fragColor = vec4(v_color * a, a);
 }
@@ -99,7 +99,7 @@ static bool ensureShader(STrailShader& s) {
 
     auto shader = makeShared<CShader>();
     if (!shader->createProgram(TRAIL_VERT_SRC, TRAIL_FRAG_SRC, /*dynamic=*/true, /*silent=*/false)) {
-        LOG(Log::ERR, "[hyprtail-s3] trail shader compilation failed");
+        Log::logger->log(Log::ERR, "[hyprtail-s4] trail shader compilation failed");
         s.initFailed = true;
         return false;
     }
@@ -112,7 +112,7 @@ static bool ensureShader(STrailShader& s) {
     s.locFadeMs     = glGetUniformLocation(prog, "fadeMs");
     s.shader        = shader;
 
-    LOG(Log::INFO, "[hyprtail-s3] trail shader compiled ok, program id={}", prog);
+    Log::logger->log(Log::INFO, "[hyprtail-s4] trail shader compiled ok, program id={}", prog);
     return true;
 }
 
@@ -130,14 +130,16 @@ bool CTrailGpu::ensure(size_t ringCapacity) {
     glGenVertexArrays(1, &m_vao);
     glGenBuffers(1, &m_vbo);
     if (!m_vao || !m_vbo) {
-        LOG(Log::ERR, "[hyprtail-s3] failed to create trail VAO/VBO");
+        Log::logger->log(Log::ERR, "[hyprtail-s4] failed to create trail VAO/VBO");
         destroy();
         return false;
     }
 
     glBindVertexArray(m_vao);
-    // Through Hyprland's cache, a raw glBindBuffer would desync it.
-    g_pHyprOpenGL->bindArrayBuffer(m_vbo);
+    // Raw bind is fine at efb5099: there is no array-buffer cache, core binds
+    // raw too (OpenGL.cpp:1547, Shader.cpp:236). Later main adds
+    // CHyprOpenGLImpl::bindArrayBuffer(); use that if the pin moves past it.
+    glBindBuffer(GL_ARRAY_BUFFER, m_vbo);
     glBufferData(GL_ARRAY_BUFFER, m_vboNodes * NODE_STRIDE, nullptr, GL_DYNAMIC_DRAW);
 
     // Set 0 = node i at offset 0, set 1 = node i + 1 at offset one stride.
@@ -159,7 +161,7 @@ bool CTrailGpu::ensure(size_t ringCapacity) {
     }
 
     glBindVertexArray(0);
-    g_pHyprOpenGL->bindArrayBuffer(0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
 
     m_uploadedGen = UINT64_MAX;
     return true;
@@ -177,15 +179,15 @@ void CTrailGpu::upload(const CTrailRing& ring) {
 
     const size_t n = std::min(m_ordered.size(), m_vboNodes);
 
-    g_pHyprOpenGL->bindArrayBuffer(m_vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, m_vbo);
     glBufferSubData(GL_ARRAY_BUFFER, 0, n * NODE_STRIDE, m_ordered.data());
-    g_pHyprOpenGL->bindArrayBuffer(0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
 
     m_uploadedGen = ring.generation();
 }
 
 void CTrailGpu::destroy() {
-    g_pHyprOpenGL->bindArrayBuffer(0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
 
     if (m_vao)
         glDeleteVertexArrays(1, &m_vao);
@@ -248,13 +250,18 @@ std::vector<UP<IPassElement>> CTrailPassElement::draw() {
     const auto count = sc<GLsizei>(m_inst->ring.size());
 
     // Global layout px -> monitor-local px -> clip. projectBoxToTarget takes a
-    // pixel-space box (Renderer.cpp:1855-1860); projectBox maps p to
+    // pixel-space box (Renderer.cpp:1842-1846); projectBox maps p to
     // pos + size * p (hyprutils Mat3x3.cpp:68-90), so this box encodes
     // (p - monitorPos) * scale.
+    // Transform is passed explicitly as NORMAL: getBoxProjection otherwise
+    // defaults to the inverted monitor transform applied *inside* the box
+    // (Renderer.cpp:1836-1840), which would rotate this pseudo-box. Monitor
+    // rotation stays in targetProjection (Renderer.cpp:1828). Rotated outputs
+    // are untested.
     const double s    = monitor->m_scale;
-    const auto   proj = g_pHyprRenderer->projectBoxToTarget(CBox{-monitor->m_position.x * s, -monitor->m_position.y * s, s, s});
+    const auto   proj = g_pHyprRenderer->projectBoxToTarget(CBox{-monitor->m_position.x * s, -monitor->m_position.y * s, s, s}, HYPRUTILS_TRANSFORM_NORMAL);
 
-    // Through Hyprland's program cache (OpenGL.cpp:2398-2406), not raw glUseProgram.
+    // Through Hyprland's program cache (OpenGL.cpp:2561-2569), not raw glUseProgram.
     auto shader = g_pHyprOpenGL->useShader(m_inst->shader.shader);
     shader->setUniformMatrix3fv(SHADER_PROJ, 1, GL_TRUE, proj.getMatrix());
     glUniform1f(m_inst->shader.locRadius, m_inst->radiusPx);
@@ -262,13 +269,13 @@ std::vector<UP<IPassElement>> CTrailPassElement::draw() {
     glUniform1f(m_inst->shader.locNowMs, sc<float>(m_nowMs - m_inst->gpu.refMs()));
     glUniform1f(m_inst->shader.locFadeMs, sc<float>(m_inst->fadeMs));
 
-    // Premultiplied blending through Hyprland's cached state (OpenGL.cpp:1080-1083).
+    // Premultiplied blending through Hyprland's cap-status cache (OpenGL.cpp:981-989).
     // Blend state is whatever the previous element left, so set it explicitly.
     g_pHyprOpenGL->blend(true);
 
     glBindVertexArray(m_inst->gpu.vao());
 
-    // Clip to this element's damage, same pattern as core (OpenGL.cpp:1810-1815).
+    // Clip to this element's damage, same pattern as core (OpenGL.cpp:1117-1124).
     // Scissor through Hyprland's cached state, not raw glEnable/glScissor.
     rd.damage.forEachRect([&rd, count](const auto& RECT) {
         g_pHyprOpenGL->scissor(&RECT, rd.transformDamage);

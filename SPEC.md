@@ -23,7 +23,19 @@ this file states the decision and marks what's still a placeholder.
   (`PluginAPI.hpp`), so development against a moving `master` makes it
   impossible to distinguish your own breakage from upstream's. Advance the
   pin deliberately, rebuild, re-run the validation ladder (§10), then update.
-  - **Pinned commit: `1b85c7aa1b5c41d906880f0f495bcd0749a23175`**
+  - **Pinned commit: `efb50993780079460b0cbed1363e2166a2de1d9f` (v0.56.2)**,
+    matching the host's installed package (`hyprland 0.56.2-3.1`, CachyOS,
+    GCC 16.2.1, LTO). The pin tracks the host package: a host upgrade
+    requires a deliberate re-pin, and the Makefile `check-pin` target fails
+    the build if `external/Hyprland` isn't at the pin and warns if the
+    installed headers (`/usr/include/hyprland/src/version.h`) moved off it.
+  - Previous pin `1b85c7aa` (main, v0.56.0+190) was newer than the host;
+    v0.56.2 is a release branch off v0.56.0. NOTES.md citations marked
+    "cited at pin 1b85c7aa" refer to that commit; later ones cite `efb5099`.
+- The plugin is compiled against the `external/Hyprland` checkout (after its
+  build generates `version.h` and protocol headers). At `efb5099` its headers
+  are byte-identical to the installed ones for everything the plugin uses, so
+  one `.so` serves both the nested (debug) build and the host.
 - Build via `make clear && make debug` in `external/Hyprland` (not hand-rolled
   `cmake` flags, not bare `rm -rf build`, both miss things the project's own
   Makefile handles: `-DTESTS=true` for hyprtester, generated protocol headers
@@ -242,6 +254,10 @@ this file states the decision and marks what's still a placeholder.
 - Cross-monitor continuity verified via `hyprctl cursorpos` tracing once
   outputs were confirmed properly aligned (`hyprctl monitors -j`, not
   eyeballed): no discontinuity once alignment was exact.
+- **Rotated outputs (transform != 0): untested.** The per-monitor projection
+  passes `HYPRUTILS_TRANSFORM_NORMAL` explicitly so the box-as-affine-map trick
+  isn't rotated inside the box, and relies on core's `targetProjection` for
+  the monitor rotation. Correct on paper, never observed.
 - **Open, not yet tested:** buffer handling/culling for a monitor the trail
   isn't currently over, and damage propagation when the trail's bounding box
   straddles a seam between two outputs. Live multi-monitor hardware is now
@@ -292,13 +308,14 @@ this file states the decision and marks what's still a placeholder.
 
 ## 12. Open items carried into implementation (non-blocking)
 
-- Hyprland commit to pin (§2)
+- Hyprland pin chosen (`efb5099`, v0.56.2, §2); re-pin on every host package upgrade
 - Buffer size default (§3)
 - `addConfigValue`/`getConfigValue` under the Lua config provider (§9)
 - Config packaging format (§9)
 - Fade duration and curve (§4), placeholders 500ms linear; time-based fade
   built in stage 4, pending confirmation
 - Trail draws above the cursor, must move below it before this is usable (§7)
+- Rotated outputs untested (§8)
 - Color management: trail colors bypass core's `getConvertedColor`, may be
   off on HDR/color-managed outputs
 - Cursor-warp tooling reliability for scripting the validation ladder
