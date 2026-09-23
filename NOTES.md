@@ -128,6 +128,17 @@ Not yet reached, environment/fixture work has been the focus so far (see Environ
 - **Intended long-term design (option B, not built):** emit damage outside the render path, before the frame begins, via `g_pHyprRenderer->damageBox(globalLogicalBox)` (`Renderer.cpp:2874-2883`, goes through `addDamage` into the ring for every monitor it overlaps, which also covers seam-straddling for free). Render hook then only adds the pass element. Same shape as core's `damageIfSoftware`.
   - **Caveat:** from stage 3 on, the trail keeps changing after the cursor stops (points age and fade), so damage can't be driven by mouse motion alone. It has to follow the trail's own lifecycle: keep damaging prev ∪ current trail box (SPEC §6) every frame until the last point has fully faded, then stop. Mouse motion is one input to that lifecycle, not the trigger for it.
 
+## Plugin GL state hygiene (confirmed from source, pinned commit)
+
+- Hyprland caches GL state; raw GL calls from a plugin desync the cache and can break later core draws:
+  - current program: `useShader()` skips `glUseProgram` if it thinks the program is already bound (`OpenGL.cpp:2398-2406`). Use `g_pHyprOpenGL->useShader()`, never raw `glUseProgram` (incl. `glUseProgram(0)` afterwards).
+  - scissor: `scissor()` caches last box and `GL_SCISSOR_TEST` enable via `setCapStatus` (`OpenGL.cpp:1094-1121`, `:2485`). Use `g_pHyprOpenGL->scissor(&RECT, transformDamage)` per damage rect and `scissor(nullptr)` after, same as core (`:1810-1815`). Never raw `glEnable/glDisable(GL_SCISSOR_TEST)`.
+  - array buffer binding: `bindArrayBuffer()` (`:2455`). VAO binding is not cached, raw `glBindVertexArray` is fine (core does it).
+- Stage 1/2 `CDotPassElement` violated all of the scissor/program rules; retired in stage 3.
+- Drawing only inside damage rects also matters for correctness once anything is translucent: redrawing AA/alpha edges over pixels whose background wasn't repainted accumulates.
+- `projectBoxToTarget` takes a **pixel-space** box (target size = `m_transformedSize`, `Renderer.cpp:1855-1860`). Stage 1/2 passed a logical box, only correct at scale 1. Stage 3 builds a global-layout -> clip matrix with `projectBoxToTarget(CBox{-monPos * scale, {scale, scale}})`, since `projectBox` maps p to pos + size * p (hyprutils `Mat3x3.cpp:68-90`).
+- `CShader` only knows the fixed `eShaderUniform` set; plugin uniforms go through `glGetUniformLocation` on `program()` + raw `glUniform*` (per-program state, no cache to desync).
+
 ## Open questions
 
 - [ ] Hyprland commit/tag to pin to (decision made to pin deliberately, no actual commit chosen yet)
