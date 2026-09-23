@@ -27,6 +27,26 @@ hl.config({
     }
 })
 
+-- hyprtail settings (SPEC section 9). Defaults shown. With the plugin loaded
+-- by hand (make load) rather than hl.plugin.load, these keys are unknown until
+-- it loads, so Hyprland shows a config error until then; loading the plugin
+-- triggers a reload that clears it.
+-- hl.config({
+--     plugin = {
+--         hyprtail = {
+--             fade_ms           = 500,
+--             width             = 8,
+--             capacity          = 64,
+--             min_spacing       = 2,
+--             miter_limit       = 2,
+--             interpolate_warps = false,
+--             damage_padding    = 0,
+--             vertex_shader     = "",  -- "" = built-in; relative = next to this file; ~ works
+--             fragment_shader   = "",
+--         },
+--     },
+-- })
+
 hl.on("hyprland.start", function()
     -- "second" doesn't exist until this runs, has to be created and
     -- configured here, unlike the primary above.

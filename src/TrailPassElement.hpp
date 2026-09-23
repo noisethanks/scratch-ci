@@ -1,6 +1,8 @@
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -11,6 +13,7 @@
 #include <helpers/memory/Memory.hpp>
 
 #include "TrailBuffer.hpp"
+#include "ShaderSource.hpp"
 
 namespace Monitor {
     class CMonitor;
@@ -34,8 +37,9 @@ class CTrailGpu {
   public:
     // No GL in the destructor: destroy() runs explicitly while the context is
     // current (PLUGIN_EXIT).
-    // Creates VAO/VBO on first call. On failure returns false with a
-    // description in error, and leaves nothing allocated.
+    // Creates VAO/VBO sized for ringCapacity, recreating them if the
+    // capacity changed. On failure returns false with a description in
+    // error, and leaves nothing allocated.
     bool   ensure(size_t ringCapacity, std::string& error);
     void   upload(const CTrailRing& ring);
     void   destroy();
@@ -52,13 +56,31 @@ class CTrailGpu {
     std::vector<SGpuNode> m_ordered;
 };
 
+// Preprocessed vertex + fragment source for one program.
+struct SShaderPair {
+    hyprtail::shader::SSource vert, frag;
+    bool                      builtin = true; // both stages built-in
+
+    float                     declaredPaddingPx() const {
+        return std::max(vert.declaredPaddingPx, frag.declaredPaddingPx);
+    }
+};
+
 struct STrailShader {
+    // Active program. Uniforms a shader doesn't declare have location -1 and
+    // are silently not set.
     SP<CShader> shader;
-    GLint       locNowMs      = -1;
-    GLint       locFadeMs     = -1;
-    GLint       locWidthPx    = -1;
-    GLint       locMiterLimit = -1;
-    GLint       locSpeedRef   = -1;
+    float       declaredPaddingPx = 0.F; // of the active program
+    GLint       locNowMs          = -1;
+    GLint       locFadeMs         = -1;
+    GLint       locWidthPx        = -1;
+    GLint       locMiterLimit     = -1;
+    GLint       locSpeedRef       = -1;
+
+    // Set on the main thread (config reload, file change), compiled at the
+    // next render where GL is current (trailPrepare). On failure the active
+    // program stays.
+    std::optional<SShaderPair> pending;
 };
 
 struct SMonitorTrailState {
@@ -68,26 +90,29 @@ struct SMonitorTrailState {
 // One trail: buffer, GPU mirror, shader, per-monitor damage state. Written
 // per instance so the idle/presence slot (SPEC §7) can be a second one.
 struct STrailInstance {
-    STrailInstance(std::string name_, size_t capacity, double fadeMs_) : name(std::move(name_)), ring(capacity), fadeMs(fadeMs_) {}
+    STrailInstance(std::string name_, size_t capacity) : name(std::move(name_)), ring(capacity) {}
 
     std::string                                                name; // for diagnostics keys, e.g. "shader:<name>"
     CTrailRing                                                 ring;
     CTrailGpu                                                  gpu;
     STrailShader                                               shader;
 
-    double                                                     fadeMs;
+    // Settings, from the config (cfg::SValues) on load and every reload.
+    double fadeMs           = 500.0;
+    float  widthPx          = 8.F;   // full ribbon width at age 0, logical px, tapers with age
+    float  miterLimit       = 2.F;   // max miter length in half-widths
+    float  minSpacingPx     = 2.F;   // min distance between inserted nodes, limits inner-miter folding
+    bool   interpolateWarps = false; // warps via CPointerController connect (true) or start a new segment (false)
+    float  damagePaddingPx  = 0.F;   // config padding, on top of the stock extent and shader padding
 
-    // Placeholders (SPEC §4/§5).
-    float widthPx         = 8.F; // full ribbon width at age 0, logical px, tapers with age
-    float miterLimit      = 2.F; // max miter length in half-widths
-    float speedRefPxPerMs = 2.F; // speed mapped to the fast end of the palette
-    float minSpacingPx    = 2.F; // min distance between inserted nodes, limits inner-miter folding
-    bool  interpolateWarps = false; // warps via CPointerController connect (true) or start a new segment (false)
+    float  speedRefPxPerMs = 2.F; // stock-shader palette, not a setting
 
-    // Damage padding around the node extent: widest possible miter plus the
-    // ~1px antialiased edge. Must cover everything the shader can draw.
+    // Damage padding around the node extent (SPEC section 5): stock extent
+    // (widest possible miter plus the ~1px antialiased edge), plus padding
+    // declared by the active shader (#pragma hyprtail padding), plus the
+    // config's damage_padding. Must cover everything the shader can draw.
     float padPx() const {
-        return 0.5F * widthPx * miterLimit + 1.F;
+        return 0.5F * widthPx * miterLimit + 1.F + shader.declaredPaddingPx + damagePaddingPx;
     }
 
     // Next insert starts a new segment (not connected to the previous node):
@@ -110,6 +135,15 @@ void trailDisable(STrailInstance& inst, std::string_view key, std::string_view m
 
 // GL context must be current (inside a render, or PLUGIN_EXIT).
 void trailReleaseGpu(STrailInstance& inst);
+
+// Call inside a render (GL current) before the instance draws: compiles a
+// pending shader (keeping the active one if it fails), falls back to the
+// built-in program if nothing is active. False if the instance has no usable
+// program (then it's disabled).
+bool trailPrepare(STrailInstance& inst);
+
+// Built-in stock shader pair, preprocessed (cached).
+const SShaderPair& builtinShaderPair();
 
 // Bounds padded by padPx(), logical, monitor-local.
 CBox trailBoxLocal(const STrailInstance& inst, const STrailBounds& bounds, const Vector2D& monitorPos);

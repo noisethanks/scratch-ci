@@ -1,0 +1,15 @@
+[repository]
+name = "hyprtail"
+authors = ["Abhishek Mallepalli"]
+# [hyprland commit, hyprtail commit]: when the running Hyprland is exactly
+# that commit, hyprpm builds that hyprtail commit instead of the latest.
+# None needed while main supports the pinned Hyprland (SPEC section 2).
+commit_pins = []
+
+[hyprtail]
+description = "Cursor trail with a user-programmable ribbon shader"
+authors = ["Abhishek Mallepalli"]
+output = "out/hyprtail.so"
+build = [
+    "make all",
+]

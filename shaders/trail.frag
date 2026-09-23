@@ -6,7 +6,9 @@
 //     uses v_side (-1..1 across the ribbon), v_alpha (time fade) and v_color.
 //   - Output is PREMULTIPLIED alpha: Hyprland blends with
 //     GL_ONE, GL_ONE_MINUS_SRC_ALPHA. Write vec4(rgb * a, a).
-//   - Draw only inside the damage padding documented in the vertex contract.
+//   - Draw only inside the damage padding documented in the vertex contract;
+//     declare extra reach with #pragma hyprtail padding <px> (e.g. a glow).
+//   - #include works as described in the vertex contract.
 
 precision highp float;
 

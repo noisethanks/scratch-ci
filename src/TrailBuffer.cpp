@@ -19,6 +19,24 @@ void CTrailRing::insert(const SVec2f& pos, double nowMs, bool segmentStart) {
     ++m_generation;
 }
 
+void CTrailRing::resize(size_t capacity) {
+    capacity = std::max<size_t>(capacity, 1);
+    if (capacity == m_nodes.size())
+        return;
+
+    const size_t             keep   = std::min(m_count, capacity);
+    const size_t             cap    = m_nodes.size();
+    const size_t             oldest = (m_head + cap - keep) % cap; // oldest of the kept ones
+    std::vector<SCursorNode> nodes(capacity);
+    for (size_t i = 0; i < keep; ++i)
+        nodes[i] = m_nodes[(oldest + i) % cap];
+
+    m_nodes = std::move(nodes);
+    m_count = keep;
+    m_head  = keep % capacity;
+    ++m_generation;
+}
+
 size_t CTrailRing::size() const {
     return m_count;
 }

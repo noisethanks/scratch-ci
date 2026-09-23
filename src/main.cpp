@@ -23,16 +23,15 @@
 #include <helpers/Color.hpp>
 #include <debug/log/Logger.hpp>
 
+#include "Config.hpp"
 #include "Diagnostics.hpp"
+#include "FileWatch.hpp"
 #include "TrailPassElement.hpp"
 
 using hyprtail::diag::eSeverity;
 
 static HANDLE s_handle = nullptr;
 
-// Placeholders, SPEC §3 buffer size and the fade duration/curve are still TBD.
-static constexpr size_t TRAIL_CAPACITY = 64;
-static constexpr double TRAIL_FADE_MS  = 500.0;
 
 // Logical box -> pixel damage box covering every pixel the draw can touch,
 // including partially covered edge pixels: scale, then floor left/top and
@@ -69,6 +68,9 @@ static CHyprSignalListener                                   s_mouseMoveListener
 static CHyprSignalListener                                   s_workspaceActiveListener;
 static CHyprSignalListener                                   s_specialActiveListener;
 static CHyprSignalListener                                   s_workspaceMovedListener;
+static CHyprSignalListener                                   s_configReloadListener;
+static hyprtail::cfg::SValues                                s_config;
+static hyprtail::CFileWatch                                  s_fileWatch;
 static std::unordered_map<Monitor::CMonitor*, SMonitorFrame> s_monFrame;
 
 static double                                                msSinceEpoch(const Time::steady_tp& tp) {
@@ -118,6 +120,10 @@ static void damageLocalBox(const PHLMONITOR& pMonitor, const CBox& boxLocal) {
 static void runTrailLifecycle(const PHLMONITOR& pMonitor) {
     auto&        inst  = *s_motionTrail;
     const double nowMs = msSinceEpoch(Time::steadyNow());
+
+    // GL is current here: compile a pending shader (config reload, file
+    // change) or fall back to the built-in one. May disable the instance.
+    trailPrepare(inst);
 
     // Core keeps drawing the cursor over the lock screen: the cursor is
     // rendered after renderLockscreen with no lock check (Renderer.cpp:2176
@@ -359,6 +365,8 @@ static void removeHook(CFunctionHook*& hook) {
 static void teardown() noexcept {
     hyprtail::diag::guard("teardown", [] {
         // Stop callbacks first so nothing queues new elements during teardown.
+        s_configReloadListener.reset();
+        s_fileWatch.shutdown();
         s_workspaceActiveListener.reset();
         s_specialActiveListener.reset();
         s_workspaceMovedListener.reset();
@@ -377,6 +385,7 @@ static void teardown() noexcept {
             s_motionTrail.reset();
         }
         s_monFrame.clear();
+        hyprtail::cfg::releaseValues();
     });
 
     // Last: cancels any pending deferred notification into this .so.
@@ -412,9 +421,91 @@ static void installHooks() {
                                "could not hook CPointerController::warpTo. Warps will draw a connecting line instead of breaking the trail.");
 }
 
+// Make a render happen soon, so a pending shader compiles (GL is only
+// current inside a render) and a changed setting shows.
+static void kickRender() {
+    if (!g_pHyprRenderer)
+        return;
+    if (auto m = g_pHyprRenderer->m_mostHzMonitor.lock())
+        m->scheduleFrame();
+}
+
+// Read both shader stages (config path or built-in), resolve includes, and
+// queue them for compilation at the next render. A file or preprocessing
+// error keeps the active shader. Reports go under shader:<instance>, re-armed
+// on every attempt.
+static void reloadShaders() {
+    auto&       inst = *s_motionTrail;
+    const auto  key  = "shader:" + inst.name;
+
+    SShaderPair pair  = builtinShaderPair();
+    pair.builtin      = true;
+    bool                               failed = false;
+    std::vector<std::filesystem::path> watch;
+
+    const auto loadStage = [&](const std::string& configured, const char* stage, hyprtail::shader::SSource& out) {
+        const auto path = hyprtail::cfg::resolveShaderPath(configured);
+        if (path.empty())
+            return; // built-in
+
+        watch.push_back(path); // watch even if missing, so creating it reloads
+        auto src = hyprtail::shader::load(path);
+        if (!src) {
+            hyprtail::diag::resetKey(key);
+            hyprtail::diag::report(eSeverity::WARN, key, std::format("{} trail: {} shader: {}\nKeeping the current shader.", inst.name, stage, src.error()));
+            failed = true;
+            return;
+        }
+        watch.insert(watch.end(), src->files.begin(), src->files.end());
+        out          = std::move(*src);
+        pair.builtin = false;
+    };
+
+    loadStage(s_config.vertexShader, "vertex", pair.vert);
+    loadStage(s_config.fragmentShader, "fragment", pair.frag);
+
+    s_fileWatch.setFiles(watch);
+
+    if (failed)
+        return;
+
+    inst.shader.pending = std::move(pair);
+    kickRender();
+}
+
+// Config values -> instance, on load and every Hyprland config reload.
+static void applyConfig() {
+    auto& inst = *s_motionTrail;
+    s_config   = hyprtail::cfg::read(s_config);
+
+    inst.fadeMs           = s_config.fadeMs;
+    inst.widthPx          = s_config.widthPx;
+    inst.miterLimit       = s_config.miterLimit;
+    inst.minSpacingPx     = s_config.minSpacingPx;
+    inst.interpolateWarps = s_config.interpolateWarps;
+    inst.damagePaddingPx  = s_config.damagePaddingPx;
+
+    // Keeps the newest points; the VBO is reallocated at the next draw
+    // (CTrailGpu::ensure), where GL is current.
+    if (inst.ring.capacity() != s_config.capacity)
+        inst.ring.resize(s_config.capacity);
+
+    reloadShaders();
+    kickRender();
+}
+
 static PLUGIN_DESCRIPTION_INFO pluginInit() {
     s_epoch       = Time::steadyNow();
-    s_motionTrail = makeUnique<STrailInstance>("trail", TRAIL_CAPACITY, TRAIL_FADE_MS);
+    s_config      = {};
+    s_motionTrail = makeUnique<STrailInstance>("trail", s_config.capacity);
+
+    // Settings (SPEC section 9). Registered values get their configured value
+    // on the reload Hyprland schedules right after loading a plugin
+    // (PluginSystem.cpp:135); until then they hold the defaults.
+    hyprtail::cfg::registerValues(s_handle);
+    s_fileWatch.init([] { hyprtail::diag::guard("shader-file-changed", [] { reloadShaders(); }); });
+    applyConfig();
+    s_configReloadListener = Event::bus()->m_events.config.reloaded.listen([] { hyprtail::diag::guard("config-reload", [] { applyConfig(); }); });
 
     // Cursor hook for draw order. The host (LTO) build calls the target out of
     // line from renderMonitor, so the hook fires there too.

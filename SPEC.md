@@ -26,16 +26,33 @@ this file states the decision and marks what's still a placeholder.
   - **Pinned commit: `efb50993780079460b0cbed1363e2166a2de1d9f` (v0.56.2)**,
     matching the host's installed package (`hyprland 0.56.2-3.1`, CachyOS,
     GCC 16.2.1, LTO). The pin tracks the host package: a host upgrade
-    requires a deliberate re-pin, and the Makefile `check-pin` target fails
-    the build if `external/Hyprland` isn't at the pin and warns if the
-    installed headers (`/usr/include/hyprland/src/version.h`) moved off it.
+    requires a deliberate re-pin.
   - Previous pin `1b85c7aa` (main, v0.56.0+190) was newer than the host;
     v0.56.2 is a release branch off v0.56.0. NOTES.md citations marked
     "cited at pin 1b85c7aa" refer to that commit; later ones cite `efb5099`.
-- The plugin is compiled against the `external/Hyprland` checkout (after its
-  build generates `version.h` and protocol headers). At `efb5099` its headers
-  are byte-identical to the installed ones for everything the plugin uses, so
-  one `.so` serves both the nested (debug) build and the host.
+- **Output:** `out/hyprtail.so` (plugin name `hyprtail`).
+- **Two build modes (Makefile):**
+  - `make` (default, users and hyprpm): Hyprland headers from
+    `pkg-config --cflags hyprland`. Under hyprpm that resolves to the headers
+    hyprpm built for the running Hyprland; otherwise to the installed
+    package's. Fails with a clear message if `hyprland.pc` isn't found; warns
+    (doesn't fail) if the headers' commit isn't the pin. Doesn't need
+    `external/`.
+  - `make DEV=1` (development): headers from the `external/Hyprland`
+    checkout, after its build generates `version.h` and protocol headers.
+    `check-pin` fails the build if the checkout isn't at the pin or isn't
+    built, and warns if the installed host headers moved off the pin. At
+    `efb5099` the checkout's headers are byte-identical to the installed
+    ones for everything the plugin uses, so one `.so` serves both the nested
+    (debug) build and the host.
+  - Both append to `CXXFLAGS` (hyprpm passes extra flags through the
+    environment) and add `--no-gnu-unique` whenever the compiler is GCC.
+  - Needs a C++26 compiler with `#embed` (GCC 15+; built and tested with
+    GCC 16.2.1).
+- **hyprpm:** `hyprpm.toml` at the repo root: repository `hyprtail`, one
+  plugin `hyprtail`, `output = "out/hyprtail.so"`, `build = ["make all"]`,
+  no commit pins yet (see NOTES "hyprpm"). Install: `hyprpm add <git url>`,
+  `hyprpm enable hyprtail`.
 - Build via `make clear && make debug` in `external/Hyprland` (not hand-rolled
   `cmake` flags, not bare `rm -rf build`, both miss things the project's own
   Makefile handles: `-DTESTS=true` for hyprtester, generated protocol headers
@@ -186,22 +203,45 @@ this file states the decision and marks what's still a placeholder.
   exactly like user-supplied shaders will be. The stock pair lives in
   `shaders/trail.vert` and `shaders/trail.frag`, embedded into the plugin at
   build time with C++26 `#embed` (the Makefile lists them as dependencies).
-  The config loader will read the same kind of file from a user path. Their
-  header comments are the contract. Keep them ASCII (GLSL ES drivers aren't
-  reliable with UTF-8, even in comments).
+  The config loader reads the same kind of file from a user path
+  (`plugin:hyprtail:vertex_shader` / `fragment_shader`, §9). Their header
+  comments are the contract; the stock pair doubles as the reference user
+  shader. Keep them ASCII (GLSL ES drivers aren't reliable with UTF-8, even
+  in comments).
+- **Packaging: separate `.vert` and `.frag` paths**, not a single file. They
+  map 1:1 to GL stages and each can be overridden alone (the other stays
+  built-in). Mixing contract: a custom fragment shader with the stock vertex
+  shader reads `v_side`, `v_alpha`, `v_color`; a custom vertex shader with
+  the stock fragment shader must write them. A mismatch fails at link time
+  and is reported.
+- **Includes (loader-side preprocessor, `src/ShaderSource.*`):** GLSL ES has
+  no `#include`, so the plugin resolves it before compiling.
+  `#include "hyprtail/<name>"` pulls in a built-in prefab (embedded);
+  any other path is relative to the including file (absolute and `~/` also
+  work). Each file is included at most once, cycles are errors, depth is
+  limited to 16, included files must not contain `#version`. Built-in shaders
+  may only include `hyprtail/` prefabs. Every inclusion is wrapped in
+  `#line <n> <source-id>`, so GLSL errors are reported as `file:line`.
+  Include prefabs after the `precision` statement (fragment shaders have no
+  default float precision).
+- **Prefab library:** `hyprtail/ribbon.glsl` (`ht_startsSegment`,
+  `ht_collapsedPosition`, `ht_dirBetween`, `ht_jointOffset`, `HT_EPS`) and
+  `hyprtail/fade.glsl` (`ht_life`, `ht_faded`). Functions only, `ht_`
+  prefixed, parameters instead of uniforms. The stock vertex shader is built
+  on them. Source in `shaders/hyprtail/`.
 - Plugin-provided per-instance data (vertex contract, `shaders/trail.vert`):
   `a_prevPos/Flags`, `a_p0Pos/BirthMs/Vel/Flags`, `a_p1Pos/BirthMs/Vel/Flags`,
   `a_nextPos/Flags` at fixed locations 0-11. Uniforms: `proj`, `nowMs`,
   `fadeMs`, `widthPx`, `miterLimit`, `speedRef`. Output is premultiplied
   alpha. Should stay minimal per the sparse-config goal.
-- Stock damage padding is `widthPx / 2 * miterLimit + 1px` around the node
-  extent; the declared-padding setting below replaces it for shaders that
-  draw further out.
-- Prefab shader-utility imports, following the pattern Hyprland core already
-  uses for its own shaders (`passthru.frag`/`quad.frag` as base includes,
-  `blur1`→`blur2`→`blurfinish` as a chained pipeline): geometry helpers,
-  fade-curve helpers, provided as example/base files shader authors can
-  `#include` rather than reimplement.
+- **Damage padding** around the node extent = stock extent
+  (`widthPx / 2 * miterLimit + 1px`) + shader-declared padding + config
+  `damage_padding`, all additive. A shader declares its extra reach with
+  `#pragma hyprtail padding <px>` (0..4096) in either stage or any include;
+  the largest declaration of the active program counts, so a shared shader
+  file carries its own extent. The pragma line is removed before compiling;
+  any other `#pragma hyprtail` is an error. (Not recognized inside block
+  comments specially: a commented-out pragma line still counts.)
 - **Damage padding is config, not derived.** Automatic damage-bound detection
   via static shader analysis was considered and explicitly ruled out, not
   deferred: a blur radius or width tied to a uniform (velocity, a user
@@ -352,22 +392,58 @@ this file states the decision and marks what's still a placeholder.
   truncated at plugin load (current session only) and capped at 256 KiB. The
   config and shader loader report missing files and invalid values through
   the same path.
-- **Failure policy:** shader compile/link failure or GL resource failure
-  disables the trail (cleared once, then idle) and reports the GLSL/GL error;
+- **Failure policy:** a user shader that fails to load, preprocess, compile
+  or link is reported (GLSL errors mapped to `file:line`) and the previous
+  working program stays (the built-in one if there never was one); only a
+  failing built-in shader or a GL resource failure disables the trail
+  (cleared once, then idle) and reports the error;
   failure to install the cursor hook keeps the plugin running with degraded
   draw order (trail above the cursor) and says so; no exception escapes into
   Hyprland from any callback (hook, listeners, pass element draw, deferred
   callbacks, init/exit).
 
-- Deliberately sparse by design (§1). Expected surface: shader path/import,
-  padding value (§5), buffer size (§3). Resist adding plugin-level settings
-  for anything a shader import could instead provide.
-- Packaging format (single file vs. shader + separate config) not decided,
-  explicitly non-blocking for implementation start.
-- **Unconfirmed:** whether `addConfigValue`/`getConfigValue` (plugin config
-  API) behave the same under Hyprland's Lua config provider (0.55+) as they
-  did under classic hyprlang. Worth checking early, this is core plumbing,
-  not a peripheral detail.
+- Deliberately sparse by design (§1). Resist adding plugin-level settings for
+  anything a shader import could instead provide.
+- **Config API: V2 only.** `HyprlandAPI::addConfigValueV2` with
+  `Config::Values::C{Float,Int,Bool,String}Value` works with both the Lua and
+  the legacy hyprlang provider. V1 `addConfigValue`/`getConfigValue` only
+  work with the legacy provider at the pin (settled, see NOTES).
+- **Settings** (`src/Config.*`; defaults are the built-in behavior):
+
+  | Key | Type | Default | Range |
+  |---|---|---|---|
+  | `fade_ms` | float | 500 | 1..60000 |
+  | `width` | float, logical px | 8 | 0..512 |
+  | `capacity` | int, points | 64 | 2..4096 |
+  | `min_spacing` | float, logical px | 2 | 0..256 |
+  | `miter_limit` | float, half-widths | 2 | 1..16 |
+  | `interpolate_warps` | bool | false | |
+  | `damage_padding` | float, px, additive (§5) | 0 | 0..4096 |
+  | `vertex_shader` | path | `""` = built-in | |
+  | `fragment_shader` | path | `""` = built-in | |
+
+  Lua: `hl.config({ plugin = { hyprtail = { fade_ms = 400 } } })`;
+  hyprlang: `plugin:hyprtail:fade_ms = 400`. Shader paths: `~` and `~/`
+  expand to `$HOME`; relative paths resolve against the directory of the
+  config file in use (covers `-c`), falling back to `$XDG_CONFIG_HOME/hypr`
+  or `~/.config/hypr`. Out-of-range values are rejected by Hyprland's parser
+  and re-checked by the plugin (report under `config:<key>`, previous value
+  kept).
+- **Hot reload:** values are re-read on every `config.reloaded`. Scalars
+  apply immediately. A capacity change resizes the ring keeping the newest
+  points; the VBO is reallocated at the next draw. Shaders are re-read and
+  preprocessed on the main thread and compiled at the next render (GL
+  current), which the plugin schedules; a failure is reported (key re-armed
+  every attempt) and the previous working program stays, or the built-in one
+  if there never was one. Shader files and their includes are also watched
+  (inotify on their directories, on Hyprland's event loop), so saving a
+  shader reloads it without a Hyprland reload.
+- **First-parse caveat:** `hl.plugin.load` only records the path; plugins
+  load after the config parse, so the very first parse sees
+  `plugin.hyprtail.*` as unknown keys. Not visible at startup (the queued
+  error bar is cancelled and the config re-parsed during init, before any
+  frame). Visible whenever the keys are set but the plugin isn't loaded
+  (manual `hyprctl plugin load` before loading it, after an unload).
 
 ## 10. Testing
 
@@ -403,17 +479,16 @@ this file states the decision and marks what's still a placeholder.
 ## 12. Open items carried into implementation (non-blocking)
 
 - Hyprland pin chosen (`efb5099`, v0.56.2, §2); re-pin on every host package upgrade
-- Buffer size default (§3)
+- Default tuning of the settings (§9): capacity, fade duration, width,
+  spacing; current defaults are the original placeholders
 - **Blocked: direct scanout verification (§4).** mpv fullscreen with
   `render:direct_scanout = 1` fails with a Wayland protocol error
   (`wl_surface.attach` invalid arguments) with or without the plugin loaded,
   so it's a Hyprland or mpv issue, not the plugin's. Browsers never qualify
   (not opaque, subsurfaces). "No trail over scanned-out windows" remains
   unverified until some client actually gets direct-scanned.
-- `addConfigValue`/`getConfigValue` under the Lua config provider (§9)
-- Config packaging format (§9)
-- Fade duration and curve (§4), placeholders 500ms linear; time-based fade
-  built in stage 4, pending confirmation
+- Fade curve (§4): linear in the stock shader (`ht_life`); duration is the
+  `fade_ms` setting. Other curves are a shader/prefab matter, not a setting
 - Rotated outputs untested (§8)
 - Color management: trail colors bypass core's `getConvertedColor`, may be
   off on HDR/color-managed outputs

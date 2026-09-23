@@ -1,5 +1,6 @@
 #version 300 es
-// hyprtail trail vertex shader (stock ribbon).
+// hyprtail trail vertex shader (stock ribbon). Also the reference for
+// user-supplied vertex shaders: copy it and change what you like.
 //
 // Contract for trail vertex shaders (built-in and user-supplied):
 //
@@ -23,11 +24,11 @@
 //   location 11 a_nextFlags  float  node i+2 flags
 // Positions are global layout (logical) pixels. Flags bit 0 set = this node
 // starts a new segment, i.e. it is NOT connected to the node before it
-// (workspace switch, trail start). At the ends of the trail, prev/next are
-// copies of the end node (zero-length direction), handle that as "no
+// (workspace switch, warp, trail start). At the ends of the trail, prev/next
+// are copies of the end node (zero-length direction), handle that as "no
 // neighbor".
 //
-// Uniforms:
+// Uniforms (any you don't declare are simply not set):
 //   mat3  proj        global layout px -> clip space, per monitor
 //   float nowMs       current time, same reference as the birth times; only
 //                     age = nowMs - birthMs is meaningful
@@ -36,13 +37,27 @@
 //   float miterLimit  max miter length, in half-widths
 //   float speedRef    speed (px/ms) mapped to the fast end of the palette
 //
+// Outputs: whatever the paired fragment shader reads. The stock fragment
+// shader reads v_side (-1..1 across the ribbon), v_alpha and v_color; a
+// custom vertex shader used with the stock fragment shader must write them.
+//
 // Damage: the plugin damages the node extent padded by
-// widthPx / 2 * miterLimit + 1px. Geometry outside that is not guaranteed to
-// be repainted (SPEC section 5).
+// widthPx / 2 * miterLimit + 1px, plus any padding declared with
+//   #pragma hyprtail padding <px>
+// in this file, the fragment shader or their includes (the largest one
+// counts), plus plugin:hyprtail:damage_padding from the config. Anything
+// drawn outside that is not guaranteed to be repainted.
+//
+// Includes: #include "hyprtail/<name>" pulls in a built-in prefab, any other
+// path is relative to this file. Each file is included once. Keep files
+// ASCII.
 //
 // Instances that should draw nothing are moved outside clip space.
 
 precision highp float;
+
+#include "hyprtail/ribbon.glsl"
+#include "hyprtail/fade.glsl"
 
 uniform mat3  proj;
 uniform float nowMs;
@@ -68,45 +83,11 @@ out float v_side;  // -1 .. +1 across the ribbon
 out float v_alpha; // time-based fade
 out vec3  v_color;
 
-const float EPS = 1e-3;
-
-bool startsSegment(float flags) {
-    return mod(flags, 2.0) >= 1.0;
-}
-
 void collapse() {
-    gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+    gl_Position = ht_collapsedPosition();
     v_side      = 0.0;
     v_alpha     = 0.0;
     v_color     = vec3(0.0);
-}
-
-// Unit direction from a to b, or fallback if they (nearly) coincide.
-// Both instances meeting at a joint compute the joint's directions through
-// this same function from the same inputs, so they get the same corners.
-vec2 dirBetween(vec2 a, vec2 b, vec2 fallback) {
-    vec2  d = b - a;
-    float l = length(d);
-    return l > EPS ? d / l : fallback;
-}
-
-// Offset of the +side corner at a joint between an incoming and an outgoing
-// direction, for half-width hw. Miter join, length clamped to
-// miterLimit * hw (sharp turns get a pulled-in corner instead of a spike).
-vec2 jointOffset(vec2 dirIn, vec2 dirOut, float hw) {
-    vec2  nIn  = vec2(-dirIn.y, dirIn.x);
-    vec2  nOut = vec2(-dirOut.y, dirOut.x);
-    vec2  m    = nIn + nOut;
-    float ml   = length(m);
-    if (ml < EPS) // full reversal: no usable miter
-        return nOut * hw;
-    m /= ml;
-    float c = dot(m, nOut); // cos(half the turn angle)
-    return m * (hw / max(c, 1.0 / miterLimit));
-}
-
-float life(float age) {
-    return clamp(1.0 - age / fadeMs, 0.0, 1.0);
 }
 
 void main() {
@@ -114,34 +95,33 @@ void main() {
     float age1 = nowMs - a_p1BirthMs;
 
     // Not connected, or both ends fully faded: nothing to draw.
-    if (startsSegment(a_p1Flags) || (age0 >= fadeMs && age1 >= fadeMs)) {
+    if (ht_startsSegment(a_p1Flags) || (ht_faded(age0, fadeMs) && ht_faded(age1, fadeMs))) {
         collapse();
         return;
     }
 
     // Coincident endpoints: degenerate segment, nothing to draw. Its
     // neighbors fall back to their own direction at this joint.
-    vec2 seg = a_p1Pos - a_p0Pos;
-    if (length(seg) < EPS) {
+    if (length(a_p1Pos - a_p0Pos) < HT_EPS) {
         collapse();
         return;
     }
 
-    vec2  dir     = dirBetween(a_p0Pos, a_p1Pos, vec2(1.0, 0.0));
-    vec2  dirPrev = startsSegment(a_p0Flags) ? dir : dirBetween(a_prevPos, a_p0Pos, dir);
-    vec2  dirNext = startsSegment(a_nextFlags) ? dir : dirBetween(a_p1Pos, a_nextPos, dir);
+    vec2  dir     = ht_dirBetween(a_p0Pos, a_p1Pos, vec2(1.0, 0.0));
+    vec2  dirPrev = ht_startsSegment(a_p0Flags) ? dir : ht_dirBetween(a_prevPos, a_p0Pos, dir);
+    vec2  dirNext = ht_startsSegment(a_nextFlags) ? dir : ht_dirBetween(a_p1Pos, a_nextPos, dir);
 
     bool  atEnd = (gl_VertexID & 1) == 1;
     float side  = float((gl_VertexID >> 1) & 1) * 2.0 - 1.0;
 
     // Width tapers with age, like the alpha: the tail thins as it fades and
     // pinches to a point at a fully faded end.
-    float life0 = life(age0);
-    float life1 = life(age1);
+    float life0 = ht_life(age0, fadeMs);
+    float life1 = ht_life(age1, fadeMs);
     float hw0   = 0.5 * widthPx * life0;
     float hw1   = 0.5 * widthPx * life1;
 
-    vec2  offset = atEnd ? jointOffset(dir, dirNext, hw1) : jointOffset(dirPrev, dir, hw0);
+    vec2  offset = atEnd ? ht_jointOffset(dir, dirNext, hw1, miterLimit) : ht_jointOffset(dirPrev, dir, hw0, miterLimit);
     vec2  pos    = (atEnd ? a_p1Pos : a_p0Pos) + offset * side;
 
     float speed = clamp(length(atEnd ? a_p1Vel : a_p0Vel) / speedRef, 0.0, 1.0);

@@ -57,6 +57,10 @@ class CTrailRing {
     // between them, no velocity across the gap).
     void               insert(const SVec2f& pos, double nowMs, bool segmentStart);
 
+    // New capacity, keeping the newest min(size(), capacity) nodes in order.
+    // Bumps the generation.
+    void               resize(size_t capacity);
+
     size_t             size() const;
     size_t             capacity() const;
     bool               empty() const;
