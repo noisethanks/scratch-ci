@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -28,7 +30,9 @@ class CTrailGpu {
   public:
     // No GL in the destructor: destroy() runs explicitly while the context is
     // current (PLUGIN_EXIT).
-    bool   ensure(size_t ringCapacity); // creates VAO/VBO on first call
+    // Creates VAO/VBO on first call. On failure returns false with a
+    // description in error, and leaves nothing allocated.
+    bool   ensure(size_t ringCapacity, std::string& error);
     void   upload(const CTrailRing& ring);
     void   destroy();
 
@@ -46,7 +50,6 @@ class CTrailGpu {
 
 struct STrailShader {
     SP<CShader> shader;
-    bool        initFailed  = false;
     GLint       locRadius   = -1;
     GLint       locSpeedRef = -1;
     GLint       locNowMs    = -1;
@@ -60,8 +63,9 @@ struct SMonitorTrailState {
 // One trail: buffer, GPU mirror, shader, per-monitor damage state. Written
 // per instance so the idle/presence slot (SPEC §7) can be a second one.
 struct STrailInstance {
-    STrailInstance(size_t capacity, double fadeMs_) : ring(capacity), fadeMs(fadeMs_) {}
+    STrailInstance(std::string name_, size_t capacity, double fadeMs_) : name(std::move(name_)), ring(capacity), fadeMs(fadeMs_) {}
 
+    std::string                                                name; // for diagnostics keys, e.g. "shader:<name>"
     CTrailRing                                                 ring;
     CTrailGpu                                                  gpu;
     STrailShader                                               shader;
@@ -71,7 +75,20 @@ struct STrailInstance {
     float                                                      speedRefPxPerMs = 2.F; // speed mapped to full red
 
     std::unordered_map<Monitor::CMonitor*, SMonitorTrailState> monState;
+
+    // Set after an unrecoverable failure (shader, GL resources, exception).
+    // The lifecycle then treats the trail as fully faded: no inserts, the last
+    // box is damaged once to clear it, no element, idle. Stays set until the
+    // plugin is reloaded.
+    bool disabled = false;
 };
+
+// Reports ERR under key and disables the instance. Safe from any context; GPU
+// resources are released separately (trailReleaseGpu) where GL is current.
+void trailDisable(STrailInstance& inst, std::string_view key, std::string_view message);
+
+// GL context must be current (inside a render, or PLUGIN_EXIT).
+void trailReleaseGpu(STrailInstance& inst);
 
 // Bounds padded by radiusPx, logical, monitor-local.
 CBox trailBoxLocal(const STrailInstance& inst, const STrailBounds& bounds, const Vector2D& monitorPos);
@@ -103,10 +120,13 @@ class CTrailPassElement : public IPassElement {
     }
 
   private:
+    void            drawInternal();
+
     STrailInstance* m_inst = nullptr;
     CBox            m_boxLocal;
     double          m_nowMs = 0.0;
 };
 
 // Call from PLUGIN_EXIT, after removing queued elements, GL context current.
+// Releases GPU resources and per-monitor state.
 void trailInstanceCleanup(STrailInstance& inst);

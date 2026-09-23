@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <format>
+#include <optional>
 
 #include <render/Renderer.hpp>
 #include <render/OpenGL.hpp>
@@ -9,7 +11,10 @@
 #include <output/Monitor.hpp>
 #include <debug/log/Logger.hpp>
 
+#include "Diagnostics.hpp"
+
 using namespace Render;
+using hyprtail::diag::eSeverity;
 using namespace Render::GL;
 
 // ---------------------------------------------------------------- shader
@@ -91,16 +96,90 @@ void main() {
 }
 )glsl";
 
-static bool ensureShader(STrailShader& s) {
+// CShader::createProgram logs compile/link errors and discards the text
+// (Shader.cpp logShaderError), so compile and link once ourselves to capture
+// the GLSL log. Raw shader/program objects only, no cached GL state touched.
+// Returns the error description, or nullopt if both stages compile and link.
+static std::optional<std::string> glslCheck(const std::string& vert, const std::string& frag) {
+    const auto infoLog = [](GLuint obj, bool program) {
+        GLint len = 0;
+        program ? glGetProgramiv(obj, GL_INFO_LOG_LENGTH, &len) : glGetShaderiv(obj, GL_INFO_LOG_LENGTH, &len);
+        std::string log(std::max(len, 0), '\0');
+        if (len > 0)
+            program ? glGetProgramInfoLog(obj, len, &len, log.data()) : glGetShaderInfoLog(obj, len, &len, log.data());
+        log.resize(std::max(len, 0));
+        while (!log.empty() && (log.back() == '\0' || log.back() == '\n' || log.back() == ' '))
+            log.pop_back();
+        return log.empty() ? std::string{"(no log from driver)"} : log;
+    };
+
+    const auto compile = [&](GLenum type, const std::string& src, std::string& error) -> GLuint {
+        const GLuint sh = glCreateShader(type);
+        if (!sh) {
+            error = "glCreateShader failed";
+            return 0;
+        }
+        const char* p = src.c_str();
+        glShaderSource(sh, 1, &p, nullptr);
+        glCompileShader(sh);
+        GLint ok = GL_FALSE;
+        glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
+        if (ok != GL_TRUE) {
+            error = infoLog(sh, false);
+            glDeleteShader(sh);
+            return 0;
+        }
+        return sh;
+    };
+
+    std::string  error;
+    const GLuint vs = compile(GL_VERTEX_SHADER, vert, error);
+    if (!vs)
+        return std::format("vertex shader failed to compile:\n{}", error);
+
+    const GLuint fs = compile(GL_FRAGMENT_SHADER, frag, error);
+    if (!fs) {
+        glDeleteShader(vs);
+        return std::format("fragment shader failed to compile:\n{}", error);
+    }
+
+    std::optional<std::string> result;
+    const GLuint               prog = glCreateProgram();
+    if (!prog)
+        result = "glCreateProgram failed";
+    else {
+        glAttachShader(prog, vs);
+        glAttachShader(prog, fs);
+        glLinkProgram(prog);
+        GLint ok = GL_FALSE;
+        glGetProgramiv(prog, GL_LINK_STATUS, &ok);
+        if (ok != GL_TRUE)
+            result = std::format("shader program failed to link:\n{}", infoLog(prog, true));
+        glDetachShader(prog, vs);
+        glDetachShader(prog, fs);
+        glDeleteProgram(prog);
+    }
+
+    glDeleteShader(vs);
+    glDeleteShader(fs);
+    return result;
+}
+
+static bool ensureShader(STrailInstance& inst) {
+    auto& s = inst.shader;
     if (s.shader)
         return true;
-    if (s.initFailed)
-        return false;
 
+    if (const auto error = glslCheck(TRAIL_VERT_SRC, TRAIL_FRAG_SRC)) {
+        trailDisable(inst, "shader:" + inst.name, std::format("{} trail disabled: {}", inst.name, *error));
+        return false;
+    }
+
+    // silent: failures are ours to report; core's error bar would label them
+    // "Screen shader parser", which is misleading.
     auto shader = makeShared<CShader>();
-    if (!shader->createProgram(TRAIL_VERT_SRC, TRAIL_FRAG_SRC, /*dynamic=*/true, /*silent=*/false)) {
-        Log::logger->log(Log::ERR, "[hyprtail-s4] trail shader compilation failed");
-        s.initFailed = true;
+    if (!shader->createProgram(TRAIL_VERT_SRC, TRAIL_FRAG_SRC, /*dynamic=*/true, /*silent=*/true)) {
+        trailDisable(inst, "shader:" + inst.name, std::format("{} trail disabled: shader passed a standalone compile/link check but CShader::createProgram failed", inst.name));
         return false;
     }
 
@@ -112,7 +191,7 @@ static bool ensureShader(STrailShader& s) {
     s.locFadeMs     = glGetUniformLocation(prog, "fadeMs");
     s.shader        = shader;
 
-    Log::logger->log(Log::INFO, "[hyprtail-s4] trail shader compiled ok, program id={}", prog);
+    Log::logger->log(Log::INFO, "[hyprtail] {} trail shader compiled ok, program id={}", inst.name, prog);
     return true;
 }
 
@@ -120,7 +199,7 @@ static bool ensureShader(STrailShader& s) {
 
 static constexpr GLsizei NODE_STRIDE = sizeof(SGpuNode);
 
-bool CTrailGpu::ensure(size_t ringCapacity) {
+bool CTrailGpu::ensure(size_t ringCapacity, std::string& error) {
     if (m_vao)
         return true;
 
@@ -130,10 +209,14 @@ bool CTrailGpu::ensure(size_t ringCapacity) {
     glGenVertexArrays(1, &m_vao);
     glGenBuffers(1, &m_vbo);
     if (!m_vao || !m_vbo) {
-        Log::logger->log(Log::ERR, "[hyprtail-s4] failed to create trail VAO/VBO");
+        error = std::format("glGenVertexArrays/glGenBuffers returned no name (vao={}, vbo={})", m_vao, m_vbo);
         destroy();
         return false;
     }
+
+    // Drain stale errors so the check after glBufferData is ours. This hides
+    // errors core left behind; only core's debug builds look at those.
+    while (glGetError() != GL_NO_ERROR) {}
 
     glBindVertexArray(m_vao);
     // Raw bind is fine at efb5099: there is no array-buffer cache, core binds
@@ -141,6 +224,13 @@ bool CTrailGpu::ensure(size_t ringCapacity) {
     // CHyprOpenGLImpl::bindArrayBuffer(); use that if the pin moves past it.
     glBindBuffer(GL_ARRAY_BUFFER, m_vbo);
     glBufferData(GL_ARRAY_BUFFER, m_vboNodes * NODE_STRIDE, nullptr, GL_DYNAMIC_DRAW);
+    if (const GLenum err = glGetError(); err != GL_NO_ERROR) {
+        glBindVertexArray(0);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        error = std::format("glBufferData for {} bytes failed, GL error 0x{:x}", m_vboNodes * NODE_STRIDE, err);
+        destroy();
+        return false;
+    }
 
     // Set 0 = node i at offset 0, set 1 = node i + 1 at offset one stride.
     for (GLuint set = 0; set < 2; ++set) {
@@ -218,13 +308,21 @@ CBox trailBoxLocal(const STrailInstance& inst, const STrailBounds& b, const Vect
     return CBox{b.x1 - r - monitorPos.x, b.y1 - r - monitorPos.y, (b.x2 - b.x1) + 2.0 * r, (b.y2 - b.y1) + 2.0 * r};
 }
 
-void trailInstanceCleanup(STrailInstance& inst) {
+void trailDisable(STrailInstance& inst, std::string_view key, std::string_view message) {
+    inst.disabled = true;
+    hyprtail::diag::report(eSeverity::ERR, key, message);
+}
+
+void trailReleaseGpu(STrailInstance& inst) {
     inst.gpu.destroy();
     if (inst.shader.shader) {
         inst.shader.shader->destroy();
         inst.shader.shader.reset();
     }
-    inst.shader.initFailed = false;
+}
+
+void trailInstanceCleanup(STrailInstance& inst) {
+    trailReleaseGpu(inst);
     inst.monState.clear();
 }
 
@@ -237,13 +335,31 @@ std::optional<CBox> CTrailPassElement::boundingBox() {
 }
 
 std::vector<UP<IPassElement>> CTrailPassElement::draw() {
+    // Called from the pass render inside Hyprland: nothing may escape.
+    const bool ok = hyprtail::diag::guard("trail-draw", [this] { drawInternal(); });
+    if (!ok && m_inst) {
+        m_inst->disabled = true;
+        trailReleaseGpu(*m_inst); // GL is current here
+    }
+    return {};
+}
+
+void CTrailPassElement::drawInternal() {
     auto&      rd      = g_pHyprRenderer->m_renderData;
     const auto monitor = rd.pMonitor.lock();
-    if (!m_inst || !monitor || m_inst->ring.empty())
-        return {};
+    if (!m_inst || m_inst->disabled || !monitor || m_inst->ring.empty())
+        return;
 
-    if (!ensureShader(m_inst->shader) || !m_inst->gpu.ensure(m_inst->ring.capacity()))
-        return {};
+    if (!ensureShader(*m_inst)) {
+        trailReleaseGpu(*m_inst);
+        return;
+    }
+
+    if (std::string error; !m_inst->gpu.ensure(m_inst->ring.capacity(), error)) {
+        trailDisable(*m_inst, "gl:" + m_inst->name, std::format("{} trail disabled: GL resource creation failed: {}", m_inst->name, error));
+        trailReleaseGpu(*m_inst);
+        return;
+    }
 
     m_inst->gpu.upload(m_inst->ring);
 
@@ -284,6 +400,4 @@ std::vector<UP<IPassElement>> CTrailPassElement::draw() {
 
     g_pHyprOpenGL->scissor(nullptr);
     glBindVertexArray(0);
-
-    return {};
 }

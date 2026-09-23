@@ -119,7 +119,8 @@ this file states the decision and marks what's still a placeholder.
   fullscreen client eligible for direct scanout bypasses composition entirely
   (`renderMonitor` returns before any render stage), so no trail draws over
   it. Software cursors block direct scanout, so this only applies with
-  hardware cursors.
+  hardware cursors. **Derived from source, not yet observed** (verification
+  blocked, see §12).
 - **GL state goes through Hyprland's caches** (`useShader`, `scissor`,
   `blend`; `bindArrayBuffer` where the pinned version has it), never raw `glUseProgram`/`glEnable`/`glBindBuffer`
   on cached state. Draw only inside the element's damage rects.
@@ -287,6 +288,21 @@ this file states the decision and marks what's still a placeholder.
 
 ## 9. Config surface
 
+- **Errors surface as notifications, never only as log lines**
+  (`debug:disable_logs` defaults to true). Every failure goes through one
+  reporting path (`src/Diagnostics.*`): Hyprland log always; notification plus
+  a full entry in `$XDG_STATE_HOME/hyprtail/errors.log` (fallback
+  `~/.local/state/hyprtail/errors.log`) once per key per load. The file is
+  truncated at plugin load (current session only) and capped at 256 KiB. The
+  config and shader loader report missing files and invalid values through
+  the same path.
+- **Failure policy:** shader compile/link failure or GL resource failure
+  disables the trail (cleared once, then idle) and reports the GLSL/GL error;
+  failure to install the cursor hook keeps the plugin running with degraded
+  draw order (trail above the cursor) and says so; no exception escapes into
+  Hyprland from any callback (hook, listeners, pass element draw, deferred
+  callbacks, init/exit).
+
 - Deliberately sparse by design (§1). Expected surface: shader path/import,
   padding value (§5), buffer size (§3). Resist adding plugin-level settings
   for anything a shader import could instead provide.
@@ -332,6 +348,12 @@ this file states the decision and marks what's still a placeholder.
 
 - Hyprland pin chosen (`efb5099`, v0.56.2, §2); re-pin on every host package upgrade
 - Buffer size default (§3)
+- **Blocked: direct scanout verification (§4).** mpv fullscreen with
+  `render:direct_scanout = 1` fails with a Wayland protocol error
+  (`wl_surface.attach` invalid arguments) with or without the plugin loaded,
+  so it's a Hyprland or mpv issue, not the plugin's. Browsers never qualify
+  (not opaque, subsurfaces). "No trail over scanned-out windows" remains
+  unverified until some client actually gets direct-scanned.
 - `addConfigValue`/`getConfigValue` under the Lua config provider (§9)
 - Config packaging format (§9)
 - Fade duration and curve (§4), placeholders 500ms linear; time-based fade

@@ -20,7 +20,10 @@
 #include <helpers/Color.hpp>
 #include <debug/log/Logger.hpp>
 
+#include "Diagnostics.hpp"
 #include "TrailPassElement.hpp"
+
+using hyprtail::diag::eSeverity;
 
 static HANDLE s_handle = nullptr;
 
@@ -102,10 +105,14 @@ static void runTrailLifecycle(const PHLMONITOR& pMonitor) {
     // locked.
     const bool locked = sessionLocked();
 
+    // A disabled instance (shader/GL failure, exception) behaves like a fully
+    // faded one: no inserts, last box cleared once below, then idle.
+    const bool off = locked || inst.disabled;
+
     // Sample once per frame, insert only on real movement, and only while the
     // cursor is visible: touch/tablet can move a hidden pointer. An existing
     // trail keeps fading after a hide since the fallback still runs.
-    if (!locked && g_pHyprRenderer->shouldRenderCursor()) {
+    if (!off && g_pHyprRenderer->shouldRenderCursor()) {
         const Vector2D cursorPos = Pointer::mgr()->position();
         const SVec2f   pos{sc<float>(cursorPos.x), sc<float>(cursorPos.y)};
         if (inst.ring.empty() || inst.ring.newest().posPx != pos)
@@ -116,7 +123,7 @@ static void runTrailLifecycle(const PHLMONITOR& pMonitor) {
     // frame (addDamage keeps frames coming). When the last point has faded,
     // cur is empty: prev is damaged once to clear it, then nothing, and the
     // monitor goes idle.
-    const auto visible = locked ? std::nullopt : inst.ring.visibleBounds(nowMs, inst.fadeMs);
+    const auto visible = off ? std::nullopt : inst.ring.visibleBounds(nowMs, inst.fadeMs);
     const CBox cur     = visible ? trailBoxLocal(inst, *visible, pMonitor->m_position) : CBox{};
 
     auto&      ms = inst.monState[pMonitor.get()];
@@ -130,6 +137,15 @@ static void runTrailLifecycle(const PHLMONITOR& pMonitor) {
     g_pHyprRenderer->m_renderPass.add(makeUnique<CTrailPassElement>(&inst, cur, nowMs));
 }
 
+// Lifecycle behind an exception guard. Runs inside a render (GL current), so
+// on failure the instance is disabled and its GPU resources released here.
+static void runTrailLifecycleGuarded(const PHLMONITOR& pMonitor, std::string_view where) {
+    if (!hyprtail::diag::guard(where, [&] { runTrailLifecycle(pMonitor); })) {
+        s_motionTrail->disabled = true;
+        trailReleaseGpu(*s_motionTrail);
+    }
+}
+
 // Draw order (SPEC §7): renderMonitor adds the cursor texture inside
 // renderSoftwareCursorsFor (Renderer.cpp:2216), after windows, layers, lock
 // screen, IME and overlays, and before the DPMS overlay and RENDER_LAST_MOMENT.
@@ -141,16 +157,22 @@ static void hkRenderSoftwareCursorsFor(void* thisptr, PHLMONITOR pMonitor, const
                                        bool forceRender) {
     // Screenshare calls this with fake damage (ScreenshareFrame.cpp:312, :355).
     // Whether the trail shows up in recordings is undecided, stay out for now.
+    // Only our part is guarded; the original always runs, unwrapped, so
+    // Hyprland's own behavior is unchanged.
     if (!screencopy && g_pHyprRenderer && s_motionTrail && pMonitor && !pMonitor->isMirror()) {
-        auto& mf = s_monFrame[pMonitor.get()];
-        runTrailLifecycle(pMonitor);
-        mf.handledSerial = mf.renderSerial;
+        hyprtail::diag::guard("cursor-hook", [&] {
+            // Marked handled even if the lifecycle fails below, so the fallback
+            // doesn't rerun a failing lifecycle in the same render.
+            auto& mf         = s_monFrame[pMonitor.get()];
+            mf.handledSerial = mf.renderSerial;
+            runTrailLifecycleGuarded(pMonitor, "cursor-hook-lifecycle");
+        });
     }
 
     (*(origRenderSoftwareCursorsFor)s_cursorHook->m_original)(thisptr, pMonitor, now, damage, overridePos, screencopy, forceRender);
 }
 
-static void onRenderStage(eRenderStage stage) {
+static void onRenderStageInternal(eRenderStage stage) {
     if ((stage != RENDER_BEGIN && stage != RENDER_LAST_MOMENT) || !g_pHyprRenderer || !s_motionTrail)
         return;
 
@@ -170,14 +192,18 @@ static void onRenderStage(eRenderStage stage) {
 
     ++s_frames;
     if (s_frames <= 3 || s_frames % 600 == 0)
-        Log::logger->log(Log::INFO, "[hyprtail-s4] render #{} monitor={} via {}", s_frames, pMonitor->m_name,
+        Log::logger->log(Log::INFO, "[hyprtail] render #{} monitor={} via {}", s_frames, pMonitor->m_name,
                          mf.handledSerial == mf.renderSerial ? "cursor hook" : "last-moment fallback");
 
     // Fallback: the cursor hook didn't run for this render, i.e. the cursor is
     // hidden (Renderer.cpp:2212). Nothing is drawn above us then, so order
     // doesn't matter (except the DPMS overlay, rare).
     if (mf.handledSerial != mf.renderSerial)
-        runTrailLifecycle(pMonitor);
+        runTrailLifecycleGuarded(pMonitor, "last-moment-lifecycle");
+}
+
+static void onRenderStage(eRenderStage stage) {
+    hyprtail::diag::guard("render-stage", [stage] { onRenderStageInternal(stage); });
 }
 
 // Hardware cursors: moving the cursor plane may not trigger a render at all
@@ -185,8 +211,8 @@ static void onRenderStage(eRenderStage stage) {
 // Damage a small box at the new point on each monitor it touches so a render
 // happens, where the normal lifecycle then samples and damages the trail.
 // Position is already updated when this fires (InputManager.cpp:155, :269).
-static void onMouseMove() {
-    if (!s_motionTrail || sessionLocked())
+static void onMouseMoveInternal() {
+    if (!s_motionTrail || s_motionTrail->disabled || sessionLocked())
         return;
 
     const Vector2D pos = Pointer::mgr()->position();
@@ -208,6 +234,11 @@ static void onMouseMove() {
     }
 }
 
+static void onMouseMove() {
+    if (!hyprtail::diag::guard("mouse-move", [] { onMouseMoveInternal(); }) && s_motionTrail)
+        s_motionTrail->disabled = true; // not in a render: GPU freed at unload
+}
+
 // Extract function address from a non-virtual member function pointer.
 // Uses the Itanium C++ ABI layout: {ptr, adj}; virtual bit is the LSB of ptr.
 template <typename T>
@@ -219,33 +250,68 @@ static void* pmf_address(T pmf) {
     static_assert(sizeof(T) == sizeof(PMF), "unexpected PMF size");
     auto rep = std::bit_cast<PMF>(pmf);
     if (rep.ptr & 0x01)
-        throw std::runtime_error("[hyprtail-s4] unexpected virtual function pointer");
+        return nullptr; // virtual: no fixed address to hook
     return reinterpret_cast<void*>(rep.ptr);
 }
 
-APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
-    s_handle = handle;
+// Undo everything PLUGIN_INIT set up. Also used when init fails: Hyprland then
+// ejects the plugin without calling PLUGIN_EXIT (PluginSystem.cpp:147-150,
+// :122-125) and dlcloses it, so listeners and deferred callbacks pointing
+// into this .so must be gone before the exception leaves PLUGIN_INIT.
+static void teardown() noexcept {
+    hyprtail::diag::guard("teardown", [] {
+        // Stop callbacks first so nothing queues new elements during teardown.
+        s_mouseMoveListener.reset();
+        s_renderStageListener.reset();
+        if (s_cursorHook) {
+            s_cursorHook->unhook();
+            HyprlandAPI::removeFunctionHook(s_handle, s_cursorHook);
+            s_cursorHook = nullptr;
+        }
 
-    // ABI version check — must match the compositor we were compiled against.
-    const std::string compositorHash = __hyprland_api_get_hash();
-    const std::string clientHash     = __hyprland_api_get_client_hash();
-    if (compositorHash != clientHash) {
-        HyprlandAPI::addNotification(handle, "[hyprtail-s4] version mismatch — recompile against running Hyprland", CHyprColor{1.0f, 0.2f, 0.2f, 1.0f}, 8000);
-        throw std::runtime_error(std::format("[hyprtail-s4] version mismatch: built={} running={}", clientHash, compositorHash));
-    }
+        // Remove any queued elements before GPU resources go away so draw()
+        // can't run against a deleted VAO/program.
+        if (g_pHyprRenderer)
+            g_pHyprRenderer->m_renderPass.removeAllOfType("CTrailPassElement");
 
-    s_epoch       = Time::steadyNow();
-    s_motionTrail = makeUnique<STrailInstance>(TRAIL_CAPACITY, TRAIL_FADE_MS);
+        if (s_motionTrail) {
+            trailInstanceCleanup(*s_motionTrail);
+            s_motionTrail.reset();
+        }
+        s_monFrame.clear();
+    });
 
-    // Cursor hook for draw order. The host (LTO) build calls this out of line
-    // from renderMonitor, so the hook fires there too.
+    // Last: cancels any pending deferred notification into this .so.
+    hyprtail::diag::shutdown();
+}
+
+// Hook for draw order. On failure the plugin keeps running in listener-only
+// mode (RENDER_LAST_MOMENT runs the lifecycle every render, trail above the
+// cursor) and says so, rather than refusing to load.
+static void installCursorHook() {
     void* target = pmf_address(&Pointer::CPointerManager::renderSoftwareCursorsFor);
-    s_cursorHook = HyprlandAPI::createFunctionHook(handle, target, reinterpret_cast<void*>(&hkRenderSoftwareCursorsFor));
-    if (!s_cursorHook || !s_cursorHook->hook()) {
-        HyprlandAPI::addNotification(handle, "[hyprtail-s4] hook failed", CHyprColor{1.0f, 0.2f, 0.2f, 1.0f}, 5000);
-        s_motionTrail.reset();
-        throw std::runtime_error("[hyprtail-s4] could not hook renderSoftwareCursorsFor");
+    if (target)
+        s_cursorHook = HyprlandAPI::createFunctionHook(s_handle, target, reinterpret_cast<void*>(&hkRenderSoftwareCursorsFor));
+
+    if (s_cursorHook && s_cursorHook->hook())
+        return;
+
+    if (s_cursorHook) {
+        HyprlandAPI::removeFunctionHook(s_handle, s_cursorHook);
+        s_cursorHook = nullptr;
     }
+
+    hyprtail::diag::report(eSeverity::WARN, "hook",
+                           "could not hook CPointerManager::renderSoftwareCursorsFor. Running degraded: the trail draws above the cursor instead of beneath it.");
+}
+
+static PLUGIN_DESCRIPTION_INFO pluginInit() {
+    s_epoch       = Time::steadyNow();
+    s_motionTrail = makeUnique<STrailInstance>("trail", TRAIL_CAPACITY, TRAIL_FADE_MS);
+
+    // Cursor hook for draw order. The host (LTO) build calls the target out of
+    // line from renderMonitor, so the hook fires there too.
+    installCursorHook();
 
     // Serial at RENDER_BEGIN, fallback lifecycle at RENDER_LAST_MOMENT. The
     // cursor hook isn't called while the cursor is hidden
@@ -254,8 +320,8 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
 
     s_mouseMoveListener = Event::bus()->m_events.input.mouse.move.listen([](Vector2D, Event::SCallbackInfo&) { onMouseMove(); });
 
-    Log::logger->log(Log::INFO, "[hyprtail-s4] loaded — trail beneath cursor");
-    HyprlandAPI::addNotification(handle, "[hyprtail-s4] loaded — trail should draw beneath the cursor", CHyprColor{0.2f, 1.0f, 0.2f, 1.0f}, 5000);
+    Log::logger->log(Log::INFO, "[hyprtail] loaded, hook {}", s_cursorHook ? "active" : "unavailable (degraded draw order)");
+    HyprlandAPI::addNotification(s_handle, "[hyprtail] loaded", CHyprColor{0.2f, 1.0f, 0.2f, 1.0f}, 3000);
 
     // Damage the primary monitor to schedule an immediate first frame.
     if (g_pHyprRenderer) {
@@ -263,33 +329,40 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
             g_pHyprRenderer->damageMonitor(m);
     }
 
-    return {"hyprtail-stage4", "Stage 4: time-based fade, trail beneath the cursor", "dev", "0.1"};
+    return {"hyprtail", "Cursor trail (stage 4 harness: faded dots beneath the cursor)", "dev", "0.1"};
+}
+
+APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
+    s_handle = handle;
+    hyprtail::diag::init(handle);
+
+    // Refusing to load is done by throwing. Hyprland only catches
+    // std::exception from init (PluginSystem.cpp:121), so nothing else may
+    // leave, and teardown must run first. Failures here notify synchronously:
+    // the deferred path would be cancelled by teardown before it runs.
+    try {
+        // ABI version check — must match the compositor we were compiled against.
+        const std::string compositorHash = __hyprland_api_get_hash();
+        const std::string clientHash     = __hyprland_api_get_client_hash();
+        if (compositorHash != clientHash)
+            throw std::runtime_error(std::format("version mismatch, recompile against the running Hyprland (built={} running={})", clientHash, compositorHash));
+
+        return pluginInit();
+    } catch (const std::exception& e) {
+        HyprlandAPI::addNotification(handle, std::format("[hyprtail] failed to load: {}", e.what()), CHyprColor{1.0f, 0.2f, 0.2f, 1.0f}, 15000);
+        teardown();
+        throw;
+    } catch (...) {
+        HyprlandAPI::addNotification(handle, "[hyprtail] failed to load: unknown exception", CHyprColor{1.0f, 0.2f, 0.2f, 1.0f}, 15000);
+        teardown();
+        throw std::runtime_error("[hyprtail] unknown exception in init");
+    }
 }
 
 APICALL EXPORT void PLUGIN_EXIT() {
-    Log::logger->log(Log::INFO, "[hyprtail-s4] unloading after {} renders", s_frames);
+    hyprtail::diag::guard("exit", [] { Log::logger->log(Log::INFO, "[hyprtail] unloading after {} renders", s_frames); });
     s_frames = 0;
-
-    // Stop callbacks first so nothing queues new elements during teardown.
-    s_mouseMoveListener.reset();
-    s_renderStageListener.reset();
-    if (s_cursorHook) {
-        s_cursorHook->unhook();
-        s_cursorHook = nullptr;
-    }
-
-    // Remove any queued elements before GPU resources go away so draw()
-    // can't run against a deleted VAO/program.
-    if (g_pHyprRenderer)
-        g_pHyprRenderer->m_renderPass.removeAllOfType("CTrailPassElement");
-
-    if (s_motionTrail) {
-        trailInstanceCleanup(*s_motionTrail);
-        s_motionTrail.reset();
-    }
-    s_monFrame.clear();
-
-    Log::logger->log(Log::INFO, "[hyprtail-s4] unloaded");
+    teardown();
 }
 
 APICALL EXPORT std::string PLUGIN_API_VERSION() {
