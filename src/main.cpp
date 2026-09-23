@@ -1,14 +1,15 @@
-#include <bit>
 #include <chrono>
 #include <cmath>
+#include <optional>
 #include <stdexcept>
 #include <string>
-#include <unordered_map>
 
 #include <plugins/PluginAPI.hpp>
-#include <plugins/HookSystem.hpp>
 #include <render/Renderer.hpp>
 #include <pointer/PointerManager.hpp>
+#include <managers/SessionLockManager.hpp>
+#include <event/EventBus.hpp>
+#include <output/Monitor.hpp>
 #include <helpers/memory/Memory.hpp>
 #include <helpers/time/Time.hpp>
 #include <helpers/Color.hpp>
@@ -16,15 +17,11 @@
 
 #include "TrailPassElement.hpp"
 
-static HANDLE             s_handle = nullptr;
-static CFunctionHook*     g_hook   = nullptr;
+static HANDLE s_handle = nullptr;
 
-typedef void (*origRenderSoftwareCursorsFor)(
-    void*, PHLMONITOR, const Time::steady_tp&, CRegion&,
-    std::optional<Vector2D>, bool, bool);
-
-// Placeholder, SPEC §3 buffer size is still TBD.
+// Placeholders, SPEC §3 buffer size and the fade duration/curve are still TBD.
 static constexpr size_t TRAIL_CAPACITY = 64;
+static constexpr double TRAIL_FADE_MS  = 500.0;
 
 // Logical box -> pixel damage box covering every pixel the draw can touch,
 // including partially covered edge pixels: scale, then floor left/top and
@@ -38,90 +35,89 @@ static CBox outwardPixelBox(const CBox& logical, double scale) {
     return CBox{x1, y1, x2 - x1, y2 - y1};
 }
 
-static uint64_t                s_hookFires = 0;
-static Time::steady_tp         s_epoch;
-static UP<STrailInstance>      s_motionTrail;
+static uint64_t            s_frames = 0;
+static Time::steady_tp     s_epoch;
+static UP<STrailInstance>  s_motionTrail;
+static CHyprSignalListener s_renderStageListener;
 
-// Damage prev and current trail box on this monitor when the trail changed
-// since this monitor last looked (SPEC §6 union).
-static void damageTrail(STrailInstance& inst, const PHLMONITOR& pMonitor, CRegion& damage) {
-    auto& ms = inst.monState[pMonitor.get()];
-    if (ms.seenGeneration == inst.ring.generation())
-        return;
-
-    const CBox cur = inst.ring.empty() ? CBox{} : trailBoxLocal(inst, pMonitor->m_position);
-
-    for (const auto& box : {ms.prevBoxLocal, cur}) {
-        if (box.empty())
-            continue;
-
-        const CBox px = outwardPixelBox(box, pMonitor->m_scale);
-
-        // Current frame: beginRender already captured the damage ring, so
-        // this frame only sees damage added to the render region directly.
-        damage.add(px);
-
-        // Damage ring: lands in m_current, captured by the next frame's
-        // transaction and rotated into history, so older swapchain buffers
-        // (age > 1) also repaint this box. Also schedules that frame.
-        pMonitor->addDamage(px);
-    }
-
-    ms.prevBoxLocal   = cur;
-    ms.seenGeneration = inst.ring.generation();
+static double              msSinceEpoch(const Time::steady_tp& tp) {
+    return std::chrono::duration<double, std::milli>(tp - s_epoch).count();
 }
 
-void hkRenderSoftwareCursorsFor(void* thisptr, PHLMONITOR pMonitor,
-                                 const Time::steady_tp& now, CRegion& damage,
-                                 std::optional<Vector2D> overridePos,
-                                 bool screencopy, bool forceRender) {
-    (*(origRenderSoftwareCursorsFor)g_hook->m_original)(
-        thisptr, pMonitor, now, damage, overridePos, screencopy, forceRender);
-
-    // Screenshare calls this with fake damage (ScreenshareFrame.cpp:316, :359).
-    // Whether the trail shows up in recordings is undecided, stay out for now.
-    if (!g_pHyprRenderer || !s_motionTrail || screencopy)
+// Damage one logical, monitor-local box on this monitor: into the current
+// frame's render damage and into the monitor's damage ring.
+static void damageLocalBox(const PHLMONITOR& pMonitor, const CBox& boxLocal) {
+    if (boxLocal.empty() || !boxLocal.overlaps(CBox{{}, pMonitor->m_size}))
         return;
 
-    ++s_hookFires;
-    if (s_hookFires <= 3 || s_hookFires % 60 == 0)
-        LOG(Log::INFO, "[hyprtail-s3] hook fire #{} monitor={}", s_hookFires, pMonitor->m_name);
+    const CBox px = outwardPixelBox(boxLocal, pMonitor->m_scale);
 
-    auto& inst = *s_motionTrail;
+    // Current frame: beginRender already captured the damage ring, so this
+    // frame only sees damage added to the render region directly.
+    g_pHyprRenderer->m_renderData.damage.add(px);
 
-    // Sample once per frame, insert only on real movement. With several
-    // monitors the first hook of the frame inserts, the rest see no change.
-    const Vector2D cursorPos = Pointer::mgr()->position();
-    const SVec2f   pos{sc<float>(cursorPos.x), sc<float>(cursorPos.y)};
-    if (inst.ring.empty() || inst.ring.newest().posPx != pos) {
-        const float nowMs = std::chrono::duration<float, std::milli>(now - s_epoch).count();
-        inst.ring.insert(pos, nowMs);
-    }
-
-    damageTrail(inst, pMonitor, damage);
-
-    // Still added every frame the trail is on this monitor (known issue,
-    // deferred to stage 4); simplify() drops it when outside the damage.
-    if (inst.ring.empty())
-        return;
-
-    const CBox boxLocal = trailBoxLocal(inst, pMonitor->m_position);
-    if (!boxLocal.overlaps(CBox{{}, pMonitor->m_size}))
-        return;
-
-    g_pHyprRenderer->m_renderPass.add(makeUnique<CTrailPassElement>(&inst, boxLocal));
+    // Damage ring: lands in m_current, captured by the next frame's
+    // transaction and rotated into history, so older swapchain buffers
+    // (age > 1) also repaint this box. Also schedules that next frame
+    // (Monitor.cpp:1128-1129), which is what keeps a fading trail animating
+    // with the cursor stationary.
+    pMonitor->addDamage(px);
 }
 
-// Extract function address from a non-virtual member function pointer.
-// Uses the Itanium C++ ABI layout: {ptr, adj}; virtual bit is the LSB of ptr.
-template <typename T>
-static void* pmf_address(T pmf) {
-    struct PMF { uintptr_t ptr; ptrdiff_t adj; };
-    static_assert(sizeof(T) == sizeof(PMF), "unexpected PMF size");
-    auto rep = std::bit_cast<PMF>(pmf);
-    if (rep.ptr & 0x01)
-        throw std::runtime_error("[hyprtail-s3] unexpected virtual function pointer");
-    return reinterpret_cast<void*>(rep.ptr);
+// Runs once per renderMonitor, with or without a visible cursor
+// (Renderer.cpp:2296), after the cursor and before endRender(), so pass
+// elements and render damage added here still reach this frame.
+static void onRenderLastMoment(const PHLMONITOR& pMonitor) {
+    auto&        inst  = *s_motionTrail;
+    const double nowMs = msSinceEpoch(Time::steadyNow());
+
+    // Core keeps drawing the cursor over the lock screen: the cursor is
+    // rendered after renderLockscreen with no lock check (Renderer.cpp:2245
+    // vs :2282-2285). This deliberately diverges from core: no trail while
+    // locked.
+    const bool locked = g_pSessionLockManager && g_pSessionLockManager->isSessionLocked();
+
+    // Sample once per frame, insert only on real movement, and only while the
+    // cursor is visible: touch/tablet can move a hidden pointer. An existing
+    // trail keeps fading after a hide since this listener still runs.
+    if (!locked && g_pHyprRenderer->shouldRenderCursor()) {
+        const Vector2D cursorPos = Pointer::mgr()->position();
+        const SVec2f   pos{sc<float>(cursorPos.x), sc<float>(cursorPos.y)};
+        if (inst.ring.empty() || inst.ring.newest().posPx != pos)
+            inst.ring.insert(pos, nowMs);
+    }
+
+    // Lifecycle (SPEC §6): while anything is visible, damage prev ∪ cur every
+    // frame (addDamage keeps frames coming). When the last point has faded,
+    // cur is empty: prev is damaged once to clear it, then nothing, and the
+    // monitor goes idle.
+    const auto visible = locked ? std::nullopt : inst.ring.visibleBounds(nowMs, inst.fadeMs);
+    const CBox cur     = visible ? trailBoxLocal(inst, *visible, pMonitor->m_position) : CBox{};
+
+    auto&      ms = inst.monState[pMonitor.get()];
+    damageLocalBox(pMonitor, ms.prevBoxLocal);
+    damageLocalBox(pMonitor, cur);
+    ms.prevBoxLocal = cur;
+
+    if (cur.empty() || !cur.overlaps(CBox{{}, pMonitor->m_size}))
+        return;
+
+    g_pHyprRenderer->m_renderPass.add(makeUnique<CTrailPassElement>(&inst, cur, nowMs));
+}
+
+static void onRenderStage(eRenderStage stage) {
+    if (stage != RENDER_LAST_MOMENT || !g_pHyprRenderer || !s_motionTrail)
+        return;
+
+    const auto pMonitor = g_pHyprRenderer->m_renderData.pMonitor.lock();
+    if (!pMonitor || pMonitor->isMirror())
+        return;
+
+    ++s_frames;
+    if (s_frames <= 3 || s_frames % 600 == 0)
+        LOG(Log::INFO, "[hyprtail-s4] render stage #{} monitor={}", s_frames, pMonitor->m_name);
+
+    onRenderLastMoment(pMonitor);
 }
 
 APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
@@ -132,29 +128,24 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     const std::string clientHash     = __hyprland_api_get_client_hash();
     if (compositorHash != clientHash) {
         HyprlandAPI::addNotification(handle,
-            "[hyprtail-s3] version mismatch — recompile against running Hyprland",
+            "[hyprtail-s4] version mismatch — recompile against running Hyprland",
             CHyprColor{1.0f, 0.2f, 0.2f, 1.0f}, 8000);
         throw std::runtime_error(
-            std::format("[hyprtail-s3] version mismatch: built={} running={}",
+            std::format("[hyprtail-s4] version mismatch: built={} running={}",
                         clientHash, compositorHash));
     }
 
-    void* target = pmf_address(&Pointer::CPointerManager::renderSoftwareCursorsFor);
-    g_hook = HyprlandAPI::createFunctionHook(handle, target,
-                                              reinterpret_cast<void*>(&hkRenderSoftwareCursorsFor));
-    if (!g_hook || !g_hook->hook()) {
-        HyprlandAPI::addNotification(handle,
-            "[hyprtail-s3] hook failed",
-            CHyprColor{1.0f, 0.2f, 0.2f, 1.0f}, 5000);
-        throw std::runtime_error("[hyprtail-s3] could not hook renderSoftwareCursorsFor");
-    }
-
     s_epoch       = Time::steadyNow();
-    s_motionTrail = makeUnique<STrailInstance>(TRAIL_CAPACITY);
+    s_motionTrail = makeUnique<STrailInstance>(TRAIL_CAPACITY, TRAIL_FADE_MS);
 
-    LOG(Log::INFO, "[hyprtail-s3] loaded — stage 3 row of dots");
+    // Replaces the stage 1-3 hook on renderSoftwareCursorsFor, which isn't
+    // called while the cursor is hidden (Renderer.cpp:2282-2285, 3055-3057)
+    // and would freeze a trail mid-fade.
+    s_renderStageListener = Event::bus()->m_events.render.stage.listen([](eRenderStage stage) { onRenderStage(stage); });
+
+    LOG(Log::INFO, "[hyprtail-s4] loaded — stage 4 time-based fade");
     HyprlandAPI::addNotification(handle,
-        "[hyprtail-s3] loaded — row of dots should follow cursor",
+        "[hyprtail-s4] loaded — dots should fade out over time",
         CHyprColor{0.2f, 1.0f, 0.2f, 1.0f}, 5000);
 
     // Damage the primary monitor to schedule an immediate first frame.
@@ -163,17 +154,15 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
             g_pHyprRenderer->damageMonitor(m);
     }
 
-    return {"hyprtail-stage3", "Stage 3: row of dots from the point buffer as instanced vertex data", "dev", "0.1"};
+    return {"hyprtail-stage4", "Stage 4: time-based fade, damage follows the trail lifecycle", "dev", "0.1"};
 }
 
 APICALL EXPORT void PLUGIN_EXIT() {
-    LOG(Log::INFO, "[hyprtail-s3] unloading after {} hook fires", s_hookFires);
-    s_hookFires = 0;
+    LOG(Log::INFO, "[hyprtail-s4] unloading after {} render stages", s_frames);
+    s_frames = 0;
 
-    if (g_hook) {
-        g_hook->unhook();
-        g_hook = nullptr;
-    }
+    // Stop callbacks first so nothing queues new elements during teardown.
+    s_renderStageListener.reset();
 
     // Remove any queued elements before GPU resources go away so draw()
     // can't run against a deleted VAO/program.
@@ -185,7 +174,7 @@ APICALL EXPORT void PLUGIN_EXIT() {
         s_motionTrail.reset();
     }
 
-    LOG(Log::INFO, "[hyprtail-s3] unloaded");
+    LOG(Log::INFO, "[hyprtail-s4] unloaded");
 }
 
 APICALL EXPORT std::string PLUGIN_API_VERSION() {

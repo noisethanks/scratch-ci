@@ -4,13 +4,13 @@
 
 CTrailRing::CTrailRing(size_t capacity) : m_nodes(std::max<size_t>(capacity, 1)) {}
 
-void CTrailRing::insert(const SVec2f& pos, float nowMs) {
+void CTrailRing::insert(const SVec2f& pos, double nowMs) {
     SVec2f velocity{};
     if (m_count > 0) {
-        const auto& prev = newest();
-        const float dt   = nowMs - prev.birthTimeMs;
-        if (dt > 0.F)
-            velocity = {(pos.x - prev.posPx.x) / dt, (pos.y - prev.posPx.y) / dt};
+        const auto&  prev = newest();
+        const double dt   = nowMs - prev.birthTimeMs;
+        if (dt > 0.0)
+            velocity = {static_cast<float>((pos.x - prev.posPx.x) / dt), static_cast<float>((pos.y - prev.posPx.y) / dt)};
     }
 
     m_nodes[m_head] = SCursorNode{.posPx = pos, .birthTimeMs = nowMs, .velocity = velocity};
@@ -39,29 +39,36 @@ uint64_t CTrailRing::generation() const {
     return m_generation;
 }
 
-void CTrailRing::orderedCopy(std::vector<SCursorNode>& out) const {
+void CTrailRing::orderedCopy(std::vector<SGpuNode>& out, double refMs) const {
     out.clear();
     out.reserve(m_count);
 
     const size_t cap    = m_nodes.size();
     const size_t oldest = (m_head + cap - m_count) % cap;
-    for (size_t i = 0; i < m_count; ++i)
-        out.push_back(m_nodes[(oldest + i) % cap]);
+    for (size_t i = 0; i < m_count; ++i) {
+        const auto& n = m_nodes[(oldest + i) % cap];
+        out.push_back(SGpuNode{.posPx = n.posPx, .birthMs = static_cast<float>(n.birthTimeMs - refMs), .velocity = n.velocity});
+    }
 }
 
-STrailBounds CTrailRing::bounds() const {
-    const auto&  first = newest();
-    STrailBounds b{first.posPx.x, first.posPx.y, first.posPx.x, first.posPx.y};
+std::optional<STrailBounds> CTrailRing::visibleBounds(double nowMs, double fadeMs) const {
+    std::optional<STrailBounds> b;
 
-    // Order doesn't matter for an extent, walk the valid slots directly.
-    const size_t cap    = m_nodes.size();
-    const size_t oldest = (m_head + cap - m_count) % cap;
+    const size_t                cap = m_nodes.size();
     for (size_t i = 0; i < m_count; ++i) {
-        const auto& p = m_nodes[(oldest + i) % cap].posPx;
-        b.x1          = std::min(b.x1, p.x);
-        b.y1          = std::min(b.y1, p.y);
-        b.x2          = std::max(b.x2, p.x);
-        b.y2          = std::max(b.y2, p.y);
+        const auto& n = m_nodes[(m_head + cap - 1 - i) % cap]; // newest first
+        if (nowMs - n.birthTimeMs >= fadeMs)
+            break;
+
+        const auto& p = n.posPx;
+        if (!b)
+            b = STrailBounds{p.x, p.y, p.x, p.y};
+        else {
+            b->x1 = std::min(b->x1, p.x);
+            b->y1 = std::min(b->y1, p.y);
+            b->x2 = std::max(b->x2, p.x);
+            b->y2 = std::max(b->y2, p.y);
+        }
     }
 
     return b;

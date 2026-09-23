@@ -16,11 +16,15 @@ hl.bind(mainMod .. " + L", hl.dsp.exec_cmd(terminal),
 
 hl.config({
     cursor ={
-        no_hardware_cursors= 1
+        no_hardware_cursors= 1,
+        hide_on_key_press = 1
     },
     input = {
         follow_mouse                = 1,
     },
+    debug ={
+        disable_logs = false
+    }
 })
 
 hl.on("hyprland.start", function()

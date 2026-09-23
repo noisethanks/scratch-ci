@@ -36,12 +36,25 @@ this file states the decision and marks what's still a placeholder.
 
 - CPU-side circular buffer, single source of truth:
   ```
-  struct SCursorNode {
-      glm::vec2 posPx;      // global layout pixel space, NOT per-monitor normalized
-      float birthTimeMs;
-      glm::vec2 velocity;   // precomputed once per node on write, not per-pixel in shader
+  struct SCursorNode {            // CPU layout
+      SVec2f posPx;               // global layout pixel space, NOT per-monitor normalized
+      double birthTimeMs;         // ms since plugin load
+      SVec2f velocity;            // px/ms, precomputed once per node on write, not per-pixel in shader
+  };
+  struct SGpuNode {               // GPU (VBO) layout, 20 bytes, static_assert'd
+      SVec2f posPx;
+      float  birthMs;             // relative to a reference chosen at upload
+      SVec2f velocity;
   };
   ```
+  (`SVec2f` is a plain two-float struct; glm isn't a dependency.)
+- **Timestamp precision:** CPU birth times are double. A float of ms since
+  load stops resolving 1ms after ~4.6h (2^24 ms). The ordered copy (below) is
+  where CPU layout converts to GPU layout: birth times are rebased on a
+  reference (the newest node's birth time at upload) and narrowed to float, so
+  uploaded values stay small. The shader gets `nowMs` relative to the same
+  reference; only `age = nowMs - birthMs` is meaningful. Upload is gated on
+  the buffer changing, not every frame; `nowMs` is a per-frame uniform.
 - **Coordinate space: global layout pixels** (`CPointerManager::position()`,
   confirmed monitor-independent). Converted to each monitor's local space only
   at render time, inside that monitor's own pass element. Storing
@@ -69,6 +82,25 @@ this file states the decision and marks what's still a placeholder.
 
 - Own `CShader` program(s), own render-pass element, registered per monitor
   (matches how `hypr-dynamic-cursors` and core's own pass elements work).
+- **Per-frame driver: `Event::bus()->m_events.render.stage` at
+  `RENDER_LAST_MOMENT`**, not a function hook. It fires once per
+  `renderMonitor`, cursor visible or not, after the cursor and before
+  `endRender()`, so elements and render damage added there reach the current
+  frame. The earlier hook on `CPointerManager::renderSoftwareCursorsFor` isn't
+  called while the cursor is hidden, which would freeze a trail mid-fade.
+  Mirror monitors are skipped. `cursor:no_hardware_cursors = 1` is still
+  required: with a hardware cursor, motion from idle damages nothing, so no
+  frame starts to sample it.
+- **GL state goes through Hyprland's caches** (`useShader`, `scissor`,
+  `bindArrayBuffer`, `blend`), never raw `glUseProgram`/`glEnable`/`glBindBuffer`
+  on cached state. Draw only inside the element's damage rects.
+- **Blending is premultiplied alpha** (`GL_ONE, GL_ONE_MINUS_SRC_ALPHA`); the
+  fragment shader outputs `vec4(rgb * a, a)`.
+- **VBO attribute layout (ribbon-ready):** the same VBO is bound twice, node i
+  at offset 0 (locations 0-2) and node i + 1 at offset one stride (locations
+  3-5), all divisor 1, so instance i is the segment node[i] -> node[i+1] and
+  `gl_VertexID` picks the corner. The VBO carries one trailing copy of the
+  newest node so the i + 1 set never reads past uploaded data.
 - Point buffer is VBO-resident, not a uniform array, settled by the ribbon
   geometry technique below, which needs `next`/`prev` as real vertex
   attributes, not something expressible as a fixed-size uniform array.
@@ -85,8 +117,9 @@ this file states the decision and marks what's still a placeholder.
   position-along-ribbon (`uv.x`). Position-based fade makes fade duration
   vary with cursor speed (a fast flick compresses more history into less
   visible length and fades faster in wall-clock time than a slow drift),
-  which doesn't match the stated "fade time" requirement. Leaning decision,
-  not yet built and confirmed against the validation ladder.
+  which doesn't match the stated "fade time" requirement. Built in stage 4
+  (placeholders: 500ms, linear), pending confirmation on the validation
+  ladder.
 
 ## 5. Shader extensibility contract
 
@@ -124,6 +157,18 @@ this file states the decision and marks what's still a placeholder.
   smear/ghost behind the moving trail. The plugin must retain the previous
   frame's box specifically to compute this union, it isn't derivable from
   the current frame alone.
+- **Lifecycle, not motion, drives damage.** The trail keeps changing after the
+  cursor stops (points age and fade). While any point is visible, every frame
+  damages prev ∪ cur and schedules the next frame, cursor stationary or not.
+  Bounds cover only still-visible points, so the box shrinks as the tail
+  fades. When the last point has faded, the final box is damaged once to
+  clear it, then no more damage, no scheduled frames, and no pass element:
+  an idle trail must not keep the compositor rendering.
+- Damage boxes are rounded **outward** in pixel space (floor left/top, ceil
+  right/bottom after scaling), not `CBox::round()`, so partially covered edge
+  pixels of fractional/antialiased geometry are always included. Each box goes
+  into both the current frame's render damage and `CMonitor::addDamage` (the
+  damage ring), so swapchain buffers with age > 1 repaint it too.
 
 ## 7. Edge cases: teleportation, hide, idle
 
@@ -143,13 +188,18 @@ this file states the decision and marks what's still a placeholder.
   **Unconfirmed, blocks implementation of this distinction:** whether
   `onMouseWarp`'s event payload carries enough context to tell these cases
   apart, or just that a warp happened.
-- **Cursor hide:** hook the same underlying state `pointer_hidden` (found
-  earlier in the `SHADER_POINTER*` cluster) is derived from, not that
-  uniform itself (not using `screen_shader` anymore). Two cases: idle-timeout
-  hide needs no special handling, the trail has almost certainly already
-  faded to nothing under normal time-based decay by the time inactivity
-  triggers a hide. Hide-on-keypress needs explicit handling, it can fire
-  mid-motion and catch a fresh, unfaded trail.
+- **Cursor hide:** keyed on `IHyprRenderer::shouldRenderCursor()` (same
+  state core uses to skip drawing the cursor). While hidden, **no new points
+  are inserted** (touch/tablet can move a hidden pointer), but the per-frame
+  driver keeps running, so an existing trail finishes fading normally. This
+  covers hide-on-keypress mid-motion as well as the idle-timeout case.
+- **Session lock:** no trail while the session is locked (no inserts, no
+  element; the last box is damaged once to clear). This deliberately differs
+  from core, which keeps drawing the cursor over the lock screen.
+- **Draw order, must be resolved before this is usable:** the trail currently
+  draws above the cursor (and above the DPMS fade-to-black overlay, minor).
+  The newest point covers the pointer tip, which defeats the purpose of making
+  a small cursor easier to find. Needs the trail below the cursor.
 - **Idle/presence effects (stationary but visible cursor):** structurally out
   of reach of the ribbon pipeline as designed, it needs ≥2 distinct recent
   points to compute a tangent from; a stationary cursor stops producing new
@@ -246,8 +296,11 @@ this file states the decision and marks what's still a placeholder.
 - Buffer size default (§3)
 - `addConfigValue`/`getConfigValue` under the Lua config provider (§9)
 - Config packaging format (§9)
-- Time-based vs. position-based fade, leaning time-based, not yet built and
-  confirmed (§4)
+- Fade duration and curve (§4), placeholders 500ms linear; time-based fade
+  built in stage 4, pending confirmation
+- Trail draws above the cursor, must move below it before this is usable (§7)
+- Color management: trail colors bypass core's `getConvertedColor`, may be
+  off on HDR/color-managed outputs
 - Cursor-warp tooling reliability for scripting the validation ladder
   (`hyprctl eval hl.dsp.movecursor` field names unconfirmed, `wlrctl`
   targeting issue unresolved), not urgent, manual drag testing has been

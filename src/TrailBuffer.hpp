@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 struct SVec2f {
@@ -11,20 +12,29 @@ struct SVec2f {
     bool  operator==(const SVec2f&) const = default;
 };
 
-// One trail point (SPEC §3). The ordered copy of these is uploaded to the VBO
-// as-is, so field order and offsets are part of the vertex attribute contract
-// (see CTrailGpu). If the CPU and GPU layouts ever diverge (e.g. birthTimeMs
-// precision, stage 4), CTrailRing::orderedCopy is where the conversion goes.
+// One trail point, CPU side (SPEC §3). Timestamps are double: a float of ms
+// since plugin load stops resolving 1ms after ~4.6h (2^24 ms).
 struct SCursorNode {
     SVec2f posPx;       // global layout (logical) pixels, not per-monitor
-    float  birthTimeMs; // ms since plugin load
+    double birthTimeMs; // ms since plugin load
     SVec2f velocity;    // px/ms, relative to the previous node; zero for the first
 };
 
-static_assert(offsetof(SCursorNode, posPx) == 0);
-static_assert(offsetof(SCursorNode, birthTimeMs) == 8);
-static_assert(offsetof(SCursorNode, velocity) == 12);
-static_assert(sizeof(SCursorNode) == 20);
+// One trail point as uploaded to the VBO. Field order and offsets are the
+// vertex attribute contract (see CTrailGpu). birthMs is relative to a
+// reference time chosen at upload, so it stays small and precise as float;
+// the shader gets nowMs relative to the same reference, only the difference
+// (age = nowMs - birthMs) is meaningful.
+struct SGpuNode {
+    SVec2f posPx;
+    float  birthMs;
+    SVec2f velocity;
+};
+
+static_assert(offsetof(SGpuNode, posPx) == 0);
+static_assert(offsetof(SGpuNode, birthMs) == 8);
+static_assert(offsetof(SGpuNode, velocity) == 12);
+static_assert(sizeof(SGpuNode) == 20);
 
 // Axis-aligned extent of node positions, global layout pixels.
 struct STrailBounds {
@@ -37,22 +47,26 @@ class CTrailRing {
   public:
     explicit CTrailRing(size_t capacity);
 
-    void               insert(const SVec2f& pos, float nowMs);
+    void               insert(const SVec2f& pos, double nowMs);
 
     size_t             size() const;
     size_t             capacity() const;
     bool               empty() const;
     const SCursorNode& newest() const; // requires !empty()
 
-    // Bumped on every insert. Consumers (damage, upload) compare against the
-    // generation they last saw instead of diffing contents.
-    uint64_t     generation() const;
+    // Bumped on every insert. Gates VBO uploads.
+    uint64_t generation() const;
 
-    // Oldest -> newest, rebuilt from scratch into out. Stateless projection of
-    // the ring, not a second source of truth.
-    void         orderedCopy(std::vector<SCursorNode>& out) const;
+    // Oldest -> newest, rebuilt from scratch into out, converting to the GPU
+    // layout with birth times relative to refMs. Stateless projection of the
+    // ring, not a second source of truth.
+    void orderedCopy(std::vector<SGpuNode>& out, double refMs) const;
 
-    STrailBounds bounds() const; // requires !empty()
+    // Extent of nodes still visible at nowMs (age < fadeMs), nullopt if none.
+    // Birth times are monotonic in insertion order, so the visible nodes are
+    // always the newest ones: walks newest -> oldest and stops at the first
+    // faded node.
+    std::optional<STrailBounds> visibleBounds(double nowMs, double fadeMs) const;
 
   private:
     std::vector<SCursorNode> m_nodes;
