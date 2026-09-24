@@ -55,6 +55,14 @@ this file states the decision and marks what's still a placeholder.
   `hyprpm enable hyprtail`. **After `hyprpm update`, run `hyprpm reload -f`**
   (or restart Hyprland): `hyprpm update` builds the new version but does not
   reload a plugin that's already loaded, so the old build keeps running.
+- **One instance only:** Hyprland only refuses loading the same *path*
+  twice, so two builds from different paths (e.g. a manual `out/hyprtail.so`
+  and hyprpm's copy) would both load and fight over the config keys and
+  hooks. At init the plugin looks for another loaded plugin named `hyprtail`
+  (or an older `hyprtail-stageN`) and, if found, refuses to load before
+  touching anything: one error notification naming the other instance's
+  path and how to unload it (`hyprpm disable hyprtail` for hyprpm's copy,
+  else `hyprctl plugin unload <path>`).
 - **Build revision:** the Makefile writes `out/rev.hpp` (git short hash,
   `-dirty` for uncommitted changes; rewritten only when it changes). It shows
   in the "loaded" notification, the log, the plugin version string and the

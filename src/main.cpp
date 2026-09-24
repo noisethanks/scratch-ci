@@ -9,6 +9,8 @@
 
 #include <plugins/PluginAPI.hpp>
 #include <plugins/HookSystem.hpp>
+#include <plugins/PluginSystem.hpp>
+#include <config/lua/ConfigManager.hpp>
 #include <render/Renderer.hpp>
 #include <pointer/PointerManager.hpp>
 #include <pointer/PointerController.hpp>
@@ -592,8 +594,63 @@ static PLUGIN_DESCRIPTION_INFO pluginInit() {
     return {"hyprtail", "Cursor trail (ribbon, beneath the cursor)", "dev", "0.1-" HYPRTAIL_REV};
 }
 
+// Another hyprtail already loaded (a different build from another path: the
+// plugin system only refuses the same path twice, PluginSystem.cpp:72-75).
+// Two copies would fight over the config keys and hooks. Loaded plugins are
+// CPlugin entries (PluginSystem.hpp:14-25) listed by getAllPlugins()
+// (:45, PluginSystem.cpp:260-265). Our own entry is already in the list
+// during PLUGIN_INIT, with m_path/m_handle set but m_name still empty (it's
+// filled from our return value afterwards, :128-131), so it's excluded by
+// handle. Older builds named themselves "hyprtail-stageN".
+static const CPlugin* findOtherInstance(HANDLE self) {
+    if (!g_pPluginSystem)
+        return nullptr;
+    for (const CPlugin* p : g_pPluginSystem->getAllPlugins()) {
+        if (!p || p->m_handle == self)
+            continue;
+        if (p->m_name == "hyprtail" || p->m_name.starts_with("hyprtail-stage"))
+            return p;
+    }
+    return nullptr;
+}
+
+// Whether this load comes from the Lua config's hl.plugin.load list. Hyprland
+// then shows its own "failed to load" notification with our exception text
+// (PluginSystem.cpp:229-230); loads through hyprctl or hyprpm show nothing
+// (HyprCtl.cpp:1824-1840 only returns the error; hyprpm ignores the reply,
+// hyprpm PluginManager.cpp loadUnloadPlugin), so we notify ourselves there.
+// The Lua manager's m_registeredPlugins is public (lua/ConfigManager.hpp:131);
+// the legacy one keeps its list private, so there we can't tell and notify.
+static bool loadedFromLuaConfig(HANDLE self) {
+    if (!Config::mgr() || Config::mgr()->type() != Config::CONFIG_LUA || !g_pPluginSystem)
+        return false;
+    const CPlugin* me = g_pPluginSystem->getPluginByHandle(self);
+    if (!me)
+        return false;
+    const auto& list = static_cast<Config::Lua::CConfigManager*>(Config::mgr().get())->m_registeredPlugins;
+    return std::ranges::find(list, me->m_path) != list.end();
+}
+
 APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     s_handle = handle;
+
+    // Checked before anything else, including diag::init, which would
+    // truncate the other instance's errors.log. Nothing is registered yet, so
+    // no teardown is needed: one notification, then a std::exception, which
+    // is how a plugin refuses to load (Hyprland catches it and ejects the
+    // plugin, PluginSystem.cpp:113-126).
+    if (const CPlugin* other = findOtherInstance(handle)) {
+        const bool  viaHyprpm = other->m_path.starts_with("/var/cache/hyprpm/");
+        const auto  msg       = std::format("another hyprtail ({} {}) is already loaded from {}. Unload it first ({}), then load this one.", other->m_name,
+                                            other->m_version, other->m_path,
+                                            viaHyprpm ? "hyprpm disable hyprtail, or hyprctl plugin unload " + other->m_path : "hyprctl plugin unload " + other->m_path);
+        // Exactly one notification: Hyprland's own for config loads, ours
+        // otherwise.
+        if (!loadedFromLuaConfig(handle))
+            HyprlandAPI::addNotification(handle, "[hyprtail] not loaded: " + msg, CHyprColor{1.0f, 0.2f, 0.2f, 1.0f}, 15000);
+        throw std::runtime_error("[hyprtail] " + msg);
+    }
+
     hyprtail::diag::init(handle);
 
     // Refusing to load is done by throwing. Hyprland only catches
