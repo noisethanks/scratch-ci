@@ -43,6 +43,15 @@ hl.config({
 --             damage_padding    = 0,
 --             vertex_shader     = "",  -- "" = built-in; relative = next to this file; ~ works
 --             fragment_shader   = "",
+--             color_slow        = "rgba(1a66ffff)",  -- sRGB, color-managed
+--             color_fast        = "rgba(ff1a1aff)",
+--             idle_enabled         = false,
+--             idle_delay_ms        = 500,
+--             idle_duration_ms     = 1500,  -- 0 = until the pointer moves
+--             idle_radius          = 24,
+--             idle_when_hidden     = false,
+--             idle_vertex_shader   = "",
+--             idle_fragment_shader = "",
 --         },
 --     },
 -- })

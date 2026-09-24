@@ -36,10 +36,21 @@
 //   float widthPx     full ribbon width at age 0, logical px
 //   float miterLimit  max miter length, in half-widths
 //   float speedRef    speed (px/ms) mapped to the fast end of the palette
+//   vec4  colorSlow   palette: rgb already converted to the output's color
+//   vec4  colorFast   space, a = the configured alpha (not converted)
+//
+// Color management: only colors that arrive as uniforms (colorSlow,
+// colorFast, from plugin:hyprtail:color_slow / color_fast) are converted to
+// the target's color space (transfer function, primaries, HDR luminance) by
+// the plugin, the same way Hyprland converts its own solid colors. Colors a
+// shader computes or hardcodes itself are written as-is: correct on plain
+// SDR sRGB outputs, wrong on HDR / wide-gamut color-managed ones. Build
+// colors from the palette uniforms (mix, scale) to stay managed.
 //
 // Outputs: whatever the paired fragment shader reads. The stock fragment
-// shader reads v_side (-1..1 across the ribbon), v_alpha and v_color; a
-// custom vertex shader used with the stock fragment shader must write them.
+// shader reads v_side (-1..1 across the ribbon), v_alpha (float) and v_color
+// (vec4, rgb in the output's color space, a = palette alpha); a custom
+// vertex shader used with the stock fragment shader must write them.
 //
 // Damage: the plugin damages the node extent padded by
 // widthPx / 2 * miterLimit + 1px, plus any padding declared with
@@ -65,6 +76,8 @@ uniform float fadeMs;
 uniform float widthPx;
 uniform float miterLimit;
 uniform float speedRef;
+uniform vec4  colorSlow;
+uniform vec4  colorFast;
 
 layout(location = 0) in vec2  a_prevPos;
 layout(location = 1) in float a_prevFlags;
@@ -81,13 +94,13 @@ layout(location = 11) in float a_nextFlags;
 
 out float v_side;  // -1 .. +1 across the ribbon
 out float v_alpha; // time-based fade
-out vec3  v_color;
+out vec4  v_color; // rgb in the output's color space, a = palette alpha
 
 void collapse() {
     gl_Position = ht_collapsedPosition();
     v_side      = 0.0;
     v_alpha     = 0.0;
-    v_color     = vec3(0.0);
+    v_color     = vec4(0.0);
 }
 
 void main() {
@@ -128,6 +141,6 @@ void main() {
 
     v_side      = side;
     v_alpha     = atEnd ? life1 : life0;
-    v_color     = mix(vec3(0.1, 0.4, 1.0), vec3(1.0, 0.1, 0.1), speed);
+    v_color     = mix(colorSlow, colorFast, speed);
     gl_Position = vec4(proj * vec3(pos, 1.0), 1.0);
 }

@@ -30,8 +30,10 @@ namespace hyprtail::shader {
     };
 
     // Built-in stock shaders, embedded at build time.
-    std::string_view builtinVertex();
-    std::string_view builtinFragment();
+    std::string_view builtinVertex();       // trail
+    std::string_view builtinFragment();     // trail
+    std::string_view builtinIdleVertex();   // idle/presence slot
+    std::string_view builtinIdleFragment(); // idle/presence slot
 
     // Preprocess a main shader. `name` is for messages. `path` empty means a
     // built-in shader: it may only include hyprtail/ prefabs.

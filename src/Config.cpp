@@ -6,6 +6,7 @@
 
 #include <config/ConfigManager.hpp>
 #include <config/values/types/BoolValue.hpp>
+#include <config/values/types/ColorValue.hpp>
 #include <config/values/types/FloatValue.hpp>
 #include <config/values/types/IntValue.hpp>
 #include <config/values/types/StringValue.hpp>
@@ -25,6 +26,10 @@ namespace hyprtail::cfg {
             SP<CIntValue>    capacity;
             SP<CBoolValue>   interpolateWarps;
             SP<CStringValue> vertexShader, fragmentShader;
+            SP<CColorValue>  colorSlow, colorFast;
+            SP<CBoolValue>   idleEnabled, idleWhenHidden;
+            SP<CFloatValue>  idleDelay, idleDuration, idleRadius;
+            SP<CStringValue> idleVertexShader, idleFragmentShader;
         };
 
         SRegistered& reg() {
@@ -74,10 +79,24 @@ namespace hyprtail::cfg {
                                                   DEFAULTS.damagePaddingPx, SFloatValueOptions{.min = 0.F, .max = 4096.F});
         r.vertexShader   = makeShared<CStringValue>("plugin:hyprtail:vertex_shader", "trail vertex shader path, empty for the built-in one", "");
         r.fragmentShader = makeShared<CStringValue>("plugin:hyprtail:fragment_shader", "trail fragment shader path, empty for the built-in one", "");
+        r.colorSlow      = makeShared<CColorValue>("plugin:hyprtail:color_slow", "trail color when slow (stock shader), color-managed", sc<Config::INTEGER>(DEFAULTS.colorSlow));
+        r.colorFast      = makeShared<CColorValue>("plugin:hyprtail:color_fast", "trail color when fast (stock shader), color-managed", sc<Config::INTEGER>(DEFAULTS.colorFast));
+
+        r.idleEnabled    = makeShared<CBoolValue>("plugin:hyprtail:idle_enabled", "show an effect around the pointer after it has been still", DEFAULTS.idleEnabled);
+        r.idleDelay      = makeShared<CFloatValue>("plugin:hyprtail:idle_delay_ms", "how long the pointer must be still before the idle effect starts, ms",
+                                              sc<float>(DEFAULTS.idleDelayMs), SFloatValueOptions{.min = 0.F, .max = 60000.F});
+        r.idleDuration   = makeShared<CFloatValue>("plugin:hyprtail:idle_duration_ms", "how long the idle effect runs, ms; 0 = until the pointer moves",
+                                                 sc<float>(DEFAULTS.idleDurationMs), SFloatValueOptions{.min = 0.F, .max = 600000.F});
+        r.idleRadius     = makeShared<CFloatValue>("plugin:hyprtail:idle_radius", "idle effect radius, logical px", DEFAULTS.idleRadiusPx,
+                                               SFloatValueOptions{.min = 1.F, .max = 1024.F});
+        r.idleWhenHidden = makeShared<CBoolValue>("plugin:hyprtail:idle_when_hidden", "also show the idle effect while the cursor is hidden", DEFAULTS.idleWhenHidden);
+        r.idleVertexShader   = makeShared<CStringValue>("plugin:hyprtail:idle_vertex_shader", "idle effect vertex shader path, empty for the built-in one", "");
+        r.idleFragmentShader = makeShared<CStringValue>("plugin:hyprtail:idle_fragment_shader", "idle effect fragment shader path, empty for the built-in one", "");
 
         bool ok = true;
         for (const SP<IValue>& v : std::initializer_list<SP<IValue>>{r.fadeMs, r.width, r.capacity, r.minSpacing, r.miterLimit, r.interpolateWarps, r.damagePadding,
-                                                                      r.vertexShader, r.fragmentShader})
+                                                                      r.vertexShader, r.fragmentShader, r.colorSlow, r.colorFast, r.idleEnabled, r.idleDelay,
+                                                                      r.idleDuration, r.idleRadius, r.idleWhenHidden, r.idleVertexShader, r.idleFragmentShader})
             ok = add(handle, v) && ok;
         return ok;
     }
@@ -111,6 +130,22 @@ namespace hyprtail::cfg {
             v.vertexShader = r.vertexShader->value();
         if (r.fragmentShader)
             v.fragmentShader = r.fragmentShader->value();
+        if (r.colorSlow)
+            v.colorSlow = sc<uint64_t>(r.colorSlow->value());
+        if (r.colorFast)
+            v.colorFast = sc<uint64_t>(r.colorFast->value());
+
+        v.idleDelayMs    = checkFloat(r.idleDelay, 0.F, 60000.F, sc<float>(previous.idleDelayMs));
+        v.idleDurationMs = checkFloat(r.idleDuration, 0.F, 600000.F, sc<float>(previous.idleDurationMs));
+        v.idleRadiusPx   = checkFloat(r.idleRadius, 1.F, 1024.F, previous.idleRadiusPx);
+        if (r.idleEnabled)
+            v.idleEnabled = r.idleEnabled->value();
+        if (r.idleWhenHidden)
+            v.idleWhenHidden = r.idleWhenHidden->value();
+        if (r.idleVertexShader)
+            v.idleVertexShader = r.idleVertexShader->value();
+        if (r.idleFragmentShader)
+            v.idleFragmentShader = r.idleFragmentShader->value();
 
         return v;
     }

@@ -226,14 +226,28 @@ this file states the decision and marks what's still a placeholder.
   default float precision).
 - **Prefab library:** `hyprtail/ribbon.glsl` (`ht_startsSegment`,
   `ht_collapsedPosition`, `ht_dirBetween`, `ht_jointOffset`, `HT_EPS`) and
-  `hyprtail/fade.glsl` (`ht_life`, `ht_faded`). Functions only, `ht_`
-  prefixed, parameters instead of uniforms. The stock vertex shader is built
-  on them. Source in `shaders/hyprtail/`.
+  `hyprtail/fade.glsl` (`ht_life`, `ht_faded`), and for fragment shaders
+  only `hyprtail/sdf.glsl` (`ht_sdCircle`, `ht_sdRing`, `ht_coverage`; uses
+  `fwidth`, so it doesn't compile in a vertex shader). Functions only, `ht_`
+  prefixed, parameters instead of uniforms. The stock trail and idle shaders
+  are built on them. Source in `shaders/hyprtail/`.
 - Plugin-provided per-instance data (vertex contract, `shaders/trail.vert`):
   `a_prevPos/Flags`, `a_p0Pos/BirthMs/Vel/Flags`, `a_p1Pos/BirthMs/Vel/Flags`,
   `a_nextPos/Flags` at fixed locations 0-11. Uniforms: `proj`, `nowMs`,
-  `fadeMs`, `widthPx`, `miterLimit`, `speedRef`. Output is premultiplied
-  alpha. Should stay minimal per the sparse-config goal.
+  `fadeMs`, `widthPx`, `miterLimit`, `speedRef`, `colorSlow`, `colorFast`.
+  Output is premultiplied alpha. Should stay minimal per the sparse-config
+  goal.
+- **Color management:** the palette (`color_slow`, `color_fast` settings,
+  sRGB) is converted on the CPU at draw time to the current framebuffer's
+  image description with core's `getConvertedColor` (transfer function,
+  primaries, HDR luminance, tonemapping, SDR brightness), opaque, with the
+  configured alpha passed separately: exactly how core handles its own solid
+  colors and borders. Shaders get `vec4 colorSlow/colorFast` (rgb converted,
+  a = alpha) and blend in the output's encoding, as core does. **Colors a
+  shader computes or hardcodes are unmanaged**: correct on SDR sRGB outputs,
+  wrong on HDR / wide-gamut color-managed ones; documented in the shader
+  contract. A per-pixel conversion like core's `CM.glsl` isn't available to
+  plugins: its uniforms are set by `passCMUniforms`, which is private.
 - **Damage padding** around the node extent = stock extent
   (`widthPx / 2 * miterLimit + 1px`) + shader-declared padding + config
   `damage_padding`, all additive. A shader declares its extra reach with
@@ -274,6 +288,15 @@ this file states the decision and marks what's still a placeholder.
   fades. When the last point has faded, the final box is damaged once to
   clear it, then no more damage, no scheduled frames, and no pass element:
   an idle trail must not keep the compositor rendering.
+- **Shared per-monitor damage helper** (`hyprtail::CMonitorDamage`,
+  `src/RenderUtil.*`), used by the trail and the idle slot: prev ∪ cur per
+  monitor, clear once. **Frames without damage:** if a render has no damage
+  at all, `renderMonitor` skips the workspace, so nothing underneath is
+  repainted. The helper then only damages the ring (scheduling a proper
+  frame) and the caller draws nothing that frame. Otherwise an element would
+  land on stale content. Anything that needs a render to start (the idle
+  timer) damages the ring before the render instead of only calling
+  `scheduleFrame`.
 - Damage boxes are rounded **outward** in pixel space (floor left/top, ceil
   right/bottom after scaling), not `CBox::round()`, so partially covered edge
   pixels of fractional/antialiased geometry are always included. Each box goes
@@ -331,38 +354,61 @@ this file states the decision and marks what's still a placeholder.
   `cursor:invisible`, nvidia auto mode, hardware plane failure). Caveat: in
   fallback-driver renders (cursor hidden) the trail is added after the DPMS
   overlay, so it can show above a DPMS fade, rare and harmless.
-- **Idle/presence effects (stationary but visible cursor):** structurally out
-  of reach of the ribbon pipeline as designed, it needs ≥2 distinct recent
-  points to compute a tangent from; a stationary cursor stops producing new
-  points (see below) and existing ones correctly fade to nothing, same
-  degenerate-guard behavior as the OGL reference's coincident-point case,
-  just triggered by "no motion." Not a bug, a different concern the ribbon
-  was never built to cover. **Fix: a second, independent pass-element/shader
-  slot** for presence/idle effects, keyed on current position + time-since-
-  last-movement, not point history, symmetric with the trail's own
-  extensibility (a second optional shader slot, not a new plugin-configured
-  feature). Depends on: **buffer insertion happens only on real movement**,
-  not every frame (now made explicit as a decision, was previously implicit).
-  This makes the idle-time signal free, `now - buffer.back().birthTimeMs`,
-  no new plugin state needed to drive it.
-  - The idle slot's content can reuse the same ribbon-geometry technique
-    (tangent/normal from an ordered point sequence) fed a synthetic pattern
-    (a ring around the cursor, say) instead of real motion history, richer
-    than a plain quad, and this is what the shader slot's content can
-    actually be, not a competing design.
-  - **Load-bearing now:** synthetic idle points must live in a separate
-    buffer instance from the real motion trail. Sharing one buffer would
-    either evict the still-legitimately-fading tail of real motion data, or
-    interleave two kinds of point whose `birthTimeMs` means different
-    things, breaking fade math either way. Buffer/upload plumbing should be
-    written parameterized by instance from the start (cheap now, a refactor
-    later if assumed to be singular).
-  - Deferrable until after motion trails work: exact pattern shape, idle-
-    trigger threshold, whether the idle slot reuses the trail's exact shader
-    or a variant. A literal-shader-reuse version would need a synthetic
-    stand-in for velocity (e.g. an animation phase), since a stationary
-    synthetic pattern has no real per-point motion to drive the same
-    width-response logic the trail uses.
+- **Idle/presence effects (stationary but visible cursor):** out of reach
+  of the ribbon pipeline (it needs motion to produce points; a stationary
+  cursor's trail correctly fades to nothing). Handled by **a second,
+  independent pass element and shader slot**, keyed on current pointer
+  position and time since last movement, not point history.
+  - **Design: a quad around the pointer, drawn by the fragment shader**
+    (decided; replaces the earlier synthetic-point idea). One instance, a
+    quad covering `center +- (radius + padding)`; the fragment shader draws
+    anything (rings, pulses, crosshairs) with signed-distance functions.
+    Rejected: feeding a synthetic point pattern (e.g. a ring of points)
+    through the ribbon pipeline. The CPU would own the shape (shader authors
+    couldn't change it), the stock trail shader fades by age so it couldn't
+    be reused anyway, and it needs more plumbing for less freedom. With no
+    points there is no second buffer to keep separate.
+  - **Trigger and lifecycle:** starts after `idle_delay_ms` without pointer
+    motion; stops immediately on motion (its box is cleared once); ends after
+    `idle_duration_ms` (finite by default: an endless animation would render
+    every frame for as long as the pointer is idle, against "an idle trail
+    must not keep the compositor rendering"; `0` = forever is an explicit
+    opt-in). Suppressed while locked, while the pointer is constrained, and
+    when the instance is disabled, like the trail.
+  - **Cursor visibility:** `idle_when_hidden` defaults to **false**. The idle
+    effect marks where the cursor is; if the cursor was hidden (inactivity
+    timeout, key press, `cursor:invisible`), drawing around it defeats the
+    hide. This deliberately differs from the trail, which follows motion
+    regardless of visibility.
+  - **Settings** (§9): `idle_enabled` (false), `idle_delay_ms` (500),
+    `idle_duration_ms` (1500; 0 = until the pointer moves), `idle_radius`
+    (24 px), `idle_when_hidden` (false), `idle_vertex_shader` /
+    `idle_fragment_shader` (`""` = built-in). Shared with the trail:
+    `damage_padding`, `color_slow`/`color_fast`, `#pragma hyprtail padding`.
+  - **Shader contract** (`shaders/idle.vert` header): no vertex attributes;
+    `gl_VertexID` 0-3 picks the corner of the square `center +- extentPx`.
+    The built-in vertex shader outputs `v_local` (px offset from the center)
+    and `v_uv` (0..1), so most users only replace the fragment shader.
+    Uniforms: `proj`, `center` (global px), `extentPx` (radius + declared +
+    configured padding), `radiusPx`, `idleMs` (time since the effect
+    started), `durationMs`, `colorSlow`/`colorFast` (color-managed palette).
+    Premultiplied output. Stock look (`shaders/idle.frag`): a single ring in
+    `color_slow`, expanding from a quarter of the radius to the edge and
+    fading out over the duration (looping with a 1.2 s period when the
+    duration is 0).
+  - **Timing:** motion (pointer events, hooked warps, or a position change
+    seen during any render) restarts a timer on Hyprland's event loop
+    (`wl_event_loop_add_timer`) set to `idle_delay_ms`; when it fires, the
+    square is damaged so a render happens and the lifecycle starts the
+    effect. While shown it damages every frame; motion, a hide (unless
+    `idle_when_hidden`), lock, a constraint or the end of the duration clears
+    it once.
+  - **Implementation:** `SIdleInstance` / `CIdlePassElement`
+    (`src/IdlePassElement.*`), drawn after the trail (so above it, both
+    beneath the cursor), with the shared per-monitor damage helper (§6) and
+    the shared shader-slot helper (`hyprtail::CShaderSlot`,
+    `src/ShaderSlot.*`: built-in and user stages, include preprocessing,
+    deferred compile, keep previous program; reports under `shader:idle`).
 
 ## 8. Multi-monitor
 
@@ -421,9 +467,20 @@ this file states the decision and marks what's still a placeholder.
   | `damage_padding` | float, px, additive (§5) | 0 | 0..4096 |
   | `vertex_shader` | path | `""` = built-in | |
   | `fragment_shader` | path | `""` = built-in | |
+  | `color_slow` | color (ARGB, sRGB) | `0xFF1A66FF` | |
+  | `color_fast` | color (ARGB, sRGB) | `0xFFFF1A1A` | |
+  | `idle_enabled` | bool | false | |
+  | `idle_delay_ms` | float | 500 | 0..60000 |
+  | `idle_duration_ms` | float, 0 = until moved | 1500 | 0..600000 |
+  | `idle_radius` | float, logical px | 24 | 1..1024 |
+  | `idle_when_hidden` | bool | false | |
+  | `idle_vertex_shader` | path | `""` = built-in | |
+  | `idle_fragment_shader` | path | `""` = built-in | |
 
   Lua: `hl.config({ plugin = { hyprtail = { fade_ms = 400 } } })`;
-  hyprlang: `plugin:hyprtail:fade_ms = 400`. Shader paths: `~` and `~/`
+  hyprlang: `plugin:hyprtail:fade_ms = 400`. Colors in Lua must be strings
+  in Hyprland's color syntax, e.g. `color_slow = "rgba(1a66ffff)"`; numbers
+  are rejected (`LuaConfigColor.cpp:25-40` at `efb5099`). Shader paths: `~` and `~/`
   expand to `$HOME`; relative paths resolve against the directory of the
   config file in use (covers `-c`), falling back to `$XDG_CONFIG_HOME/hypr`
   or `~/.config/hypr`. Out-of-range values are rejected by Hyprland's parser
@@ -490,8 +547,9 @@ this file states the decision and marks what's still a placeholder.
 - Fade curve (§4): linear in the stock shader (`ht_life`); duration is the
   `fade_ms` setting. Other curves are a shader/prefab matter, not a setting
 - Rotated outputs untested (§8)
-- Color management: trail colors bypass core's `getConvertedColor`, may be
-  off on HDR/color-managed outputs
+- Color management built (§5): palette converted like core's colors;
+  verify on an HDR / color-managed output
+- Performance: measure before optimizing damage (NOTES "Performance")
 - **Backlog:** bezier curves for warp interpolation (`interpolateWarps`
   currently draws a straight segment)
 - Cursor-warp tooling reliability for scripting the validation ladder

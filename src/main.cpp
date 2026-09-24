@@ -26,24 +26,17 @@
 #include "Config.hpp"
 #include "Diagnostics.hpp"
 #include "FileWatch.hpp"
+#include "IdlePassElement.hpp"
+#include "RenderUtil.hpp"
 #include "TrailPassElement.hpp"
+
+#include <wayland-server-core.h>
+#include <Compositor.hpp>
 
 using hyprtail::diag::eSeverity;
 
 static HANDLE s_handle = nullptr;
 
-
-// Logical box -> pixel damage box covering every pixel the draw can touch,
-// including partially covered edge pixels: scale, then floor left/top and
-// ceil right/bottom. CBox::round() rounds x/y to nearest and derives w/h from
-// the rounded origin, so it can drop a partially covered edge column/row.
-static CBox outwardPixelBox(const CBox& logical, double scale) {
-    const double x1 = std::floor(logical.x * scale);
-    const double y1 = std::floor(logical.y * scale);
-    const double x2 = std::ceil((logical.x + logical.w) * scale);
-    const double y2 = std::ceil((logical.y + logical.h) * scale);
-    return CBox{x1, y1, x2 - x1, y2 - y1};
-}
 
 typedef void (*origRenderSoftwareCursorsFor)(void*, PHLMONITOR, const Time::steady_tp&, CRegion&, std::optional<Vector2D>, bool, bool);
 typedef void (*origControllerWarpTo)(const void*, const Vector2D&, bool);
@@ -61,6 +54,8 @@ struct SMonitorFrame {
 static uint64_t                                              s_frames = 0;
 static Time::steady_tp                                       s_epoch;
 static UP<STrailInstance>                                    s_motionTrail;
+static UP<SIdleInstance>                                     s_idle;
+static wl_event_source*                                      s_idleTimer = nullptr;
 static CFunctionHook*                                        s_cursorHook = nullptr;
 static CFunctionHook*                                        s_warpHook   = nullptr;
 static CHyprSignalListener                                   s_renderStageListener;
@@ -91,28 +86,6 @@ static bool pointerConstrained() {
     return g_pInputManager && g_pInputManager->isConstrained();
 }
 
-
-// Damage one logical, monitor-local box on this monitor: into the current
-// frame's render damage and into the monitor's damage ring. Only valid inside
-// a render of pMonitor.
-static void damageLocalBox(const PHLMONITOR& pMonitor, const CBox& boxLocal) {
-    if (boxLocal.empty() || !boxLocal.overlaps(CBox{{}, pMonitor->m_size}))
-        return;
-
-    const CBox px = outwardPixelBox(boxLocal, pMonitor->m_scale);
-
-    // Current frame: beginRender already read and rotated the damage ring
-    // (Renderer.cpp:1782-1783), so this frame only sees damage added to the
-    // render region directly.
-    g_pHyprRenderer->m_renderData.damage.add(px);
-
-    // Damage ring: lands in m_current, read by the next frame's beginRender
-    // and rotated into history, so older swapchain buffers (age > 1) also
-    // repaint this box. Also schedules that next frame
-    // (Monitor.cpp:1157-1158), which is what keeps a fading trail animating
-    // with the cursor stationary.
-    pMonitor->addDamage(px);
-}
 
 // Per-render trail lifecycle for one monitor: sample/insert, damage prev ∪
 // cur, add the pass element. Runs exactly once per render of pMonitor, from
@@ -168,15 +141,80 @@ static void runTrailLifecycle(const PHLMONITOR& pMonitor) {
     const auto visible = off ? std::nullopt : inst.ring.visibleBounds(nowMs, inst.fadeMs);
     const CBox cur     = visible ? trailBoxLocal(inst, *visible, pMonitor->m_position) : CBox{};
 
-    auto&      ms = inst.monState[pMonitor.get()];
-    damageLocalBox(pMonitor, ms.prevBoxLocal);
-    damageLocalBox(pMonitor, cur);
-    ms.prevBoxLocal = cur;
+    if (!inst.damage.update(pMonitor, cur))
+        return; // workspace not rendered this frame, see CMonitorDamage
 
     if (cur.empty() || !cur.overlaps(CBox{{}, pMonitor->m_size}))
         return;
 
     g_pHyprRenderer->m_renderPass.add(makeUnique<CTrailPassElement>(&inst, cur, nowMs));
+}
+
+// ---------------------------------------------------------------- idle slot
+
+// (Re)start the wait for the idle effect: the timer fires delayMs after the
+// last pointer motion and makes a render happen there.
+static void armIdleTimer() {
+    if (!s_idleTimer || !s_idle || !s_idle->enabled || s_idle->disabled)
+        return;
+    wl_event_source_timer_update(s_idleTimer, std::max(1, sc<int>(std::ceil(s_idle->delayMs))));
+}
+
+// Pointer motion from any source: pointer events, warps, or a position change
+// noticed during a render. Restarts the idle wait.
+static void noteMotion(const Vector2D& pos, double nowMs) {
+    if (!s_idle || pos == s_idle->lastPos)
+        return;
+    s_idle->lastPos      = pos;
+    s_idle->lastMotionMs = nowMs;
+    armIdleTimer();
+}
+
+// Whether the idle effect may show at all right now (besides timing).
+static bool idleAllowed(const SIdleInstance& idle) {
+    // Marks where the cursor is: drawing around a hidden cursor defeats the
+    // hide unless the user asked for it (SPEC section 7).
+    return idle.enabled && !idle.disabled && !sessionLocked() && !pointerConstrained() && (idle.whenHidden || !cursorHidden());
+}
+
+// Per-render idle lifecycle for one monitor, same shape as the trail's.
+static void runIdleLifecycle(const PHLMONITOR& pMonitor) {
+    auto&        idle  = *s_idle;
+    const double nowMs = msSinceEpoch(Time::steadyNow());
+
+    const Vector2D pos = Pointer::mgr()->position();
+    noteMotion(pos, nowMs);
+
+    std::optional<double> effectMs;
+    if (idleAllowed(idle) && idlePrepare(idle))
+        effectMs = idleEffectMs(idle, nowMs);
+
+    // While shown, damage every frame (keeps the animation rendering); when it
+    // ends (duration over, motion, hide), clear once, then idle.
+    const CBox cur = effectMs ? idleBoxLocal(idle, pos, pMonitor->m_position) : CBox{};
+    if (!idle.damage.update(pMonitor, cur))
+        return;
+
+    if (cur.empty() || !cur.overlaps(CBox{{}, pMonitor->m_size}))
+        return;
+
+    g_pHyprRenderer->m_renderPass.add(makeUnique<CIdlePassElement>(&idle, cur, pos, *effectMs));
+}
+
+// Timer fired: the pointer has been still for delayMs. Damage the idle square
+// (not just scheduleFrame: a frame without damage skips the workspace, see
+// CMonitorDamage) so a render happens and the lifecycle starts the effect.
+static int onIdleTimer(void*) {
+    hyprtail::diag::guard("idle-timer", [] {
+        if (!s_idle || !idleAllowed(*s_idle))
+            return;
+        for (const auto& m : State::monitorState()->monitors()) {
+            if (!m || !m->m_enabled || m->isMirror())
+                continue;
+            hyprtail::damageOutsideRender(m, idleBoxLocal(*s_idle, s_idle->lastPos, m->m_position));
+        }
+    });
+    return 0;
 }
 
 // Lifecycle behind an exception guard. Runs inside a render (GL current), so
@@ -185,6 +223,12 @@ static void runTrailLifecycleGuarded(const PHLMONITOR& pMonitor, std::string_vie
     if (!hyprtail::diag::guard(where, [&] { runTrailLifecycle(pMonitor); })) {
         s_motionTrail->disabled = true;
         trailReleaseGpu(*s_motionTrail);
+    }
+    // After the trail, so the idle effect draws above it (both beneath the
+    // cursor). Guarded separately: one failing doesn't take the other down.
+    if (s_idle && !hyprtail::diag::guard(std::format("{}-idle", where), [&] { runIdleLifecycle(pMonitor); })) {
+        s_idle->disabled = true;
+        idleReleaseGpu(*s_idle);
     }
 }
 
@@ -231,10 +275,13 @@ static void hkControllerWarpTo(const void* thisptr, const Vector2D& pos, bool fo
     (*(origControllerWarpTo)s_warpHook->m_original)(thisptr, pos, force);
 
     hyprtail::diag::guard("warp-hook", [&] {
+        // Actual result, not the target: with cursor:no_warps nothing moves.
+        const Vector2D to = Pointer::mgr()->position();
+        noteMotion(to, msSinceEpoch(Time::steadyNow()));
+
         if (!s_motionTrail || s_motionTrail->interpolateWarps || pointerConstrained())
             return;
-        // Actual result, not the target: with cursor:no_warps nothing moves.
-        if (Pointer::mgr()->position() != from)
+        if (to != from)
             s_motionTrail->pendingBreak = true;
     });
 }
@@ -295,11 +342,16 @@ static bool skipMotionFrame(const PHLMONITOR& m) {
 }
 
 static void onMouseMoveInternal() {
+    const Vector2D pos = Pointer::mgr()->position();
+
+    // Restart the idle wait; the idle lifecycle ends a showing effect at the
+    // next render (the trail damage below makes one happen).
+    noteMotion(pos, msSinceEpoch(Time::steadyNow()));
+
     if (!s_motionTrail || s_motionTrail->disabled || sessionLocked() || pointerConstrained())
         return;
 
-    const Vector2D pos = Pointer::mgr()->position();
-    const double   r   = s_motionTrail->padPx();
+    const double r = s_motionTrail->padPx();
 
     for (const auto& m : State::monitorState()->monitors()) {
         if (!m || !m->m_enabled || m->isMirror())
@@ -313,7 +365,7 @@ static void onMouseMoveInternal() {
         if (!local.overlaps(CBox{{}, m->m_size}))
             continue;
 
-        m->addDamage(outwardPixelBox(local, m->m_scale));
+        hyprtail::damageOutsideRender(m, local);
     }
 }
 
@@ -367,6 +419,10 @@ static void teardown() noexcept {
         // Stop callbacks first so nothing queues new elements during teardown.
         s_configReloadListener.reset();
         s_fileWatch.shutdown();
+        if (s_idleTimer) {
+            wl_event_source_remove(s_idleTimer);
+            s_idleTimer = nullptr;
+        }
         s_workspaceActiveListener.reset();
         s_specialActiveListener.reset();
         s_workspaceMovedListener.reset();
@@ -377,12 +433,18 @@ static void teardown() noexcept {
 
         // Remove any queued elements before GPU resources go away so draw()
         // can't run against a deleted VAO/program.
-        if (g_pHyprRenderer)
+        if (g_pHyprRenderer) {
             g_pHyprRenderer->m_renderPass.removeAllOfType("CTrailPassElement");
+            g_pHyprRenderer->m_renderPass.removeAllOfType("CIdlePassElement");
+        }
 
         if (s_motionTrail) {
             trailInstanceCleanup(*s_motionTrail);
             s_motionTrail.reset();
+        }
+        if (s_idle) {
+            idleCleanup(*s_idle);
+            s_idle.reset();
         }
         s_monFrame.clear();
         hyprtail::cfg::releaseValues();
@@ -430,46 +492,15 @@ static void kickRender() {
         m->scheduleFrame();
 }
 
-// Read both shader stages (config path or built-in), resolve includes, and
-// queue them for compilation at the next render. A file or preprocessing
-// error keeps the active shader. Reports go under shader:<instance>, re-armed
-// on every attempt.
+// Re-read both slots' shader stages (config path or built-in), resolve
+// includes, and queue them for compilation at the next render (CShaderSlot).
+// Errors keep the active programs.
 static void reloadShaders() {
-    auto&       inst = *s_motionTrail;
-    const auto  key  = "shader:" + inst.name;
-
-    SShaderPair pair  = builtinShaderPair();
-    pair.builtin      = true;
-    bool                               failed = false;
     std::vector<std::filesystem::path> watch;
-
-    const auto loadStage = [&](const std::string& configured, const char* stage, hyprtail::shader::SSource& out) {
-        const auto path = hyprtail::cfg::resolveShaderPath(configured);
-        if (path.empty())
-            return; // built-in
-
-        watch.push_back(path); // watch even if missing, so creating it reloads
-        auto src = hyprtail::shader::load(path);
-        if (!src) {
-            hyprtail::diag::resetKey(key);
-            hyprtail::diag::report(eSeverity::WARN, key, std::format("{} trail: {} shader: {}\nKeeping the current shader.", inst.name, stage, src.error()));
-            failed = true;
-            return;
-        }
-        watch.insert(watch.end(), src->files.begin(), src->files.end());
-        out          = std::move(*src);
-        pair.builtin = false;
-    };
-
-    loadStage(s_config.vertexShader, "vertex", pair.vert);
-    loadStage(s_config.fragmentShader, "fragment", pair.frag);
-
+    s_motionTrail->slot.reload(s_config.vertexShader, s_config.fragmentShader, watch);
+    if (s_idle)
+        s_idle->slot.reload(s_config.idleVertexShader, s_config.idleFragmentShader, watch);
     s_fileWatch.setFiles(watch);
-
-    if (failed)
-        return;
-
-    inst.shader.pending = std::move(pair);
     kickRender();
 }
 
@@ -484,6 +515,21 @@ static void applyConfig() {
     inst.minSpacingPx     = s_config.minSpacingPx;
     inst.interpolateWarps = s_config.interpolateWarps;
     inst.damagePaddingPx  = s_config.damagePaddingPx;
+    inst.colorSlow        = CHyprColor{s_config.colorSlow};
+    inst.colorFast        = CHyprColor{s_config.colorFast};
+
+    auto& idle           = *s_idle;
+    const bool wasOn     = idle.enabled;
+    idle.enabled         = s_config.idleEnabled;
+    idle.delayMs         = s_config.idleDelayMs;
+    idle.durationMs      = s_config.idleDurationMs;
+    idle.radiusPx        = s_config.idleRadiusPx;
+    idle.whenHidden      = s_config.idleWhenHidden;
+    idle.damagePaddingPx = s_config.damagePaddingPx;
+    idle.colorSlow       = inst.colorSlow;
+    idle.colorFast       = inst.colorFast;
+    if (idle.enabled && !wasOn)
+        armIdleTimer(); // start waiting from now
 
     // Keeps the newest points; the VBO is reallocated at the next draw
     // (CTrailGpu::ensure), where GL is current.
@@ -498,6 +544,15 @@ static PLUGIN_DESCRIPTION_INFO pluginInit() {
     s_epoch       = Time::steadyNow();
     s_config      = {};
     s_motionTrail = makeUnique<STrailInstance>("trail", s_config.capacity);
+    s_idle        = makeUnique<SIdleInstance>();
+    s_idle->lastPos      = Pointer::mgr()->position();
+    s_idle->lastMotionMs = 0.0;
+
+    // Idle timer on Hyprland's event loop (main thread), like the file watch.
+    if (g_pCompositor && g_pCompositor->m_wlEventLoop)
+        s_idleTimer = wl_event_loop_add_timer(g_pCompositor->m_wlEventLoop, &onIdleTimer, nullptr);
+    if (!s_idleTimer)
+        hyprtail::diag::report(eSeverity::WARN, "idle-timer", "could not create the idle timer; the idle effect only starts when something else renders");
 
     // Settings (SPEC section 9). Registered values get their configured value
     // on the reload Hyprland schedules right after loading a plugin

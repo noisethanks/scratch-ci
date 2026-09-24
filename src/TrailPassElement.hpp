@@ -11,9 +11,11 @@
 #include <render/pass/PassElement.hpp>
 #include <render/Shader.hpp>
 #include <helpers/memory/Memory.hpp>
+#include <helpers/Color.hpp>
 
 #include "TrailBuffer.hpp"
-#include "ShaderSource.hpp"
+#include "ShaderSlot.hpp"
+#include "RenderUtil.hpp"
 
 namespace Monitor {
     class CMonitor;
@@ -56,46 +58,18 @@ class CTrailGpu {
     std::vector<SGpuNode> m_ordered;
 };
 
-// Preprocessed vertex + fragment source for one program.
-struct SShaderPair {
-    hyprtail::shader::SSource vert, frag;
-    bool                      builtin = true; // both stages built-in
-
-    float                     declaredPaddingPx() const {
-        return std::max(vert.declaredPaddingPx, frag.declaredPaddingPx);
-    }
-};
-
-struct STrailShader {
-    // Active program. Uniforms a shader doesn't declare have location -1 and
-    // are silently not set.
-    SP<CShader> shader;
-    float       declaredPaddingPx = 0.F; // of the active program
-    GLint       locNowMs          = -1;
-    GLint       locFadeMs         = -1;
-    GLint       locWidthPx        = -1;
-    GLint       locMiterLimit     = -1;
-    GLint       locSpeedRef       = -1;
-
-    // Set on the main thread (config reload, file change), compiled at the
-    // next render where GL is current (trailPrepare). On failure the active
-    // program stays.
-    std::optional<SShaderPair> pending;
-};
-
-struct SMonitorTrailState {
-    CBox prevBoxLocal{}; // logical, monitor-local, box damaged last frame; empty once cleared
-};
-
 // One trail: buffer, GPU mirror, shader, per-monitor damage state. Written
 // per instance so the idle/presence slot (SPEC §7) can be a second one.
 struct STrailInstance {
-    STrailInstance(std::string name_, size_t capacity) : name(std::move(name_)), ring(capacity) {}
+    STrailInstance(std::string name_, size_t capacity) :
+        name(std::move(name_)), ring(capacity),
+        slot(name, "trail.vert", hyprtail::shader::builtinVertex(), "trail.frag", hyprtail::shader::builtinFragment()) {}
 
-    std::string                                                name; // for diagnostics keys, e.g. "shader:<name>"
-    CTrailRing                                                 ring;
-    CTrailGpu                                                  gpu;
-    STrailShader                                               shader;
+    std::string            name; // for diagnostics keys, e.g. "shader:<name>"
+    CTrailRing             ring;
+    CTrailGpu              gpu;
+    hyprtail::CShaderSlot  slot;   // shader program, user-replaceable
+    hyprtail::CMonitorDamage damage; // per-monitor prev/cur damage lifecycle
 
     // Settings, from the config (cfg::SValues) on load and every reload.
     double fadeMs           = 500.0;
@@ -105,6 +79,11 @@ struct STrailInstance {
     bool   interpolateWarps = false; // warps via CPointerController connect (true) or start a new segment (false)
     float  damagePaddingPx  = 0.F;   // config padding, on top of the stock extent and shader padding
 
+    // Stock palette, sRGB. Converted to the target framebuffer's color space
+    // at draw time (getConvertedColor), like core's own solid colors.
+    CHyprColor colorSlow{0xFF1A66FFULL};
+    CHyprColor colorFast{0xFFFF1A1AULL};
+
     float  speedRefPxPerMs = 2.F; // stock-shader palette, not a setting
 
     // Damage padding around the node extent (SPEC section 5): stock extent
@@ -112,15 +91,13 @@ struct STrailInstance {
     // declared by the active shader (#pragma hyprtail padding), plus the
     // config's damage_padding. Must cover everything the shader can draw.
     float padPx() const {
-        return 0.5F * widthPx * miterLimit + 1.F + shader.declaredPaddingPx + damagePaddingPx;
+        return 0.5F * widthPx * miterLimit + 1.F + slot.declaredPaddingPx() + damagePaddingPx;
     }
 
     // Next insert starts a new segment (not connected to the previous node):
     // set on workspace changes, lock, pointer constraints, and warps unless
     // interpolateWarps.
     bool pendingBreak = false;
-
-    std::unordered_map<Monitor::CMonitor*, SMonitorTrailState> monState;
 
     // Set after an unrecoverable failure (shader, GL resources, exception).
     // The lifecycle then treats the trail as fully faded: no inserts, the last
@@ -141,9 +118,6 @@ void trailReleaseGpu(STrailInstance& inst);
 // built-in program if nothing is active. False if the instance has no usable
 // program (then it's disabled).
 bool trailPrepare(STrailInstance& inst);
-
-// Built-in stock shader pair, preprocessed (cached).
-const SShaderPair& builtinShaderPair();
 
 // Bounds padded by padPx(), logical, monitor-local.
 CBox trailBoxLocal(const STrailInstance& inst, const STrailBounds& bounds, const Vector2D& monitorPos);

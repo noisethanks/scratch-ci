@@ -22,8 +22,19 @@ namespace hyprtail::cfg {
         float       miterLimit       = 2.F;
         bool        interpolateWarps = false;
         float       damagePaddingPx  = 0.F; // on top of stock extent and shader-declared padding
+        uint64_t    colorSlow        = 0xFF1A66FF; // ARGB, sRGB; stock palette at rest speed
+        uint64_t    colorFast        = 0xFFFF1A1A; // ARGB, sRGB; stock palette at speedRef and above
         std::string vertexShader;           // "" = built-in
         std::string fragmentShader;         // "" = built-in
+
+        // Idle/presence slot (SPEC section 7).
+        bool        idleEnabled        = false;
+        double      idleDelayMs        = 500.0;
+        double      idleDurationMs     = 1500.0; // 0 = until the pointer moves
+        float       idleRadiusPx       = 24.F;
+        bool        idleWhenHidden     = false;
+        std::string idleVertexShader;   // "" = built-in
+        std::string idleFragmentShader; // "" = built-in
     };
 
     // Register all values. Call in PLUGIN_INIT. Returns false if any failed

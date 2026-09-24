@@ -27,6 +27,15 @@ namespace hyprtail::shader {
         constexpr unsigned char PREFAB_FADE[] = {
 #embed "../shaders/hyprtail/fade.glsl"
         };
+        constexpr unsigned char PREFAB_SDF[] = {
+#embed "../shaders/hyprtail/sdf.glsl"
+        };
+        constexpr unsigned char IDLE_VERT[] = {
+#embed "../shaders/idle.vert"
+        };
+        constexpr unsigned char IDLE_FRAG[] = {
+#embed "../shaders/idle.frag"
+        };
 
         template <size_t N>
         constexpr std::string_view view(const unsigned char (&data)[N]) {
@@ -37,6 +46,7 @@ namespace hyprtail::shader {
             static const std::map<std::string, std::string_view, std::less<>> m{
                 {"hyprtail/ribbon.glsl", view(PREFAB_RIBBON)},
                 {"hyprtail/fade.glsl", view(PREFAB_FADE)},
+                {"hyprtail/sdf.glsl", view(PREFAB_SDF)},
             };
             return m;
         }
@@ -201,6 +211,14 @@ namespace hyprtail::shader {
 
     std::string_view builtinFragment() {
         return view(TRAIL_FRAG);
+    }
+
+    std::string_view builtinIdleVertex() {
+        return view(IDLE_VERT);
+    }
+
+    std::string_view builtinIdleFragment() {
+        return view(IDLE_FRAG);
     }
 
     std::expected<SSource, std::string> preprocess(std::string_view mainText, const std::string& name, const std::filesystem::path& path) {

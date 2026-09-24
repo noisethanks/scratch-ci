@@ -3,7 +3,10 @@
 //
 // Contract for trail fragment shaders (built-in and user-supplied):
 //   - Inputs are whatever the paired vertex shader outputs; the stock pair
-//     uses v_side (-1..1 across the ribbon), v_alpha (time fade) and v_color.
+//     uses v_side (-1..1 across the ribbon), v_alpha (time fade) and v_color
+//     (vec4: rgb already in the output's color space, a = palette alpha).
+//   - Color management: see the vertex contract. Only the palette uniforms
+//     are converted; colors computed here are unmanaged.
 //   - Output is PREMULTIPLIED alpha: Hyprland blends with
 //     GL_ONE, GL_ONE_MINUS_SRC_ALPHA. Write vec4(rgb * a, a).
 //   - Draw only inside the damage padding documented in the vertex contract;
@@ -14,7 +17,7 @@ precision highp float;
 
 in float v_side;
 in float v_alpha;
-in vec3  v_color;
+in vec4  v_color;
 
 layout(location = 0) out vec4 fragColor;
 
@@ -27,6 +30,6 @@ void main() {
     if (cov <= 0.0)
         discard;
 
-    float a   = v_alpha * cov;
-    fragColor = vec4(v_color * a, a);
+    float a   = v_color.a * v_alpha * cov;
+    fragColor = vec4(v_color.rgb * a, a);
 }

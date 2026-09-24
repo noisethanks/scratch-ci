@@ -19,150 +19,14 @@ using namespace Render::GL;
 
 // ---------------------------------------------------------------- shader
 
-// Stock shaders and prefabs are embedded and preprocessed by ShaderSource.
-const SShaderPair& builtinShaderPair() {
-    static const SShaderPair pair = [] {
-        auto vert = hyprtail::shader::preprocess(hyprtail::shader::builtinVertex(), "trail.vert", {});
-        auto frag = hyprtail::shader::preprocess(hyprtail::shader::builtinFragment(), "trail.frag", {});
-        // Built-ins are fixed at build time; a failure here is a plugin bug.
-        if (!vert || !frag)
-            throw std::runtime_error(std::format("built-in shader preprocessing failed: {}", !vert ? vert.error() : frag.error()));
-        return SShaderPair{.vert = std::move(*vert), .frag = std::move(*frag), .builtin = true};
-    }();
-    return pair;
-}
-
-// CShader::createProgram logs compile/link errors and discards the text
-// (Shader.cpp logShaderError), so compile and link once ourselves to capture
-// the GLSL log, mapped back to file:line. Raw shader/program objects only, no
-// cached GL state touched. Returns the error description, or nullopt if both
-// stages compile and link.
-static std::optional<std::string> glslCheck(const SShaderPair& pair) {
-    const auto infoLog = [](GLuint obj, bool program) {
-        GLint len = 0;
-        program ? glGetProgramiv(obj, GL_INFO_LOG_LENGTH, &len) : glGetShaderiv(obj, GL_INFO_LOG_LENGTH, &len);
-        std::string log(std::max(len, 0), '\0');
-        if (len > 0)
-            program ? glGetProgramInfoLog(obj, len, &len, log.data()) : glGetShaderInfoLog(obj, len, &len, log.data());
-        log.resize(std::max(len, 0));
-        while (!log.empty() && (log.back() == '\0' || log.back() == '\n' || log.back() == ' '))
-            log.pop_back();
-        return log.empty() ? std::string{"(no log from driver)"} : log;
-    };
-
-    const auto compile = [&](GLenum type, const hyprtail::shader::SSource& src, std::string& error) -> GLuint {
-        const GLuint sh = glCreateShader(type);
-        if (!sh) {
-            error = "glCreateShader failed";
-            return 0;
-        }
-        const char* p = src.text.c_str();
-        glShaderSource(sh, 1, &p, nullptr);
-        glCompileShader(sh);
-        GLint ok = GL_FALSE;
-        glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
-        if (ok != GL_TRUE) {
-            error = hyprtail::shader::mapLog(infoLog(sh, false), src);
-            glDeleteShader(sh);
-            return 0;
-        }
-        return sh;
-    };
-
-    std::string  error;
-    const GLuint vs = compile(GL_VERTEX_SHADER, pair.vert, error);
-    if (!vs)
-        return std::format("vertex shader {} failed to compile:\n{}", pair.vert.sourceNames.front(), error);
-
-    const GLuint fs = compile(GL_FRAGMENT_SHADER, pair.frag, error);
-    if (!fs) {
-        glDeleteShader(vs);
-        return std::format("fragment shader {} failed to compile:\n{}", pair.frag.sourceNames.front(), error);
-    }
-
-    std::optional<std::string> result;
-    const GLuint               prog = glCreateProgram();
-    if (!prog)
-        result = "glCreateProgram failed";
-    else {
-        glAttachShader(prog, vs);
-        glAttachShader(prog, fs);
-        glLinkProgram(prog);
-        GLint ok = GL_FALSE;
-        glGetProgramiv(prog, GL_LINK_STATUS, &ok);
-        if (ok != GL_TRUE)
-            result = std::format("shaders {} + {} failed to link (varyings must match):\n{}", pair.vert.sourceNames.front(), pair.frag.sourceNames.front(), infoLog(prog, true));
-        glDetachShader(prog, vs);
-        glDetachShader(prog, fs);
-        glDeleteProgram(prog);
-    }
-
-    glDeleteShader(vs);
-    glDeleteShader(fs);
-    return result;
-}
-
-// Compile `pair` and make it the active program. On failure the active
-// program is untouched and the error is returned.
-static std::optional<std::string> compileAndActivate(STrailInstance& inst, const SShaderPair& pair) {
-    if (auto error = glslCheck(pair))
-        return error;
-
-    // silent: failures are ours to report; core's error bar would label them
-    // "Screen shader parser", which is misleading.
-    auto shader = makeShared<CShader>();
-    if (!shader->createProgram(pair.vert.text, pair.frag.text, /*dynamic=*/true, /*silent=*/true))
-        return std::string{"shader passed a standalone compile/link check but CShader::createProgram failed"};
-
-    auto& s = inst.shader;
-
-    // Make the new program current through Hyprland's cache before deleting
-    // the old one, so the cache never holds a deleted program's id.
-    g_pHyprOpenGL->useShader(shader);
-    if (s.shader)
-        s.shader->destroy();
-
-    // Custom uniforms aren't in eShaderUniform, look them up directly. A
-    // shader that doesn't declare one gets -1, which glUniform ignores.
-    const auto prog     = shader->program();
-    s.locNowMs          = glGetUniformLocation(prog, "nowMs");
-    s.locFadeMs         = glGetUniformLocation(prog, "fadeMs");
-    s.locWidthPx        = glGetUniformLocation(prog, "widthPx");
-    s.locMiterLimit     = glGetUniformLocation(prog, "miterLimit");
-    s.locSpeedRef       = glGetUniformLocation(prog, "speedRef");
-    s.declaredPaddingPx = pair.declaredPaddingPx();
-    s.shader            = shader;
-
-    Log::logger->log(Log::INFO, "[hyprtail] {} trail shader active ({} + {}), program id={}", inst.name, pair.vert.sourceNames.front(), pair.frag.sourceNames.front(),
-                     prog);
-    return std::nullopt;
-}
-
 bool trailPrepare(STrailInstance& inst) {
     if (inst.disabled)
         return false;
 
-    const auto key = "shader:" + inst.name;
-
-    if (inst.shader.pending) {
-        const SShaderPair pair = std::move(*inst.shader.pending);
-        inst.shader.pending.reset();
-
-        if (const auto error = compileAndActivate(inst, pair)) {
-            // Report every failed attempt, not just the first of the session.
-            hyprtail::diag::resetKey(key);
-            const char* keeping = inst.shader.shader ? "keeping the previous shader" : "using the built-in shader";
-            hyprtail::diag::report(pair.builtin ? eSeverity::ERR : eSeverity::WARN, key, std::format("{} trail: {}\n{}", inst.name, keeping, *error));
-        } else
-            hyprtail::diag::resetKey(key);
-    }
-
-    if (inst.shader.shader)
-        return true;
-
-    // Nothing active (first load, or the first user shader failed): built-in.
-    if (const auto error = compileAndActivate(inst, builtinShaderPair())) {
-        trailDisable(inst, key, std::format("{} trail disabled: the built-in shader failed: {}", inst.name, *error));
+    // Compiles a pending program or falls back to the built-in one; a failing
+    // user shader is reported there and the previous program kept.
+    if (const auto error = inst.slot.prepare()) {
+        trailDisable(inst, "shader:" + inst.name, std::format("{} trail disabled: {}", inst.name, *error));
         trailReleaseGpu(inst);
         return false;
     }
@@ -301,15 +165,12 @@ void trailDisable(STrailInstance& inst, std::string_view key, std::string_view m
 
 void trailReleaseGpu(STrailInstance& inst) {
     inst.gpu.destroy();
-    if (inst.shader.shader) {
-        inst.shader.shader->destroy();
-        inst.shader.shader.reset();
-    }
+    inst.slot.release();
 }
 
 void trailInstanceCleanup(STrailInstance& inst) {
     trailReleaseGpu(inst);
-    inst.monState.clear();
+    inst.damage.clear();
 }
 
 // ---------------------------------------------------------------- pass element
@@ -352,26 +213,22 @@ void CTrailPassElement::drawInternal() {
         return;
     const auto count = sc<GLsizei>(m_inst->ring.size() - 1);
 
-    // Global layout px -> monitor-local px -> clip. projectBoxToTarget takes a
-    // pixel-space box (Renderer.cpp:1842-1846); projectBox maps p to
-    // pos + size * p (hyprutils Mat3x3.cpp:68-90), so this box encodes
-    // (p - monitorPos) * scale.
-    // Transform is passed explicitly as NORMAL: getBoxProjection otherwise
-    // defaults to the inverted monitor transform applied *inside* the box
-    // (Renderer.cpp:1836-1840), which would rotate this pseudo-box. Monitor
-    // rotation stays in targetProjection (Renderer.cpp:1828). Rotated outputs
-    // are untested.
-    const double s    = monitor->m_scale;
-    const auto   proj = g_pHyprRenderer->projectBoxToTarget(CBox{-monitor->m_position.x * s, -monitor->m_position.y * s, s, s}, HYPRUTILS_TRANSFORM_NORMAL);
+    auto& slot = m_inst->slot;
 
     // Through Hyprland's program cache (OpenGL.cpp:2561-2569), not raw glUseProgram.
-    auto shader = g_pHyprOpenGL->useShader(m_inst->shader.shader);
-    shader->setUniformMatrix3fv(SHADER_PROJ, 1, GL_TRUE, proj.getMatrix());
-    glUniform1f(m_inst->shader.locNowMs, sc<float>(m_nowMs - m_inst->gpu.refMs()));
-    glUniform1f(m_inst->shader.locFadeMs, sc<float>(m_inst->fadeMs));
-    glUniform1f(m_inst->shader.locWidthPx, m_inst->widthPx);
-    glUniform1f(m_inst->shader.locMiterLimit, m_inst->miterLimit);
-    glUniform1f(m_inst->shader.locSpeedRef, m_inst->speedRefPxPerMs);
+    auto shader = g_pHyprOpenGL->useShader(slot.shader());
+    shader->setUniformMatrix3fv(SHADER_PROJ, 1, GL_TRUE, hyprtail::globalProjection(monitor).getMatrix());
+    glUniform1f(slot.loc("nowMs"), sc<float>(m_nowMs - m_inst->gpu.refMs()));
+    glUniform1f(slot.loc("fadeMs"), sc<float>(m_inst->fadeMs));
+    glUniform1f(slot.loc("widthPx"), m_inst->widthPx);
+    glUniform1f(slot.loc("miterLimit"), m_inst->miterLimit);
+    glUniform1f(slot.loc("speedRef"), m_inst->speedRefPxPerMs);
+
+    // Color management: the sRGB palette converted to the current
+    // framebuffer's color space, like core's own solid colors (RenderUtil).
+    // Colors a shader computes itself are not converted (shader contract).
+    hyprtail::setPaletteUniform(slot.loc("colorSlow"), m_inst->colorSlow);
+    hyprtail::setPaletteUniform(slot.loc("colorFast"), m_inst->colorFast);
 
     // Premultiplied blending through Hyprland's cap-status cache (OpenGL.cpp:981-989).
     // Blend state is whatever the previous element left, so set it explicitly.
