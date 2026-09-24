@@ -10,7 +10,9 @@
 //   bit 0: 0 = left, 1 = right
 //   bit 1: 0 = top,  1 = bottom
 //
-// Uniforms (any you don't declare are simply not set):
+// Uniforms (any you don't declare are simply not set; using one not listed
+// here, or any vertex attribute, is rejected at load, since the plugin would
+// never set it and it would read 0):
 //   mat3  proj        global layout px -> clip space, per monitor
 //   vec2  center      pointer position, global layout (logical) px
 //   float extentPx    half-size of the square: radiusPx plus the declared and

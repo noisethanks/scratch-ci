@@ -52,7 +52,13 @@ this file states the decision and marks what's still a placeholder.
 - **hyprpm:** `hyprpm.toml` at the repo root: repository `hyprtail`, one
   plugin `hyprtail`, `output = "out/hyprtail.so"`, `build = ["make all"]`,
   no commit pins yet (see NOTES "hyprpm"). Install: `hyprpm add <git url>`,
-  `hyprpm enable hyprtail`.
+  `hyprpm enable hyprtail`. **After `hyprpm update`, run `hyprpm reload -f`**
+  (or restart Hyprland): `hyprpm update` builds the new version but does not
+  reload a plugin that's already loaded, so the old build keeps running.
+- **Build revision:** the Makefile writes `out/rev.hpp` (git short hash,
+  `-dirty` for uncommitted changes; rewritten only when it changes). It shows
+  in the "loaded" notification, the log, the plugin version string and the
+  `errors.log` header, so the running build is always identifiable.
 - Build via `make clear && make debug` in `external/Hyprland` (not hand-rolled
   `cmake` flags, not bare `rm -rf build`, both miss things the project's own
   Makefile handles: `-DTESTS=true` for hyprtester, generated protocol headers
@@ -214,6 +220,19 @@ this file states the decision and marks what's still a placeholder.
   shader reads `v_side`, `v_alpha`, `v_color`; a custom vertex shader with
   the stock fragment shader must write them. A mismatch fails at link time
   and is reported.
+- **Contract enforcement:** after linking, the program's active uniforms
+  and attribute locations are checked against what the plugin provides for
+  that slot (trail: the uniforms and locations 0-11 in `shaders/trail.vert`;
+  idle: its uniforms, no attributes). Anything else is rejected with a
+  message naming it: the plugin would never set it, so it would read 0 (a
+  shader written for a newer plugin version reading `colorSlow` on an older
+  one draws fully transparent).
+- **Fallback when a user shader fails** (compile, link, contract, or file
+  error): if it's the same files as the active program (an edit with a
+  mistake), the last working version of those files stays; if the files
+  differ (a config change) or nothing is active, the built-in program is
+  used. Keeping an old program across a config change would show something
+  that no longer matches the config, possibly nothing at all.
 - **Includes (loader-side preprocessor, `src/ShaderSource.*`):** GLSL ES has
   no `#include`, so the plugin resolves it before compiling.
   `#include "hyprtail/<name>"` pulls in a built-in prefab (embedded);

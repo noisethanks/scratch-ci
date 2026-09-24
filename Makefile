@@ -44,7 +44,14 @@ ifneq ($(shell $(CXX) --version 2>/dev/null | grep -c "Free Software Foundation"
     CXXFLAGS += --no-gnu-unique
 endif
 
-.PHONY: all clean load unload check-pin check-headers
+# Build revision, shown in the "loaded" notification, the log and the
+# errors.log header, so it's clear which build a running Hyprland has loaded
+# (hyprpm doesn't reload an already-loaded plugin after `hyprpm update`).
+# Rewritten only when it changes, so it doesn't force rebuilds.
+REV_HEADER := out/rev.hpp
+CXXFLAGS   += -Iout
+
+.PHONY: all clean load unload check-pin check-headers FORCE
 
 all: $(OUTPUT)
 
@@ -54,6 +61,15 @@ $(OUTPUT): $(OBJECT_FILES)
 out/%.o: src/%.cpp $(HEADER_FILES) $(SHADER_FILES) | $(HEADER_CHECK)
 	@mkdir -p out
 	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+out/main.o out/Diagnostics.o: $(REV_HEADER)
+
+$(REV_HEADER): FORCE
+	@mkdir -p out
+	@rev="$$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"; \
+	if [ "$$rev" != unknown ] && ! git diff --quiet HEAD -- 2>/dev/null; then rev="$$rev-dirty"; fi; \
+	printf '#pragma once\n#define HYPRTAIL_REV "%s"\n' "$$rev" > $@.tmp; \
+	if cmp -s $@.tmp $@; then rm -f $@.tmp; else mv $@.tmp $@; fi
 
 # Default mode: fail clearly if pkg-config can't find Hyprland's headers, and
 # warn (don't fail) if they're not the commit this plugin is developed

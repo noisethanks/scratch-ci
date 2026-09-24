@@ -1,5 +1,7 @@
 #include "ShaderSlot.hpp"
 
+#include <algorithm>
+#include <array>
 #include <format>
 #include <stdexcept>
 
@@ -14,12 +16,60 @@ using namespace Render::GL;
 
 namespace hyprtail {
     namespace {
+        // Active uniforms and attributes the program uses that the plugin
+        // doesn't provide. Such a shader compiles and links but reads zeros
+        // there (e.g. a shader written for a newer plugin version reading
+        // palette uniforms an older plugin never sets draws fully
+        // transparent), so it's treated as a failure.
+        std::optional<std::string> contractCheck(GLuint prog, const SShaderContract& contract) {
+            std::vector<std::string> problems;
+            std::array<char, 256>    name{};
+
+            GLint                    count = 0;
+            glGetProgramiv(prog, GL_ACTIVE_UNIFORMS, &count);
+            for (GLint i = 0; i < count; ++i) {
+                GLsizei len  = 0;
+                GLint   size = 0;
+                GLenum  type = 0;
+                glGetActiveUniform(prog, sc<GLuint>(i), name.size(), &len, &size, &type, name.data());
+                std::string n{name.data(), sc<size_t>(std::max(len, 0))};
+                if (n.starts_with("gl_"))
+                    continue;
+                if (std::ranges::find(contract.uniforms, n) == contract.uniforms.end())
+                    problems.push_back(std::format("uniform `{}` is not provided by this hyprtail version (it would stay 0)", n));
+            }
+
+            count = 0;
+            glGetProgramiv(prog, GL_ACTIVE_ATTRIBUTES, &count);
+            for (GLint i = 0; i < count; ++i) {
+                GLsizei len  = 0;
+                GLint   size = 0;
+                GLenum  type = 0;
+                glGetActiveAttrib(prog, sc<GLuint>(i), name.size(), &len, &size, &type, name.data());
+                std::string n{name.data(), sc<size_t>(std::max(len, 0))};
+                if (n.starts_with("gl_"))
+                    continue;
+                const GLint loc = glGetAttribLocation(prog, n.c_str());
+                if (std::ranges::find(contract.attribLocations, loc) == contract.attribLocations.end())
+                    problems.push_back(std::format("attribute `{}` at location {} is not fed by this hyprtail version", n, loc));
+            }
+
+            if (problems.empty())
+                return std::nullopt;
+
+            std::string out = "shader uses inputs this hyprtail version doesn't provide (written for another version? see the contract in the stock shaders):";
+            for (const auto& p : problems)
+                out += "\n  " + p;
+            return out;
+        }
+
         // CShader::createProgram logs compile/link errors and discards the
         // text (Shader.cpp logShaderError), so compile and link once ourselves
-        // to capture the GLSL log, mapped back to file:line. Raw shader/program
-        // objects only, no cached GL state touched. Returns the error, or
-        // nullopt if both stages compile and link.
-        std::optional<std::string> glslCheck(const SShaderPair& pair) {
+        // to capture the GLSL log, mapped back to file:line, and to check the
+        // program against the slot's contract. Raw shader/program objects
+        // only, no cached GL state touched. Returns the error, or nullopt if
+        // both stages compile, link and fit the contract.
+        std::optional<std::string> glslCheck(const SShaderPair& pair, const SShaderContract& contract) {
             const auto infoLog = [](GLuint obj, bool program) {
                 GLint len = 0;
                 program ? glGetProgramiv(obj, GL_INFO_LOG_LENGTH, &len) : glGetShaderiv(obj, GL_INFO_LOG_LENGTH, &len);
@@ -75,6 +125,8 @@ namespace hyprtail {
                 if (ok != GL_TRUE)
                     result = std::format("shaders {} + {} failed to link (varyings must match):\n{}", pair.vert.sourceNames.front(), pair.frag.sourceNames.front(),
                                          infoLog(prog, true));
+                else if (auto bad = contractCheck(prog, contract))
+                    result = std::format("shaders {} + {}: {}", pair.vert.sourceNames.front(), pair.frag.sourceNames.front(), *bad);
                 glDetachShader(prog, vs);
                 glDetachShader(prog, fs);
                 glDeleteProgram(prog);
@@ -86,8 +138,10 @@ namespace hyprtail {
         }
     }
 
-    CShaderSlot::CShaderSlot(std::string name, std::string vertName, std::string_view vertBuiltin, std::string fragName, std::string_view fragBuiltin) :
-        m_name(std::move(name)), m_vertName(std::move(vertName)), m_fragName(std::move(fragName)), m_vertBuiltin(vertBuiltin), m_fragBuiltin(fragBuiltin) {}
+    CShaderSlot::CShaderSlot(std::string name, std::string vertName, std::string_view vertBuiltin, std::string fragName, std::string_view fragBuiltin,
+                             SShaderContract contract) :
+        m_name(std::move(name)), m_vertName(std::move(vertName)), m_fragName(std::move(fragName)), m_vertBuiltin(vertBuiltin), m_fragBuiltin(fragBuiltin),
+        m_contract(std::move(contract)) {}
 
     const SShaderPair& CShaderSlot::builtin() {
         if (!m_builtin) {
@@ -107,11 +161,12 @@ namespace hyprtail {
         SShaderPair pair   = builtin();
         bool        failed = false;
 
-        const auto  loadStage = [&](const std::string& configured, const char* stage, shader::SSource& out) {
+        const auto  loadStage = [&](const std::string& configured, const char* stage, shader::SSource& out, std::string& origin) {
             const auto path = cfg::resolveShaderPath(configured);
             if (path.empty())
                 return; // built-in
 
+            origin = path.string();
             watch.push_back(path); // even if missing, so creating it reloads
             auto src = shader::load(path);
             if (!src) {
@@ -125,15 +180,15 @@ namespace hyprtail {
             pair.builtin = false;
         };
 
-        loadStage(vertConfigured, "vertex", pair.vert);
-        loadStage(fragConfigured, "fragment", pair.frag);
+        loadStage(vertConfigured, "vertex", pair.vert, pair.vertOrigin);
+        loadStage(fragConfigured, "fragment", pair.frag, pair.fragOrigin);
 
         if (!failed)
             m_pending = std::move(pair);
     }
 
     std::optional<std::string> CShaderSlot::compileAndActivate(const SShaderPair& pair) {
-        if (auto error = glslCheck(pair))
+        if (auto error = glslCheck(pair, m_contract))
             return error;
 
         // silent: failures are ours to report; core's error bar would label
@@ -150,6 +205,7 @@ namespace hyprtail {
 
         m_shader            = shader;
         m_declaredPaddingPx = pair.declaredPaddingPx();
+        m_activeOrigin      = pair.vertOrigin + '\n' + pair.fragOrigin;
         m_locs.clear();
 
         Log::logger->log(Log::INFO, "[hyprtail] {} shader active ({} + {}), program id={}", m_name, pair.vert.sourceNames.front(), pair.frag.sourceNames.front(),
@@ -165,10 +221,22 @@ namespace hyprtail {
             m_pending.reset();
 
             if (const auto error = compileAndActivate(pair)) {
+                // Keep the active program only if it came from the same files
+                // (an edit with a mistake in it: the last working version of
+                // those files stays). After a config change to other files,
+                // the active program no longer reflects the config and may
+                // not even draw, so fall back to the built-in one.
+                const bool sameFiles = m_shader && m_activeOrigin == pair.vertOrigin + '\n' + pair.fragOrigin;
+                if (m_shader && !sameFiles) {
+                    m_shader->destroy();
+                    m_shader.reset();
+                    m_locs.clear();
+                }
+
                 // Report every failed attempt, not just the first of the session.
                 diag::resetKey(key);
-                const char* keeping = m_shader ? "keeping the previous shader" : "using the built-in shader";
-                diag::report(pair.builtin ? eSeverity::ERR : eSeverity::WARN, key, std::format("{}: {}\n{}", m_name, keeping, *error));
+                const char* fallback = sameFiles ? "keeping the last working version of these files" : "using the built-in shader";
+                diag::report(pair.builtin ? eSeverity::ERR : eSeverity::WARN, key, std::format("{}: {}\n{}", m_name, fallback, *error));
             } else
                 diag::resetKey(key);
         }

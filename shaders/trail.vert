@@ -28,7 +28,9 @@
 // are copies of the end node (zero-length direction), handle that as "no
 // neighbor".
 //
-// Uniforms (any you don't declare are simply not set):
+// Uniforms (any you don't declare are simply not set; using a uniform or
+// attribute location not listed here is rejected at load, since the plugin
+// would never set it and it would read 0):
 //   mat3  proj        global layout px -> clip space, per monitor
 //   float nowMs       current time, same reference as the birth times; only
 //                     age = nowMs - birthMs is meaningful

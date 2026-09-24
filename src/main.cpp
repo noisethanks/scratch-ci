@@ -24,6 +24,7 @@
 #include <debug/log/Logger.hpp>
 
 #include "Config.hpp"
+#include "rev.hpp"
 #include "Diagnostics.hpp"
 #include "FileWatch.hpp"
 #include "IdlePassElement.hpp"
@@ -578,8 +579,9 @@ static PLUGIN_DESCRIPTION_INFO pluginInit() {
     s_specialActiveListener   = Event::bus()->m_events.workspace.specialActive.listen([] { onContentChanged(); });
     s_workspaceMovedListener  = Event::bus()->m_events.workspace.moveToMonitor.listen([] { onContentChanged(); });
 
-    Log::logger->log(Log::INFO, "[hyprtail] loaded, cursor hook {}, warp hook {}", s_cursorHook ? "active" : "unavailable", s_warpHook ? "active" : "unavailable");
-    HyprlandAPI::addNotification(s_handle, "[hyprtail] loaded", CHyprColor{0.2f, 1.0f, 0.2f, 1.0f}, 3000);
+    Log::logger->log(Log::INFO, "[hyprtail] {} loaded, cursor hook {}, warp hook {}", HYPRTAIL_REV, s_cursorHook ? "active" : "unavailable",
+                     s_warpHook ? "active" : "unavailable");
+    HyprlandAPI::addNotification(s_handle, std::format("[hyprtail] loaded ({})", HYPRTAIL_REV), CHyprColor{0.2f, 1.0f, 0.2f, 1.0f}, 3000);
 
     // Damage the primary monitor to schedule an immediate first frame.
     if (g_pHyprRenderer) {
@@ -587,7 +589,7 @@ static PLUGIN_DESCRIPTION_INFO pluginInit() {
             g_pHyprRenderer->damageMonitor(m);
     }
 
-    return {"hyprtail", "Cursor trail (ribbon, beneath the cursor)", "dev", "0.1"};
+    return {"hyprtail", "Cursor trail (ribbon, beneath the cursor)", "dev", "0.1-" HYPRTAIL_REV};
 }
 
 APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {

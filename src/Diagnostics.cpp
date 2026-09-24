@@ -16,6 +16,8 @@
 #include <helpers/Color.hpp>
 #include <debug/log/Logger.hpp>
 
+#include "rev.hpp"
+
 namespace hyprtail::diag {
     namespace {
         // The error file only holds the current session (truncated in init) and
@@ -169,7 +171,7 @@ namespace hyprtail::diag {
             }
 
             const char* sig    = std::getenv("HYPRLAND_INSTANCE_SIGNATURE");
-            const auto  header = std::format("hyprtail error log, session started {} (instance {})\n", utcNow(), sig ? sig : "unknown");
+            const auto  header = std::format("hyprtail {} error log, session started {} (instance {})\n", HYPRTAIL_REV, utcNow(), sig ? sig : "unknown");
             out << header;
 
             st.filePath  = path.string();

@@ -14,7 +14,14 @@
 // been still for delayMs, for durationMs (0 = until it moves). No point
 // buffer. Contract in shaders/idle.vert.
 struct SIdleInstance {
-    SIdleInstance() : slot(name, "idle.vert", hyprtail::shader::builtinIdleVertex(), "idle.frag", hyprtail::shader::builtinIdleFragment()) {}
+    SIdleInstance() :
+        slot(name, "idle.vert", hyprtail::shader::builtinIdleVertex(), "idle.frag", hyprtail::shader::builtinIdleFragment(),
+             // Uniforms set in CIdlePassElement::drawInternal; no attributes
+             // (shaders/idle.vert contract).
+             hyprtail::SShaderContract{
+                 .uniforms        = {"proj", "center", "extentPx", "radiusPx", "idleMs", "durationMs", "colorSlow", "colorFast"},
+                 .attribLocations = {},
+             }) {}
 
     std::string              name = "idle";
     hyprtail::CShaderSlot    slot;

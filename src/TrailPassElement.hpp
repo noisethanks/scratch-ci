@@ -63,7 +63,13 @@ class CTrailGpu {
 struct STrailInstance {
     STrailInstance(std::string name_, size_t capacity) :
         name(std::move(name_)), ring(capacity),
-        slot(name, "trail.vert", hyprtail::shader::builtinVertex(), "trail.frag", hyprtail::shader::builtinFragment()) {}
+        slot(name, "trail.vert", hyprtail::shader::builtinVertex(), "trail.frag", hyprtail::shader::builtinFragment(),
+             // Uniforms set in CTrailPassElement::drawInternal, attribute
+             // locations fed by CTrailGpu::ensure (shaders/trail.vert contract).
+             hyprtail::SShaderContract{
+                 .uniforms        = {"proj", "nowMs", "fadeMs", "widthPx", "miterLimit", "speedRef", "colorSlow", "colorFast"},
+                 .attribLocations = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11},
+             }) {}
 
     std::string            name; // for diagnostics keys, e.g. "shader:<name>"
     CTrailRing             ring;
