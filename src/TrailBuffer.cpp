@@ -37,6 +37,12 @@ void CTrailRing::resize(size_t capacity) {
     ++m_generation;
 }
 
+void CTrailRing::clear() {
+    m_head  = 0;
+    m_count = 0;
+    ++m_generation;
+}
+
 size_t CTrailRing::size() const {
     return m_count;
 }

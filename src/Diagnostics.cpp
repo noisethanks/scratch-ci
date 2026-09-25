@@ -6,7 +6,6 @@
 #include <cstdlib>
 #include <filesystem>
 #include <format>
-#include <fstream>
 #include <optional>
 #include <unordered_map>
 #include <unordered_set>
@@ -16,12 +15,17 @@
 #include <helpers/Color.hpp>
 #include <debug/log/Logger.hpp>
 
+#include <cerrno>
+#include <fcntl.h>
+#include <unistd.h>
+
 #include "rev.hpp"
 
 namespace hyprtail::diag {
     namespace {
-        // The error file only holds the current session (truncated in init) and
-        // stops growing at this size.
+        // The error file holds the current session (started fresh in init; the
+        // previous session's file is kept as errors.log.1) and stops growing
+        // at this size.
         constexpr size_t   ERROR_FILE_CAP_BYTES = 256 * 1024;
 
         constexpr size_t   NOTIFY_MAX_LINES = 8;
@@ -70,23 +74,56 @@ namespace hyprtail::diag {
             return std::format("{:%F %T} UTC", std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now()));
         }
 
+        // Write text to path (appending, or replacing the file) and fsync it.
+        // The file is for debugging after the fact, and a hang that ends in a
+        // power-off loses whatever is still only in the page cache. Writes
+        // are rare (one per distinct report key), so the sync is cheap.
+        bool writeDurable(const std::string& path, std::string_view text, bool replace) {
+            const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_CLOEXEC | (replace ? O_TRUNC : O_APPEND), 0644);
+            if (fd < 0)
+                return false;
+
+            bool   ok  = true;
+            size_t off = 0;
+            while (off < text.size()) {
+                const ssize_t n = ::write(fd, text.data() + off, text.size() - off);
+                if (n < 0) {
+                    if (errno == EINTR)
+                        continue;
+                    ok = false;
+                    break;
+                }
+                off += sc<size_t>(n);
+            }
+
+            if (ok)
+                ::fsync(fd);
+            ::close(fd);
+            return ok;
+        }
+
+        // fsync a directory, so a rename in it survives a power-off.
+        void syncDir(const std::filesystem::path& dir) {
+            const int fd = ::open(dir.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+            if (fd < 0)
+                return;
+            ::fsync(fd);
+            ::close(fd);
+        }
+
         void appendToFile(std::string_view text) {
             auto& st = state();
             if (st.filePath.empty() || st.fileCapped)
                 return;
 
-            std::ofstream out(st.filePath, std::ios::app);
-            if (!out)
-                return;
-
             if (st.fileBytes + text.size() > ERROR_FILE_CAP_BYTES) {
-                out << "[hyprtail] error file size cap reached, further messages only go to the Hyprland log\n";
+                writeDurable(st.filePath, "[hyprtail] error file size cap reached, further messages only go to the Hyprland log\n", false);
                 st.fileCapped = true;
                 return;
             }
 
-            out << text;
-            st.fileBytes += text.size();
+            if (writeDurable(st.filePath, text, false))
+                st.fileBytes += text.size();
         }
 
         std::string truncateForNotification(std::string_view msg) {
@@ -164,15 +201,27 @@ namespace hyprtail::diag {
                 return;
             }
 
-            std::ofstream out(path, std::ios::trunc);
-            if (!out) {
-                Log::logger->log(Log::ERR, "[hyprtail] can't open error file {}", path.string());
-                return;
+            // Keep the previous session's file as errors.log.1 instead of
+            // truncating it: after a crash or hang, the next load (hyprpm at
+            // login) would otherwise wipe the one file that matters. Replaces
+            // an older errors.log.1. A duplicate instance is refused before
+            // this runs (PLUGIN_INIT), so it can't rotate a live session's file.
+            if (std::filesystem::exists(path, ec)) {
+                auto rotated = path;
+                rotated += ".1";
+                std::filesystem::rename(path, rotated, ec);
+                if (ec)
+                    Log::logger->log(Log::ERR, "[hyprtail] can't rotate {} to {}: {}", path.string(), rotated.string(), ec.message());
+                else
+                    syncDir(path.parent_path());
             }
 
             const char* sig    = std::getenv("HYPRLAND_INSTANCE_SIGNATURE");
             const auto  header = std::format("hyprtail {} error log, session started {} (instance {})\n", HYPRTAIL_REV, utcNow(), sig ? sig : "unknown");
-            out << header;
+            if (!writeDurable(path.string(), header, true)) {
+                Log::logger->log(Log::ERR, "[hyprtail] can't write error file {}", path.string());
+                return;
+            }
 
             st.filePath  = path.string();
             st.fileBytes = header.size();

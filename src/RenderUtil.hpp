@@ -23,10 +23,12 @@ namespace hyprtail {
 
     // Damage a logical, monitor-local box. Inside a render of pMonitor: into
     // the current frame's render damage and the damage ring (which also
-    // schedules the next frame).
+    // schedules the next frame). Clipped to the monitor; empty, off-monitor
+    // and non-finite boxes are ignored.
     void damageInRender(const PHLMONITOR& pMonitor, const CBox& boxLocal);
 
     // Outside a render: into the damage ring only, which schedules a frame.
+    // Same clipping.
     void damageOutsideRender(const PHLMONITOR& pMonitor, const CBox& boxLocal);
 
     // Per-monitor damage lifecycle for one drawable (SPEC section 6): each
@@ -43,6 +45,16 @@ namespace hyprtail {
       public:
         // Inside a render of pMonitor.
         bool update(const PHLMONITOR& pMonitor, const CBox& curLocal);
+
+        // Outside a render: damage the last drawn box again (ring only), so
+        // the next render repaints it, e.g. after the drawable was cleared.
+        // The box stays remembered; that render's update() handles it.
+        void damagePrev(const PHLMONITOR& pMonitor);
+
+        // Drop a monitor's entry. On monitor removal, so a new CMonitor
+        // allocated at the same address starts clean.
+        void forget(const Monitor::CMonitor* pMonitor);
+
         void clear();
 
       private:

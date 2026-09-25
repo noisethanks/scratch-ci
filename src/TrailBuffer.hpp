@@ -61,6 +61,9 @@ class CTrailRing {
     // Bumps the generation.
     void               resize(size_t capacity);
 
+    // Drop every node (capacity unchanged). Bumps the generation.
+    void               clear();
+
     size_t             size() const;
     size_t             capacity() const;
     bool               empty() const;

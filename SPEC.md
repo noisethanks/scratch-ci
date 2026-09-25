@@ -446,10 +446,23 @@ this file states the decision and marks what's still a placeholder.
 - Cross-monitor continuity verified via `hyprctl cursorpos` tracing once
   outputs were confirmed properly aligned (`hyprctl monitors -j`, not
   eyeballed): no discontinuity once alignment was exact.
-- **Rotated outputs (transform != 0): untested.** The per-monitor projection
-  passes `HYPRUTILS_TRANSFORM_NORMAL` explicitly so the box-as-affine-map trick
-  isn't rotated inside the box, and relies on core's `targetProjection` for
-  the monitor rotation. Correct on paper, never observed.
+- **Rotated outputs:** transform 1 (90°) confirmed on the host. The
+  per-monitor projection passes `HYPRUTILS_TRANSFORM_NORMAL` explicitly so the
+  box-as-affine-map trick isn't rotated inside the box, and relies on core's
+  `targetProjection` for the monitor rotation. Transform 4 (flipped): the
+  host froze when it was applied; a second freeze happened with no transform
+  change (fullscreen game start), so the cause is not isolated. No plugin code
+  path depends on the transform (NOTES "Freeze analysis").
+- **Hotplug:** per-monitor state (render serials, last damage boxes, layout
+  snapshot) is keyed by `CMonitor*` and dropped on `monitor.removed` and
+  `monitor.destroyMon`, so a monitor allocated at a freed address starts
+  clean. On `monitor.layoutChanged` the trail is cleared (and the last drawn
+  boxes repainted) only if a monitor appeared, moved or changed size: trail
+  points are global, so after a layout change they could draw in the wrong
+  place until they fade. Config reloads that change nothing don't clear it.
+  A monitor that disappears mid-fade needs nothing more: its points have
+  nowhere to draw, and core warps the pointer off it, which breaks the trail
+  (unless `interpolate_warps`).
 - **Open, not yet tested:** buffer handling/culling for a monitor the trail
   isn't currently over, and damage propagation when the trail's bounding box
   straddles a seam between two outputs. Live multi-monitor hardware is now
@@ -461,8 +474,10 @@ this file states the decision and marks what's still a placeholder.
   (`debug:disable_logs` defaults to true). Every failure goes through one
   reporting path (`src/Diagnostics.*`): Hyprland log always; notification plus
   a full entry in `$XDG_STATE_HOME/hyprtail/errors.log` (fallback
-  `~/.local/state/hyprtail/errors.log`) once per key per load. The file is
-  truncated at plugin load (current session only) and capped at 256 KiB. The
+  `~/.local/state/hyprtail/errors.log`) once per key per load. At plugin load
+  the previous file is kept as `errors.log.1` (so a crashed or hung session's
+  log survives the next login) and a fresh one started; every write is
+  fsynced (survives a power-off); capped at 256 KiB. The
   config and shader loader report missing files and invalid values through
   the same path.
 - **Failure policy:** a user shader that fails to load, preprocess, compile
@@ -531,11 +546,17 @@ this file states the decision and marks what's still a placeholder.
 
 ## 10. Testing
 
-- **Lifecycle/crash-safety:** `hyprtester` (`make debug` builds it via
-  `-DTESTS=true`). Load/unload cleanly, survive monitor hotplug and
-  workspace changes without crashing. Existing test names in the project
-  read as state/behavior assertions; **unconfirmed** whether it supports any
-  pixel/frame readback, treat as state-only until checked against source.
+- **Lifecycle/crash-safety: `make smoke`**, run at every re-pin after
+  `make clear && make debug` in external/Hyprland. A hyprtester test
+  (`tests/hyprtester/hyprtail_smoke.cpp`, config additions in
+  `tests/hyprtester/smoke.lua`) in a headless Hyprland from the checkout:
+  load, trail and idle effect, duplicate load refused, three rounds of
+  adding an output, drawing on it and removing it mid-fade, unload, pointer
+  motion after unload, reload (errors.log.1 kept), final unload. After every
+  step the compositor must still answer IPC and errors.log must have nothing
+  past its header (warnings count). State-only: no pixel readback. Isolated
+  from the running session (own `XDG_RUNTIME_DIR`), but the headless
+  Hyprland uses the same GPU. Workspace changes are not covered.
 - **Visual correctness:** staged validation ladder, a deliberately separate
   throwaway pass-element/harness, not branches in the real trail code:
   1. Dot at fixed position, no tracking, proves the pass element registers

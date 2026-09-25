@@ -51,16 +51,27 @@ endif
 REV_HEADER := out/rev.hpp
 CXXFLAGS   += -Iout
 
-.PHONY: all clean load unload check-pin check-headers FORCE
+# DEV value out/ was built with, see its rule.
+BUILD_MODE := out/build-mode
+
+.PHONY: all clean load unload smoke check-pin check-headers FORCE
 
 all: $(OUTPUT)
 
 $(OUTPUT): $(OBJECT_FILES)
 	$(CXX) -shared $^ $(LDFLAGS) -o $@
 
-out/%.o: src/%.cpp $(HEADER_FILES) $(SHADER_FILES) | $(HEADER_CHECK)
+out/%.o: src/%.cpp $(HEADER_FILES) $(SHADER_FILES) $(BUILD_MODE) | $(HEADER_CHECK)
 	@mkdir -p out
 	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+# Which headers out/ was built against. Switching between `make` and
+# `make DEV=1` rebuilds everything instead of linking objects built against
+# the other headers. Rewritten only when it changes.
+$(BUILD_MODE): FORCE
+	@mkdir -p out
+	@echo "DEV=$(DEV)" > $@.tmp; \
+	if cmp -s $@.tmp $@; then rm -f $@.tmp; else mv $@.tmp $@; fi
 
 out/main.o out/Diagnostics.o: $(REV_HEADER)
 
@@ -116,3 +127,39 @@ load: all
 
 unload:
 	hyprctl plugin unload $(CURDIR)/$(OUTPUT)
+
+# Lifecycle smoke test (SPEC §10): load, duplicate refusal, monitor hotplug,
+# unload and reload of the plugin in a headless Hyprland started from the
+# external/Hyprland checkout, which must be built with tests (`make clear &&
+# make debug` there). Run it at every re-pin.
+#
+# It starts its own Hyprland and cannot reach a running session: hyprtester
+# talks to the newest instance under $XDG_RUNTIME_DIR/hypr
+# (hyprtester/src/hyprctlCompat.cpp:26-80), so XDG_RUNTIME_DIR is a fresh
+# directory and the session's display variables are unset. XDG_STATE_HOME is
+# scratch too, so errors.log is the test's own. The test file and config are
+# copied into the checkout for the build and removed afterwards. On failure
+# the scratch directory (Hyprland log under run/hypr/, errors.log under
+# state/hyprtail/) is kept and its path printed.
+HYPRTESTER_DIR := $(HYPRLAND_SRC)/hyprtester
+SMOKE_TEST     := $(HYPRTESTER_DIR)/src/tests/main/hyprtail_smoke.cpp
+SMOKE_CONFIG   := $(HYPRTESTER_DIR)/hyprtail_smoke.lua
+
+smoke:
+	$(MAKE) DEV=1 all
+	@if [ ! -x $(HYPRLAND_SRC)/build/Hyprland ] || [ ! -d $(HYPRLAND_SRC)/build/hyprtester ]; then \
+		echo "error: external/Hyprland isn't built with tests; run 'make clear && make debug' in external/Hyprland" >&2; exit 1; \
+	fi
+	@tmp=$$(mktemp -d -t hyprtail-smoke.XXXXXX) || exit 1; \
+	trap 'rm -f $(SMOKE_TEST) $(SMOKE_CONFIG)' EXIT; \
+	cp tests/hyprtester/hyprtail_smoke.cpp $(SMOKE_TEST) && \
+	cat $(HYPRTESTER_DIR)/test.lua tests/hyprtester/smoke.lua > $(SMOKE_CONFIG) && \
+	cmake --build $(HYPRLAND_SRC)/build --target hyprtester -j$$(nproc) || exit 1; \
+	mkdir -p "$$tmp/run" "$$tmp/state" && chmod 700 "$$tmp/run" || exit 1; \
+	cd $(HYPRLAND_SRC) && env -u WAYLAND_DISPLAY -u DISPLAY -u HYPRLAND_INSTANCE_SIGNATURE \
+		XDG_RUNTIME_DIR="$$tmp/run" XDG_STATE_HOME="$$tmp/state" HYPRTAIL_SO="$(CURDIR)/$(OUTPUT)" \
+		./build/hyprtester/hyprtester -c $(SMOKE_CONFIG) -b ./build/Hyprland -p hyprtester/plugin/hyprtestplugin.so hyprtailLifecycle; \
+	status=$$?; \
+	if [ $$status -eq 0 ]; then rm -rf "$$tmp"; echo "smoke: passed"; \
+	else echo "smoke: FAILED (exit $$status); logs kept in $$tmp" >&2; fi; \
+	exit $$status

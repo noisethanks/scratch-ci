@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <bit>
 #include <chrono>
 #include <cmath>
@@ -67,9 +68,15 @@ static CHyprSignalListener                                   s_workspaceActiveLi
 static CHyprSignalListener                                   s_specialActiveListener;
 static CHyprSignalListener                                   s_workspaceMovedListener;
 static CHyprSignalListener                                   s_configReloadListener;
+static CHyprSignalListener                                   s_monitorRemovedListener;
+static CHyprSignalListener                                   s_monitorDestroyListener;
+static CHyprSignalListener                                   s_layoutChangedListener;
 static hyprtail::cfg::SValues                                s_config;
 static hyprtail::CFileWatch                                  s_fileWatch;
 static std::unordered_map<Monitor::CMonitor*, SMonitorFrame> s_monFrame;
+// Each enabled monitor's logical box at the last layout check, to tell a real
+// layout change from an arrange() that changed nothing (onLayoutChanged).
+static std::unordered_map<Monitor::CMonitor*, CBox>          s_layout;
 
 static double                                                msSinceEpoch(const Time::steady_tp& tp) {
     return std::chrono::duration<double, std::milli>(tp - s_epoch).count();
@@ -385,6 +392,76 @@ static void onContentChanged() {
     });
 }
 
+// ---------------------------------------------------------------- hotplug
+
+// Logical box of every enabled, non-mirror monitor. allMonitors() rather than
+// monitors(): the latter is fixed up by core's own layoutChanged listener
+// (MonitorState.cpp:32-46), which may run after ours.
+static std::unordered_map<Monitor::CMonitor*, CBox> currentLayout() {
+    std::unordered_map<Monitor::CMonitor*, CBox> out;
+    for (const auto& m : State::monitorState()->allMonitors()) {
+        if (!m || !m->m_enabled || m->isMirror())
+            continue;
+        out.emplace(m.get(), CBox{m->m_position, m->m_size});
+    }
+    return out;
+}
+
+// Monitor disabled (removed: Monitor.cpp:392-400, also by a monitor rule,
+// MonitorRuleManager.cpp:187) or destroyed (destroyMon: MonitorState.cpp:152-156,
+// after which the CMonitor can be freed and its address reused). Drops
+// everything keyed by it, so a new monitor at the same address starts clean.
+// Nothing else refers to the monitor: GL objects are global and pass
+// elements live for one render. A trail or idle effect that was on it simply
+// stops drawing there; the pointer is warped off it (Monitor.cpp:478-480),
+// which breaks the trail via the warp hook unless interpolateWarps.
+static void onMonitorGone(const PHLMONITOR& pMonitor) {
+    hyprtail::diag::guard("monitor-removed", [&] {
+        if (!pMonitor)
+            return;
+        Monitor::CMonitor* m = pMonitor.get();
+        s_monFrame.erase(m);
+        s_layout.erase(m);
+        if (s_motionTrail)
+            s_motionTrail->damage.forget(m);
+        if (s_idle)
+            s_idle->damage.forget(m);
+    });
+}
+
+// Monitors arranged (MonitorLayoutController.cpp:70, Monitor.cpp:1399,
+// MonitorRuleManager.cpp:204). Trail points are global coordinates: if a
+// monitor moved, changed size (mode, scale, transform) or appeared, old
+// points could land somewhere else on screen until they fade, so the trail
+// is dropped. Only then: arrange() also runs on config reloads that change
+// nothing, and those must not clear the trail. A monitor only disappearing
+// needs nothing: its points have no monitor to draw on.
+static void onLayoutChanged() {
+    hyprtail::diag::guard("layout-changed", [] {
+        auto       now     = currentLayout();
+        const bool changed = std::ranges::any_of(now, [](const auto& entry) {
+            const auto it = s_layout.find(entry.first);
+            return it == s_layout.end() || !(it->second == entry.second);
+        });
+        s_layout = std::move(now);
+
+        if (!changed || !s_motionTrail)
+            return;
+
+        auto& inst = *s_motionTrail;
+        inst.ring.clear();
+        inst.pendingBreak = true;
+        // Repaint what was drawn last: monitor-local boxes, still where the
+        // trail is on screen. The next render of each monitor sees an empty
+        // trail, damages that box once more and goes idle.
+        for (const auto& m : State::monitorState()->allMonitors()) {
+            if (m && m->m_enabled && !m->isMirror())
+                inst.damage.damagePrev(m);
+        }
+        Log::logger->log(Log::INFO, "[hyprtail] monitor layout changed, trail cleared");
+    });
+}
+
 static void onMouseMove() {
     if (!hyprtail::diag::guard("mouse-move", [] { onMouseMoveInternal(); }) && s_motionTrail)
         s_motionTrail->disabled = true; // not in a render: GPU freed at unload
@@ -429,6 +506,9 @@ static void teardown() noexcept {
         s_workspaceActiveListener.reset();
         s_specialActiveListener.reset();
         s_workspaceMovedListener.reset();
+        s_monitorRemovedListener.reset();
+        s_monitorDestroyListener.reset();
+        s_layoutChangedListener.reset();
         s_mouseMoveListener.reset();
         s_renderStageListener.reset();
         removeHook(s_cursorHook);
@@ -450,6 +530,7 @@ static void teardown() noexcept {
             s_idle.reset();
         }
         s_monFrame.clear();
+        s_layout.clear();
         hyprtail::cfg::releaseValues();
     });
 
@@ -581,6 +662,12 @@ static PLUGIN_DESCRIPTION_INFO pluginInit() {
     s_specialActiveListener   = Event::bus()->m_events.workspace.specialActive.listen([] { onContentChanged(); });
     s_workspaceMovedListener  = Event::bus()->m_events.workspace.moveToMonitor.listen([] { onContentChanged(); });
 
+    // Hotplug (EventBus.hpp:158-169): per-monitor state is keyed by CMonitor*.
+    s_layout                 = currentLayout();
+    s_monitorRemovedListener = Event::bus()->m_events.monitor.removed.listen([](PHLMONITOR m) { onMonitorGone(m); });
+    s_monitorDestroyListener = Event::bus()->m_events.monitor.destroyMon.listen([](PHLMONITOR m) { onMonitorGone(m); });
+    s_layoutChangedListener  = Event::bus()->m_events.monitor.layoutChanged.listen([] { onLayoutChanged(); });
+
     Log::logger->log(Log::INFO, "[hyprtail] {} loaded, cursor hook {}, warp hook {}", HYPRTAIL_REV, s_cursorHook ? "active" : "unavailable",
                      s_warpHook ? "active" : "unavailable");
     HyprlandAPI::addNotification(s_handle, std::format("[hyprtail] loaded ({})", HYPRTAIL_REV), CHyprColor{0.2f, 1.0f, 0.2f, 1.0f}, 3000);
@@ -635,7 +722,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     s_handle = handle;
 
     // Checked before anything else, including diag::init, which would
-    // truncate the other instance's errors.log. Nothing is registered yet, so
+    // rotate away the other instance's errors.log. Nothing is registered yet, so
     // no teardown is needed: one notification, then a std::exception, which
     // is how a plugin refuses to load (Hyprland catches it and ejects the
     // plugin, PluginSystem.cpp:113-126).

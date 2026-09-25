@@ -1,6 +1,7 @@
 #include "RenderUtil.hpp"
 
 #include <cmath>
+#include <optional>
 
 #include <render/Renderer.hpp>
 #include <output/Monitor.hpp>
@@ -14,15 +15,27 @@ namespace hyprtail {
         return CBox{x1, y1, x2 - x1, y2 - y1};
     }
 
-    static bool onMonitor(const PHLMONITOR& pMonitor, const CBox& boxLocal) {
-        return !boxLocal.empty() && boxLocal.overlaps(CBox{{}, pMonitor->m_size});
+    // The part of boxLocal on the monitor, or nullopt if there is none or the
+    // box isn't finite. The damage ring clips anyway (DamageRing.cpp:21-31),
+    // the render damage doesn't, and the hyprutils region calls convert
+    // doubles to pixman's int32 (Region.cpp:65-68), where a NaN or huge value
+    // is undefined.
+    static std::optional<CBox> clipToMonitor(const PHLMONITOR& pMonitor, const CBox& boxLocal) {
+        if (!std::isfinite(boxLocal.x) || !std::isfinite(boxLocal.y) || !std::isfinite(boxLocal.w) || !std::isfinite(boxLocal.h) || boxLocal.w < 0.0 || boxLocal.h < 0.0)
+            return std::nullopt;
+
+        const CBox clipped = boxLocal.intersection(CBox{{}, pMonitor->m_size});
+        if (clipped.empty())
+            return std::nullopt;
+        return clipped;
     }
 
     void damageInRender(const PHLMONITOR& pMonitor, const CBox& boxLocal) {
-        if (!onMonitor(pMonitor, boxLocal))
+        const auto clipped = clipToMonitor(pMonitor, boxLocal);
+        if (!clipped)
             return;
 
-        const CBox px = outwardPixelBox(boxLocal, pMonitor->m_scale);
+        const CBox px = outwardPixelBox(*clipped, pMonitor->m_scale);
 
         // Current frame: beginRender already read and rotated the damage ring
         // (Renderer.cpp:1782-1783), so this frame only sees damage added to
@@ -38,9 +51,10 @@ namespace hyprtail {
     }
 
     void damageOutsideRender(const PHLMONITOR& pMonitor, const CBox& boxLocal) {
-        if (!onMonitor(pMonitor, boxLocal))
+        const auto clipped = clipToMonitor(pMonitor, boxLocal);
+        if (!clipped)
             return;
-        pMonitor->addDamage(outwardPixelBox(boxLocal, pMonitor->m_scale));
+        pMonitor->addDamage(outwardPixelBox(*clipped, pMonitor->m_scale));
     }
 
     bool CMonitorDamage::update(const PHLMONITOR& pMonitor, const CBox& curLocal) {
@@ -58,6 +72,16 @@ namespace hyprtail {
         damageInRender(pMonitor, curLocal);
         prev = curLocal;
         return true;
+    }
+
+    void CMonitorDamage::damagePrev(const PHLMONITOR& pMonitor) {
+        const auto it = m_prev.find(pMonitor.get());
+        if (it != m_prev.end())
+            damageOutsideRender(pMonitor, it->second);
+    }
+
+    void CMonitorDamage::forget(const Monitor::CMonitor* pMonitor) {
+        m_prev.erase(const_cast<Monitor::CMonitor*>(pMonitor));
     }
 
     void CMonitorDamage::clear() {

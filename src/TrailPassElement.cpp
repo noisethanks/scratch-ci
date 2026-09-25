@@ -58,7 +58,10 @@ bool CTrailGpu::ensure(size_t ringCapacity, std::string& error) {
 
     // Drain stale errors so the check after glBufferData is ours. This hides
     // errors core left behind; only core's debug builds look at those.
-    while (glGetError() != GL_NO_ERROR) {}
+    // Bounded: GL keeps one flag per error kind, so a few reads empty it, but
+    // a driver that keeps reporting an error (e.g. a lost context) would
+    // otherwise spin here forever.
+    for (int i = 0; i < 16 && glGetError() != GL_NO_ERROR; ++i) {}
 
     glBindVertexArray(m_vao);
     // Raw bind is fine at efb5099: there is no array-buffer cache, core binds
