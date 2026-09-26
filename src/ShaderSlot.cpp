@@ -185,6 +185,8 @@ namespace hyprtail {
 
         if (!failed)
             m_pending = std::move(pair);
+        else
+            m_lastResult = "file error, kept the current shader";
     }
 
     std::optional<std::string> CShaderSlot::compileAndActivate(const SShaderPair& pair) {
@@ -206,6 +208,8 @@ namespace hyprtail {
         m_shader            = shader;
         m_declaredPaddingPx = pair.declaredPaddingPx();
         m_activeOrigin      = pair.vertOrigin + '\n' + pair.fragOrigin;
+        m_activeVertOrigin  = pair.vertOrigin;
+        m_activeFragOrigin  = pair.fragOrigin;
         m_locs.clear();
 
         Log::logger->log(Log::INFO, "[hyprtail] {} shader active ({} + {}), program id={}", m_name, pair.vert.sourceNames.front(), pair.frag.sourceNames.front(),
@@ -237,16 +241,21 @@ namespace hyprtail {
                 diag::resetKey(key);
                 const char* fallback = sameFiles ? "keeping the last working version of these files" : "using the built-in shader";
                 diag::report(pair.builtin ? eSeverity::ERR : eSeverity::WARN, key, std::format("{}: {}\n{}", m_name, fallback, *error));
-            } else
+                m_lastResult = sameFiles ? "failed, kept the last working version" : "failed, using the built-in shader";
+            } else {
                 diag::resetKey(key);
+                m_lastResult = "ok";
+            }
         }
 
         if (m_shader)
             return std::nullopt;
 
         // Nothing active (first load, or the first user shader failed).
-        if (const auto error = compileAndActivate(builtin()))
+        if (const auto error = compileAndActivate(builtin())) {
+            m_lastResult = "built-in shader failed";
             return std::format("the built-in shader failed: {}", *error);
+        }
         return std::nullopt;
     }
 
@@ -280,5 +289,19 @@ namespace hyprtail {
 
     const std::string& CShaderSlot::name() const {
         return m_name;
+    }
+
+    bool CShaderSlot::hasPending() const {
+        return m_pending.has_value();
+    }
+
+    SSlotStatus CShaderSlot::status() const {
+        return {
+            .active     = m_shader != nullptr,
+            .pending    = m_pending.has_value(),
+            .vertOrigin = m_activeVertOrigin,
+            .fragOrigin = m_activeFragOrigin,
+            .lastResult = m_lastResult,
+        };
     }
 }

@@ -294,6 +294,76 @@ Not yet reached, environment/fixture work has been the focus so far (see Environ
 - **Config:** `/eval hl.config(...)` doesn't emit `config.reloaded` (`HyprCtl.cpp:1110-1123`, `lua/ConfigManager.cpp:880-...`), and the reload after every plugin load (`PluginSystem.cpp:135`) re-runs the config file and drops eval'd rules. So plugin settings and the test output's monitor rule live in `smoke.lua`, appended to `test.lua` (same directory, so its relative requires still resolve). test.lua disables unknown outputs (`hl.monitor({ output = "", disabled = true })`, `test.lua:28`), hence the explicit rule.
 - **Build:** `make smoke` rebuilds the plugin with `DEV=1` (out/ now records its DEV mode, switching modes rebuilds everything), copies the test and config into the checkout, builds the `hyprtester` target, runs `hyprtailLifecycle` only, removes the copies. Not run by the assistant.
 
+## Phase 0 spikes for SPEC §13 (cited at efb5099; libwayland 1.26.0)
+
+Source analysis only: nothing was loaded or run. libwayland 1.26.0 (the host's `wayland-server.pc` version) is cloned read-only into `external/wayland` so the event-loop claims can be cited.
+
+### S1: host-binary exports (run by the user)
+- `nm -DC /usr/bin/Hyprland` shows all five exported (`T`): `Render::GL::CHyprOpenGLImpl::saveBufferForMirror(CBox const&)` at `0x9e2160`, `Monitor::CMonitor::needsACopyFB()`, `Pointer::CPointerManager::{currentCursorImage, getCursorBoxGlobal, getCurrentCursorTexture}()`.
+- An objdump limited to `end()` printed nothing: `end()` isn't in the dynamic symbol table of the stripped binary, so objdump labels its code with the nearest exported symbol and the awk range never matched. A whole-binary search for calls to `0x9e2160` found exactly one: `0x9e3358`.
+- **Interpretation:** source has exactly one caller, `end()` (`OpenGL.cpp:802`; the only other mention is a comment, `Renderer.cpp:1994`). One call site in source and one out-of-line call in the binary means that call is `end()`'s, wherever LTO placed that code. A hook patches the function entry, so it sees that call. Not excluded by this check: LTO emitting a second copy of `end()`'s code with the body inlined, which leaves no call to find. Covered by a runtime self-check in the design (SPEC §13.12). To see the enclosing code directly: `objdump -dC --no-show-raw-insn --start-address=0x9e3300 --stop-address=0x9e3360 /usr/bin/Hyprland`.
+- The lean-ctx allowlist in `~/.config/lean-ctx/config.toml` still lacked `nm`/`objdump` when the assistant retried, so the checks were run by the user.
+
+### S2: dynamic config keys
+- **Registration after init works.**
+  - No init-only restriction in the API (`PluginAPI.cpp:446-460`).
+  - Lua: `registerPluginValue` just inserts into `m_configValues` (`lua/ConfigManager.cpp:1147-1164`).
+  - Legacy: same path as static plugin values (`legacy/ConfigManager.cpp:2153-2183`).
+  - Every parse first resets all values to defaults (`lua/ConfigManager.cpp:735-738`), so deleting a setting reverts it.
+- **Registration is only undone at plugin unload** (`onPluginUnload`, `lua/ConfigManager.cpp:1325-1336`); there is no removal API.
+- **Stale key within a session** (preset switched, or param removed from a shader, while the config still sets it):
+  - The key stays registered, so it parses without a Hyprland error.
+  - The plugin can still tell it was set: `Config::mgr()->getConfigValue(name).setByUser`, a virtual call (`ConfigManager.hpp:20-25, :54`). So it can warn itself.
+- **Stale key after a Hyprland restart or plugin reload: problem.**
+  - The key is never registered again, so every parse reports "unknown config key" (`LuaBindingsConfigRules.cpp:1001-1002`).
+  - The error bar stays until the line is removed.
+  - This applies to overrides for layers of a preset no longer selected, and to params removed from a shader.
+  - Result: the same config line is silent in the session where it went stale and an error after the next restart.
+- **Error bar during the extra reload.**
+  - **Mechanism:** parse errors only queue the bar (`lua/ConfigManager.cpp:779-801`, `Overlay.cpp:84-92`). It is built on the overlay's next draw (`Overlay.cpp:180-185`). A clean reload before that draw calls `destroy()` on a bar not yet created, which just drops the queue (`lua/ConfigManager.cpp:807-808`, `Overlay.cpp:257-262`).
+  - **Deferred reloads: no flash.** This covers the reload after a plugin load (`PluginSystem.cpp:135`) and our `reloadConfig()` (`PluginAPI.cpp:107-110`); both are `doLater` idle callbacks.
+    - A `doLater` issued while an idle batch runs gets a fresh idle source (`EventLoopManager.cpp:215-238`).
+    - libwayland drains idle sources until none are left before waiting on fds (`event-loop.c:965-975`, called at `:1009` and `:1064`). New ones are appended to the same list (`:792`).
+    - Renders only happen from backend frame events, which are fds (`Monitor.cpp:122` then `MonitorFrameScheduler.cpp:47/105/122`). The loop is `wl_display_run` (`EventLoopManager.cpp:137`, `wayland-server.c:1735-1745`).
+    - So no frame renders between the two reloads, and the bar is never drawn. This covers startup and every plugin load.
+  - **Synchronous reloads: small window.** `hyprctl reload` runs the reload inside the socket's fd dispatch (`HyprCtl.cpp:1276`); inotify autoreload is also an fd (`EventLoopManager.cpp:127`).
+    - Our follow-up reload runs in the idle drain after all fd events of that epoll batch (`event-loop.c:1064`).
+    - A frame event later in the same batch renders with the bar created. It fades in from 0 (`Overlay.cpp:99-104`) and then out again.
+    - Creating the bar reserves space for it and re-arranges layers (`Overlay.cpp:157, 160-178`), which can shift tiled windows for a frame or so.
+    - Only reloads that introduce a param name not yet registered are affected. Not observed at runtime.
+- **Possible fix for the stale-key problem: a persistent key registry.**
+  - Every dynamic key registered is recorded, with type and range, in a state file (`$XDG_STATE_HOME/hyprtail/keys`) and registered again at plugin init, before the post-load reload.
+  - Stale keys then stay known across restarts. The plugin warns when one is set but unused (`setByUser`), in the batched summary.
+  - Startup needs no extra reload unless a key name is genuinely new.
+  - Entries are pruned when neither declared nor set for some number of loads.
+  - Cost: one more state file and pruning rules.
+
+- **Decision (user): no dynamic keys.** Parameters go in one static `params` string (`"<layer>:<name>=<value> ..."`), type- and range-checked by the plugin against the param pragmas; unknown, stale or invalid entries are plugin warnings in the batched summary, never Hyprland config errors. Per-layer shader overrides are static keys indexed by layer number (`layer1_vertex`, `layer1_fragment` ... `layer4_*`). Every key is registered once at init: no state file, no extra reload. The registry idea above is dropped. SPEC §13.5, §13.7, §13.8.
+
+### S3: render state inside `saveBufferForMirror`
+- **When it's called:** only from `end()`, and only when `m_offloadedFramebuffer && needsACopyFB() && !m_fakeFrame` (`OpenGL.cpp:785`, `:801-806`).
+- **In a `renderMonitor` render all three line up:**
+  - The render starts with `begin(pMonitor, damage)` and no framebuffer (`GLRenderer.cpp:79`), which sets `m_fakeFrame = false` (`OpenGL.cpp:744`) and `m_offloadedFramebuffer = true` (`:753`).
+  - The copy therefore happens exactly when `needsACopyFB()` is true. That can only change from the event loop, not mid-render.
+  - So the plugin can decide at the cursor hook or `RENDER_LAST_MOMENT` whether to defer the draw to the hook, without risking a frame where neither runs.
+- **State after the original returns:**
+  - The mirror FB is bound through `bindTempFB`, whose guard rebinds the previous framebuffer on return (`Renderer.cpp:876-880`). The main framebuffer, holding the finished scene, is current again.
+  - `pMonitor` is still set; it's reset later in `end()`.
+  - Render damage is `finalDamage` (set in `end()`, `OpenGL.cpp:786`).
+  - `finalDamage` already contains our boxes: the pass recomputes it from the render damage when it runs (`Pass.cpp:107-172`, called with the render damage at `GLRenderer.cpp:88`).
+  - Blending is left on (`OpenGL.cpp:2556`).
+  - `pushMonitorTransformEnabled(true)` only changes `getBoxProjection`'s default transform; we pass NORMAL explicitly.
+- **Then** `end()` copies the main framebuffer to the output (`OpenGL.cpp:808-829`). A trail drawn in the hook after the original reaches the screen and is missing from the mirror copy.
+- **Open for implementation:**
+  - The viewport after the rebind (the framebuffer `bind()` wasn't read).
+  - Scissor state left by `renderTexture`. Ours sets and clears its own scissor anyway.
+
+## Phase 1: batched notifications and status command (cited at efb5099)
+
+- **Batch** (`diag::beginBatch/endBatch`): opened at the start of `pluginInit`, in the `config.reloaded` handler and on a shader file change; extending an open batch re-arms its 2 s timeout (a `wl_event_loop` timer, removed in `diag::shutdown` since its callback lives in the .so). Reports during a batch go to the log and errors.log immediately and are collected; the end queues one summary through the existing deferred notification path, so ending inside a render is fine. Ended from the render lifecycle once no shader reload is pending (`CShaderSlot::hasPending`), idle slot only while the idle effect is enabled; otherwise by the timeout (e.g. idle enabled but the cursor hidden, or no monitor renders). The "loaded" notification stays separate.
+- **Command:** `registerHyprCtlCommand` with `exact = true` (`PluginAPI.cpp:422-431`); exact names are matched first (`HyprCtl.cpp:2101-2109`), `-j` arrives as `FORMAT_JSON`, an empty reply would become "unknown request" (`:2123-2124`), so failures return a message. Unregistered in `teardown` (Hyprland also removes it on unload, `PluginSystem.cpp:172-176`). Snapshot built on the main thread (`src/Status.*` formats it); per-monitor counters live in `SMonitorFrame`, erased with the monitor on hotplug.
+- **Smoke test:** checks both formats after load and "unknown request" after unload.
+
 ## Open questions
 
 - [x] Hyprland commit to pin: `efb5099` (v0.56.2, host package)

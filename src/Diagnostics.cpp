@@ -1,5 +1,6 @@
 #include "Diagnostics.hpp"
 
+#include <algorithm>
 #include <any>
 #include <chrono>
 #include <cstdint>
@@ -12,12 +13,14 @@
 #include <vector>
 
 #include <managers/eventLoop/EventLoopManager.hpp>
+#include <Compositor.hpp>
 #include <helpers/Color.hpp>
 #include <debug/log/Logger.hpp>
 
 #include <cerrno>
 #include <fcntl.h>
 #include <unistd.h>
+#include <wayland-server-core.h>
 
 #include "rev.hpp"
 
@@ -33,9 +36,20 @@ namespace hyprtail::diag {
         constexpr uint64_t NOTIFY_ERR_MS    = 15000;
         constexpr uint64_t NOTIFY_WARN_MS   = 10000;
 
+        // A batch nobody ends (e.g. no monitor renders, so a pending shader
+        // never compiles) ends after this.
+        constexpr int      BATCH_TIMEOUT_MS = 2000;
+        // Headlines listed in a batch summary before "... and N more".
+        constexpr size_t   BATCH_MAX_LISTED = 3;
+
         struct SPending {
             eSeverity   severity;
             std::string text;
+        };
+
+        struct SBatched {
+            eSeverity   severity;
+            std::string headline; // first line of the message
         };
 
         struct SState {
@@ -46,6 +60,13 @@ namespace hyprtail::diag {
             std::unordered_set<std::string> seen;
             std::vector<SPending>           pending;
             std::optional<uint64_t>         doLaterSeq;
+
+            size_t                          errors = 0, warnings = 0;
+
+            bool                            batchOpen = false;
+            std::string                     batchReason;
+            std::vector<SBatched>           batch;
+            wl_event_source*                batchTimer = nullptr;
         };
 
         SState& state() {
@@ -181,6 +202,43 @@ namespace hyprtail::diag {
 
             st.doLaterSeq = g_pEventLoopManager->doLater([] { flushPending(); });
         }
+
+        std::string summarize(const std::vector<SBatched>& batch, const std::string& reason, const std::string& filePath) {
+            size_t errors = 0;
+            for (const auto& b : batch)
+                errors += b.severity == eSeverity::ERR;
+            const size_t warnings = batch.size() - errors;
+
+            const auto   plural = [](size_t n, const char* word) { return std::format("{} {}{}", n, word, n == 1 ? "" : "s"); };
+            std::string  text   = "hyprtail: ";
+            if (errors && warnings)
+                text += std::format("{} and {}", plural(errors, "error"), plural(warnings, "warning"));
+            else
+                text += errors ? plural(errors, "error") : plural(warnings, "warning");
+            text += std::format(" after {}:", reason);
+
+            // Errors first: they say what's off.
+            std::vector<const SBatched*> order;
+            for (const auto& b : batch)
+                if (b.severity == eSeverity::ERR)
+                    order.push_back(&b);
+            for (const auto& b : batch)
+                if (b.severity != eSeverity::ERR)
+                    order.push_back(&b);
+
+            for (size_t i = 0; i < order.size() && i < BATCH_MAX_LISTED; ++i)
+                text += "\n- " + order[i]->headline;
+            if (order.size() > BATCH_MAX_LISTED)
+                text += std::format("\n... and {} more", order.size() - BATCH_MAX_LISTED);
+            if (!filePath.empty())
+                text += "\nDetails: " + filePath;
+            return text;
+        }
+
+        int onBatchTimeout(void*) {
+            endBatch();
+            return 0;
+        }
     }
 
     void init(HANDLE handle) noexcept {
@@ -189,6 +247,9 @@ namespace hyprtail::diag {
 
             auto& st  = state();
             st.handle = handle;
+
+            if (g_pCompositor && g_pCompositor->m_wlEventLoop)
+                st.batchTimer = wl_event_loop_add_timer(g_pCompositor->m_wlEventLoop, &onBatchTimeout, nullptr);
 
             const auto path = resolveErrorFile();
             if (path.empty())
@@ -240,6 +301,14 @@ namespace hyprtail::diag {
             st.pending.clear();
             st.seen.clear();
             st.handle = nullptr;
+
+            // The timer callback lives in this .so.
+            if (st.batchTimer)
+                wl_event_source_remove(st.batchTimer);
+            st.batchTimer = nullptr;
+            st.batchOpen  = false;
+            st.batch.clear();
+            st.errors = st.warnings = 0;
         } catch (...) {}
     }
 
@@ -253,6 +322,13 @@ namespace hyprtail::diag {
                 return;
 
             appendToFile(std::format("{} {} [{}]\n{}\n\n", utcNow(), severityName(severity), key, message));
+            ++(severity == eSeverity::ERR ? st.errors : st.warnings);
+
+            if (st.batchOpen) {
+                const auto nl = message.find('\n');
+                st.batch.push_back({severity, std::string{message.substr(0, nl)}});
+                return;
+            }
 
             std::string text = "hyprtail: " + truncateForNotification(message);
             if (!st.filePath.empty())
@@ -267,6 +343,48 @@ namespace hyprtail::diag {
         try {
             state().seen.erase(std::string{key});
         } catch (...) {}
+    }
+
+    void beginBatch(std::string_view reason) noexcept {
+        try {
+            auto& st = state();
+            if (!st.batchOpen) {
+                st.batchOpen   = true;
+                st.batchReason = std::string{reason};
+                st.batch.clear();
+            }
+            if (st.batchTimer)
+                wl_event_source_timer_update(st.batchTimer, BATCH_TIMEOUT_MS);
+        } catch (...) {}
+    }
+
+    void endBatch() noexcept {
+        try {
+            auto& st = state();
+            if (st.batchTimer)
+                wl_event_source_timer_update(st.batchTimer, 0); // disarm
+            if (!st.batchOpen)
+                return;
+            st.batchOpen = false;
+
+            auto batch = std::move(st.batch);
+            st.batch.clear();
+            if (batch.empty())
+                return;
+
+            const bool anyErr = std::ranges::any_of(batch, [](const auto& b) { return b.severity == eSeverity::ERR; });
+            st.pending.push_back({anyErr ? eSeverity::ERR : eSeverity::WARN, summarize(batch, st.batchReason, st.filePath)});
+            scheduleFlush();
+        } catch (...) {}
+    }
+
+    bool batchOpen() noexcept {
+        return state().batchOpen;
+    }
+
+    SStats stats() noexcept {
+        const auto& st = state();
+        return {.errors = st.errors, .warnings = st.warnings, .batchOpen = st.batchOpen};
     }
 
     std::string errorFilePath() noexcept {

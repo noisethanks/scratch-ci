@@ -32,6 +32,7 @@
 #include "FileWatch.hpp"
 #include "IdlePassElement.hpp"
 #include "RenderUtil.hpp"
+#include "Status.hpp"
 #include "TrailPassElement.hpp"
 
 #include <wayland-server-core.h>
@@ -53,6 +54,9 @@ typedef void (*origControllerWarpTo)(const void*, const Vector2D&, bool);
 struct SMonitorFrame {
     uint64_t renderSerial  = 0;
     uint64_t handledSerial = UINT64_MAX; // never equal before the first hook run
+
+    // Counters for `hyprctl hyprtail`.
+    uint64_t hookRuns = 0, fallbackRuns = 0, trailDraws = 0, idleDraws = 0, emptySkips = 0;
 };
 
 static uint64_t                                              s_frames = 0;
@@ -71,6 +75,7 @@ static CHyprSignalListener                                   s_configReloadListe
 static CHyprSignalListener                                   s_monitorRemovedListener;
 static CHyprSignalListener                                   s_monitorDestroyListener;
 static CHyprSignalListener                                   s_layoutChangedListener;
+static SP<SHyprCtlCommand>                                   s_statusCommand;
 static hyprtail::cfg::SValues                                s_config;
 static hyprtail::CFileWatch                                  s_fileWatch;
 static std::unordered_map<Monitor::CMonitor*, SMonitorFrame> s_monFrame;
@@ -151,13 +156,17 @@ static void runTrailLifecycle(const PHLMONITOR& pMonitor) {
     const auto visible = off ? std::nullopt : inst.ring.visibleBounds(nowMs, inst.fadeMs);
     const CBox cur     = visible ? trailBoxLocal(inst, *visible, pMonitor->m_position) : CBox{};
 
-    if (!inst.damage.update(pMonitor, cur))
+    auto& mf = s_monFrame[pMonitor.get()];
+    if (!inst.damage.update(pMonitor, cur)) {
+        ++mf.emptySkips;
         return; // workspace not rendered this frame, see CMonitorDamage
+    }
 
     if (cur.empty() || !cur.overlaps(CBox{{}, pMonitor->m_size}))
         return;
 
     g_pHyprRenderer->m_renderPass.add(makeUnique<CTrailPassElement>(&inst, cur, nowMs));
+    ++mf.trailDraws;
 }
 
 // ---------------------------------------------------------------- idle slot
@@ -209,6 +218,7 @@ static void runIdleLifecycle(const PHLMONITOR& pMonitor) {
         return;
 
     g_pHyprRenderer->m_renderPass.add(makeUnique<CIdlePassElement>(&idle, cur, pos, *effectMs));
+    ++s_monFrame[pMonitor.get()].idleDraws;
 }
 
 // Timer fired: the pointer has been still for delayMs. Damage the idle square
@@ -227,6 +237,20 @@ static int onIdleTimer(void*) {
     return 0;
 }
 
+// A report batch (load, config reload, shader file change) is complete once
+// every shader reload it queued has been compiled or discarded, which only
+// happens inside a render (CShaderSlot::prepare). The idle slot counts only
+// while its effect can run: its program isn't prepared otherwise, and the
+// batch timeout in diag covers that case.
+static void maybeEndBatch() {
+    if (!hyprtail::diag::batchOpen() || !s_motionTrail)
+        return;
+    const bool trailSettled = s_motionTrail->disabled || !s_motionTrail->slot.hasPending();
+    const bool idleSettled  = !s_idle || !s_idle->enabled || s_idle->disabled || !s_idle->slot.hasPending();
+    if (trailSettled && idleSettled)
+        hyprtail::diag::endBatch();
+}
+
 // Lifecycle behind an exception guard. Runs inside a render (GL current), so
 // on failure the instance is disabled and its GPU resources released here.
 static void runTrailLifecycleGuarded(const PHLMONITOR& pMonitor, std::string_view where) {
@@ -240,6 +264,7 @@ static void runTrailLifecycleGuarded(const PHLMONITOR& pMonitor, std::string_vie
         s_idle->disabled = true;
         idleReleaseGpu(*s_idle);
     }
+    maybeEndBatch();
 }
 
 // Draw order (SPEC §7): renderMonitor adds the cursor texture inside
@@ -261,6 +286,7 @@ static void hkRenderSoftwareCursorsFor(void* thisptr, PHLMONITOR pMonitor, const
             // doesn't rerun a failing lifecycle in the same render.
             auto& mf         = s_monFrame[pMonitor.get()];
             mf.handledSerial = mf.renderSerial;
+            ++mf.hookRuns;
             runTrailLifecycleGuarded(pMonitor, "cursor-hook-lifecycle");
         });
     }
@@ -322,8 +348,10 @@ static void onRenderStageInternal(eRenderStage stage) {
     // Fallback: the cursor hook didn't run for this render, i.e. the cursor is
     // hidden (Renderer.cpp:2212). Nothing is drawn above us then, so order
     // doesn't matter (except the DPMS overlay, rare).
-    if (mf.handledSerial != mf.renderSerial)
+    if (mf.handledSerial != mf.renderSerial) {
+        ++mf.fallbackRuns;
         runTrailLifecycleGuarded(pMonitor, "last-moment-lifecycle");
+    }
 }
 
 static void onRenderStage(eRenderStage stage) {
@@ -497,6 +525,9 @@ static void removeHook(CFunctionHook*& hook) {
 static void teardown() noexcept {
     hyprtail::diag::guard("teardown", [] {
         // Stop callbacks first so nothing queues new elements during teardown.
+        if (s_statusCommand)
+            HyprlandAPI::unregisterHyprCtlCommand(s_handle, s_statusCommand);
+        s_statusCommand.reset();
         s_configReloadListener.reset();
         s_fileWatch.shutdown();
         if (s_idleTimer) {
@@ -624,7 +655,84 @@ static void applyConfig() {
     kickRender();
 }
 
+// ---------------------------------------------------------------- status
+
+static hyprtail::status::SSnapshot statusSnapshot() {
+    hyprtail::status::SSnapshot s;
+    s.rev         = HYPRTAIL_REV;
+    s.builtHash   = __hyprland_api_get_client_hash();
+    s.runningHash = __hyprland_api_get_hash();
+    s.cursorHook  = s_cursorHook != nullptr;
+    s.warpHook    = s_warpHook != nullptr;
+    s.renders     = s_frames;
+
+    const double nowMs = msSinceEpoch(Time::steadyNow());
+
+    if (s_motionTrail) {
+        const auto& t            = *s_motionTrail;
+        s.trail.disabled         = t.disabled;
+        s.trail.nodes            = t.ring.size();
+        s.trail.capacity         = t.ring.capacity();
+        s.trail.generation       = t.ring.generation();
+        s.trail.pendingBreak     = t.pendingBreak;
+        s.trail.interpolateWarps = t.interpolateWarps;
+        s.trail.fadeMs           = t.fadeMs;
+        s.trail.shader           = t.slot.status();
+    }
+
+    if (s_idle) {
+        const auto& i    = *s_idle;
+        s.idle.enabled   = i.enabled;
+        s.idle.disabled  = i.disabled;
+        s.idle.showing   = idleAllowed(i) && idleEffectMs(i, nowMs).has_value();
+        s.idle.stillMs   = nowMs - i.lastMotionMs;
+        s.idle.shader    = i.slot.status();
+    }
+
+    for (const auto& m : State::monitorState()->allMonitors()) {
+        if (!m)
+            continue;
+        hyprtail::status::SMonitor out{.name = m->m_name};
+        if (const auto it = s_monFrame.find(m.get()); it != s_monFrame.end()) {
+            const auto& mf   = it->second;
+            out.renders      = mf.renderSerial;
+            out.hookRuns     = mf.hookRuns;
+            out.fallbackRuns = mf.fallbackRuns;
+            out.trailDraws   = mf.trailDraws;
+            out.idleDraws    = mf.idleDraws;
+            out.emptySkips   = mf.emptySkips;
+        }
+        if (s_motionTrail)
+            out.trailBox = s_motionTrail->damage.prev(m.get());
+        if (s_idle)
+            out.idleBox = s_idle->damage.prev(m.get());
+        s.monitors.push_back(std::move(out));
+    }
+
+    s.diag      = hyprtail::diag::stats();
+    s.errorFile = hyprtail::diag::errorFilePath();
+    return s;
+}
+
+// `hyprctl hyprtail` (-j for JSON). Registered as an exact command: HyprCtl
+// matches exact names first (HyprCtl.cpp:2101-2109) and treats an empty
+// reply as "unknown request" (:2123-2124), so this never returns "".
+static std::string statusCommand(eHyprCtlOutputFormat format, std::string) {
+    std::string out;
+    const bool  ok = hyprtail::diag::guard("status-command", [&] {
+        const auto snap = statusSnapshot();
+        out             = format == eHyprCtlOutputFormat::FORMAT_JSON ? hyprtail::status::json(snap) : hyprtail::status::text(snap);
+    });
+    if (!ok || out.empty())
+        return format == eHyprCtlOutputFormat::FORMAT_JSON ? R"({"error": "hyprtail status failed, see errors.log"})" : "hyprtail status failed, see errors.log";
+    return out;
+}
+
 static PLUGIN_DESCRIPTION_INFO pluginInit() {
+    // Everything reported while loading ends up in one summary notification
+    // (SPEC §13.11), once the first render has compiled the shaders.
+    hyprtail::diag::beginBatch("loading");
+
     s_epoch       = Time::steadyNow();
     s_config      = {};
     s_motionTrail = makeUnique<STrailInstance>("trail", s_config.capacity);
@@ -642,9 +750,19 @@ static PLUGIN_DESCRIPTION_INFO pluginInit() {
     // on the reload Hyprland schedules right after loading a plugin
     // (PluginSystem.cpp:135); until then they hold the defaults.
     hyprtail::cfg::registerValues(s_handle);
-    s_fileWatch.init([] { hyprtail::diag::guard("shader-file-changed", [] { reloadShaders(); }); });
+    s_fileWatch.init([] {
+        hyprtail::diag::guard("shader-file-changed", [] {
+            hyprtail::diag::beginBatch("a shader file change");
+            reloadShaders();
+        });
+    });
     applyConfig();
-    s_configReloadListener = Event::bus()->m_events.config.reloaded.listen([] { hyprtail::diag::guard("config-reload", [] { applyConfig(); }); });
+    s_configReloadListener = Event::bus()->m_events.config.reloaded.listen([] {
+        hyprtail::diag::guard("config-reload", [] {
+            hyprtail::diag::beginBatch("a config reload");
+            applyConfig();
+        });
+    });
 
     // Cursor hook for draw order. The host (LTO) build calls the target out of
     // line from renderMonitor, so the hook fires there too.
@@ -667,6 +785,10 @@ static PLUGIN_DESCRIPTION_INFO pluginInit() {
     s_monitorRemovedListener = Event::bus()->m_events.monitor.removed.listen([](PHLMONITOR m) { onMonitorGone(m); });
     s_monitorDestroyListener = Event::bus()->m_events.monitor.destroyMon.listen([](PHLMONITOR m) { onMonitorGone(m); });
     s_layoutChangedListener  = Event::bus()->m_events.monitor.layoutChanged.listen([] { onLayoutChanged(); });
+
+    s_statusCommand = HyprlandAPI::registerHyprCtlCommand(s_handle, SHyprCtlCommand{.name = "hyprtail", .exact = true, .fn = statusCommand});
+    if (!s_statusCommand)
+        hyprtail::diag::report(eSeverity::WARN, "hyprctl", "could not register the `hyprctl hyprtail` status command");
 
     Log::logger->log(Log::INFO, "[hyprtail] {} loaded, cursor hook {}, warp hook {}", HYPRTAIL_REV, s_cursorHook ? "active" : "unavailable",
                      s_warpHook ? "active" : "unavailable");

@@ -37,6 +37,14 @@ namespace hyprtail {
         std::vector<GLint>       attribLocations; // locations the plugin feeds
     };
 
+    // What `hyprctl hyprtail` shows for a slot.
+    struct SSlotStatus {
+        bool        active  = false; // a program is in use
+        bool        pending = false; // a reloaded pair waits for the next render
+        std::string vertOrigin, fragOrigin; // active program's files, "" = built-in
+        std::string lastResult; // outcome of the last compile attempt
+    };
+
     // One user-replaceable shader program (SPEC section 5): built-in stages,
     // optional user files per stage, include preprocessing, deferred compile
     // on the next render, and "keep the previous working program" on failure.
@@ -74,6 +82,9 @@ namespace hyprtail {
 
         const std::string& name() const;
 
+        bool               hasPending() const;
+        SSlotStatus        status() const;
+
       private:
         const SShaderPair&         builtin();
         std::optional<std::string> compileAndActivate(const SShaderPair& pair);
@@ -83,6 +94,8 @@ namespace hyprtail {
         std::string_view                       m_vertBuiltin, m_fragBuiltin;
         SShaderContract                        m_contract;
         std::string                            m_activeOrigin; // vertOrigin + '\n' + fragOrigin of the active program
+        std::string                            m_activeVertOrigin, m_activeFragOrigin;
+        std::string                            m_lastResult = "none yet";
         std::optional<SShaderPair>             m_builtin;
         std::optional<SShaderPair>             m_pending;
         SP<CShader>                            m_shader;

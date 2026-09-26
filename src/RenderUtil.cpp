@@ -84,6 +84,13 @@ namespace hyprtail {
         m_prev.erase(const_cast<Monitor::CMonitor*>(pMonitor));
     }
 
+    std::optional<CBox> CMonitorDamage::prev(const Monitor::CMonitor* pMonitor) const {
+        const auto it = m_prev.find(const_cast<Monitor::CMonitor*>(pMonitor));
+        if (it == m_prev.end())
+            return std::nullopt;
+        return it->second;
+    }
+
     void CMonitorDamage::clear() {
         m_prev.clear();
     }

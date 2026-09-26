@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <unordered_map>
 
 #include <helpers/memory/Memory.hpp>
@@ -54,6 +55,10 @@ namespace hyprtail {
         // Drop a monitor's entry. On monitor removal, so a new CMonitor
         // allocated at the same address starts clean.
         void forget(const Monitor::CMonitor* pMonitor);
+
+        // Box last drawn on the monitor (logical, monitor-local); empty once
+        // cleared, nullopt if never rendered there.
+        std::optional<CBox> prev(const Monitor::CMonitor* pMonitor) const;
 
         void clear();
 

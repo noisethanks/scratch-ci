@@ -28,7 +28,8 @@ namespace hyprtail::diag {
         ERR,
     };
 
-    // Call first thing in PLUGIN_INIT. Truncates the error file.
+    // Call first thing in PLUGIN_INIT. Keeps the previous error file as
+    // errors.log.1 and starts a new one.
     void init(HANDLE handle) noexcept;
 
     // Call last thing in PLUGIN_EXIT. Cancels any pending deferred
@@ -37,6 +38,24 @@ namespace hyprtail::diag {
 
     void        report(eSeverity severity, std::string_view key, std::string_view message) noexcept;
     void        resetKey(std::string_view key) noexcept;
+
+    // Batched reporting (SPEC §13.11). While a batch is open, reports still
+    // go to the log and the error file immediately, but instead of one
+    // notification each, the batch ends with one summary notification (none
+    // if nothing was reported). beginBatch opens a batch, or extends an open
+    // one, and (re)arms a timeout that ends it if the caller never does.
+    // Main thread or inside a render; the notification is deferred as usual.
+    void beginBatch(std::string_view reason) noexcept;
+    void endBatch() noexcept;
+    bool batchOpen() noexcept;
+
+    // For `hyprctl hyprtail`: reports that reached the error file this load.
+    struct SStats {
+        size_t errors   = 0;
+        size_t warnings = 0;
+        bool   batchOpen = false;
+    };
+    SStats      stats() noexcept;
 
     // Path of the per-session error file, empty if it couldn't be opened.
     std::string errorFilePath() noexcept;

@@ -144,6 +144,12 @@ TEST_CASE(hyprtailLifecycle) {
     HYPRTAIL_ALIVE("config reload after load");
     HYPRTAIL_NO_ERRORS("load");
 
+    // `hyprctl hyprtail` answers in both formats (flags before '/', as
+    // hyprctl sends them).
+    ASSERT_STARTS_WITH(getFromSocket("/hyprtail"), "hyprtail ");
+    ASSERT_STARTS_WITH(getFromSocket("j/hyprtail"), "{\"rev\"");
+    HYPRTAIL_ALIVE("status command");
+
     // 2. Trail, then the idle effect (delay 50 ms, duration 200 ms in
     // smoke.lua) once the pointer stops, on an existing output.
     OK(moveAlong(700, 400, 1200, 700, 20));
@@ -199,6 +205,8 @@ TEST_CASE(hyprtailLifecycle) {
     OK(getFromSocket("/plugin unload " + so));
     HYPRTAIL_ALIVE("unload");
     ASSERT_NOT_CONTAINS(getFromSocket("/plugin list"), LISTED);
+    // The status command went with the plugin.
+    EXPECT(getFromSocket("/hyprtail"), std::string{"unknown request"});
     OK(moveAlong(700, 400, 900, 500, 5));
     HYPRTAIL_ALIVE("pointer motion after unload");
 
