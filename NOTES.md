@@ -364,6 +364,43 @@ Source analysis only: nothing was loaded or run. libwayland 1.26.0 (the host's `
 - **Command:** `registerHyprCtlCommand` with `exact = true` (`PluginAPI.cpp:422-431`); exact names are matched first (`HyprCtl.cpp:2101-2109`), `-j` arrives as `FORMAT_JSON`, an empty reply would become "unknown request" (`:2123-2124`), so failures return a message. Unregistered in `teardown` (Hyprland also removes it on unload, `PluginSystem.cpp:172-176`). Snapshot built on the main thread (`src/Status.*` formats it); per-monitor counters live in `SMonitorFrame`, erased with the monitor on hotplug.
 - **Smoke test:** checks both formats after load and "unknown request" after unload.
 
+## Smoke test environment (cited at efb5099; aquamarine 0.15.1, libwayland 1.26.0)
+
+Two `make smoke` failures reported by the user, both caused by the first recipe's isolation. Diagnosed from source only; the fixed recipe hasn't been run by the assistant.
+- **"socket path too long":**
+  - **Why:** the instance directory is `$XDG_RUNTIME_DIR/hypr/<signature>` (`Compositor.cpp:192, 217`). The signature is `<40-char commit>_<unix time>_<random 0..INT32_MAX>`, up to 62 characters (`:206`). Socket2 refuses paths over 107 characters (`EventManager.cpp:21-24`), i.e. a runtime dir longer than 25 characters. The hyprctl socket is silently truncated by `snprintf` instead (`HyprCtl.cpp:2331-2333`), so hyprtester can't connect.
+  - **Before:** `$(mktemp -d -t hyprtail-smoke.XXXXXX)/run` was 30 characters.
+  - **Fix:** `mktemp -d /tmp/hts.XXXXXX` (15 characters) used directly as the runtime dir, with a length guard in the recipe.
+- **"CBackend::create() failed!":**
+  - **Where it comes from:** thrown when `m_aqBackend->start()` fails (`Compositor.cpp:334-340`). `CBackend::create` itself only fails on an empty list (`aquamarine Backend.cpp:72-73`).
+  - **Backends:** at this pin Hyprland always asks for headless (mandatory), DRM (if available) and Wayland (fallback). `HYPRLAND_HEADLESS_ONLY` isn't read ("TODO: headless only", `Compositor.cpp:307-331`).
+  - **Why it fails:** the headless backend has no DRM fd (`Headless.cpp:133-135`). `start()` needs an allocator from some backend's DRM fd and fails without one (`Backend.cpp:163-178`). DRM can't be taken inside a running session. The old recipe unset `WAYLAND_DISPLAY` and replaced `XDG_RUNTIME_DIR`, so the Wayland backend's `wl_display_connect(nullptr)` (`Wayland.cpp:100`) couldn't reach the session either.
+  - **Fix:** pass the session socket as an absolute `WAYLAND_DISPLAY`, which libwayland accepts regardless of `XDG_RUNTIME_DIR` (`wayland-client.c:1164-1185`).
+  - **Side effect:** the test Hyprland is a client of the session and creates one Wayland output (`Wayland.cpp:154`), disabled by test.lua's catch-all monitor rule. Upstream hyprtester behaves the same when run in a session.
+- **Xwayland** is disabled in `smoke.lua`, so the test doesn't claim a display in the shared `/tmp/.X11-unix`.
+
+## Phase 2: layers and contract 2 (cited at efb5099)
+
+Built, not yet run in any compositor. SPEC §13.1-13.6 and §13.16 have the what; this section has the why and the gotchas.
+
+- **Scope merged:** the restructure and the whole contract 2 (prelude, topology, params, padding expressions, varyings) landed together so custom shaders break once. A quad layer sizes its box from a param (`radius`), so it needed params and padding expressions anyway. Phase 3 keeps the config front end (`params` string, `layerN_*` keys) and the checks (`expects`, pre-link varying check).
+- **Files:**
+  - New: `src/Params.*` (Hyprland-free parsing), `src/Layer.*` (spec, classic preset, parameter resolution), `src/LayerPassElement.*` (`CNodeBuffer`, `SPreset`, `CLayerPassElement`).
+  - Rewritten: `src/ShaderSource.*` (contract 2 pragmas, prelude injection), `src/ShaderSlot.*` (a program's contract comes from the prelude plus its own params), `src/main.cpp` (layer lifecycle), `src/Status.*`.
+  - Deleted: `src/TrailPassElement.*`, `src/IdlePassElement.*`, `shaders/{trail,idle}.{vert,frag}`.
+  - Added: `shaders/prelude/*.glsl`, `shaders/classic/{ribbon,ring}.{vert,frag}`.
+- **Uniforms are set raw.** Contract 2 names (`ht_proj`, params) aren't core's `eShaderUniform` slots: `CShader::setUniformMatrix3fv` takes an `eShaderUniform` (`Shader.hpp:108`). They're set with `glUniform*` on the program's own locations, which `CShaderSlot::loc` looks up and caches. The program is still made current through `useShader`, so Hyprland's program cache stays correct.
+- **Precision:** the prelude sets `precision highp float; precision highp int;` in both stages. Uniforms shared between stages (params declared in both, the built-ins) need matching precision in GLSL ES, and fragment shaders have no default float precision. This is why the contract pragma must come before any param pragma or include: the prelude has to precede the injected uniform declarations. GLES 3.x requires highp support in fragment shaders; the context is 3.2 or 3.0 (`OpenGL.cpp:199-220`).
+- **Attributes:** 14 locations (GLES 3.0 guarantees at least 16). prev and next only carry position and bits: all four bindings with every field would need 20.
+- **Behavior differences from phase 1, intended:**
+  - An enabled quad layer is compiled at the first render, even while its effect can't show. The old idle slot only compiled when allowed. Compile errors now surface at load, and the report batch ends on the first render.
+  - An exception in the lifecycle disables every layer, not just the trail.
+  - A mouse-move exception no longer disables anything; it's only reported.
+- **Bug found by the unit tests before it shipped:** in `shader::preprocess`, `const auto& displayName = st.out.sourceNames.front()` became dangling once the prelude's source name was pushed into the same vector. That was a use-after-free on every shader load. AddressSanitizer caught it in `make test-unit SANITIZE=1`; fixed by taking a copy.
+- **Test harness:** `make test-unit` builds `tests/unit/unit.cpp` against `Params`, `ShaderSource` and `TrailBuffer` only, runs it (61 checks), and validates the four preprocessed built-ins with glslangValidator, linking every vertex/fragment pairing. `SANITIZE=1` adds ASan and UBSan; it passes clean. Running the binary through `make` is needed because the lean-ctx allowlist blocks running it directly, and `gdb` is blocked too.
+- **Git index slip:** while deleting the old shaders I ran `git rm --cached` on them, which staged the deletions. I reverted it immediately with `git reset -q HEAD -- <files>`, so the deletions are unstaged working-tree changes only. Nothing was committed.
+- **Stability risk (nested test warranted, per CLAUDE.md):** new GL resource handling. A new VBO layout with an integer attribute, a second VAO for quad layers, and per-layer draws with raw uniform setting. A mistake there crashes the compositor. The unit tests and glslang can't exercise the GL calls.
+
 ## Open questions
 
 - [x] Hyprland commit to pin: `efb5099` (v0.56.2, host package)

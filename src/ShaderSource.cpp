@@ -1,5 +1,6 @@
 #include "ShaderSource.hpp"
 
+#include <algorithm>
 #include <charconv>
 #include <cstdlib>
 #include <format>
@@ -15,11 +16,32 @@ namespace hyprtail::shader {
         // Stock shaders and the prefab library, embedded at build time (the
         // Makefile lists them as dependencies). Keep them ASCII: GLSL ES
         // drivers aren't reliable with UTF-8, even in comments.
-        constexpr unsigned char TRAIL_VERT[] = {
-#embed "../shaders/trail.vert"
+        constexpr unsigned char CLASSIC_RIBBON_VERT[] = {
+#embed "../shaders/classic/ribbon.vert"
         };
-        constexpr unsigned char TRAIL_FRAG[] = {
-#embed "../shaders/trail.frag"
+        constexpr unsigned char CLASSIC_RIBBON_FRAG[] = {
+#embed "../shaders/classic/ribbon.frag"
+        };
+        constexpr unsigned char CLASSIC_RING_VERT[] = {
+#embed "../shaders/classic/ring.vert"
+        };
+        constexpr unsigned char CLASSIC_RING_FRAG[] = {
+#embed "../shaders/classic/ring.frag"
+        };
+        constexpr unsigned char PRELUDE_COMMON[] = {
+#embed "../shaders/prelude/common.glsl"
+        };
+        constexpr unsigned char PRELUDE_VERTEX[] = {
+#embed "../shaders/prelude/vertex.glsl"
+        };
+        constexpr unsigned char PRELUDE_PATH[] = {
+#embed "../shaders/prelude/path.glsl"
+        };
+        constexpr unsigned char PRELUDE_QUAD[] = {
+#embed "../shaders/prelude/quad.glsl"
+        };
+        constexpr unsigned char PRELUDE_FRAGMENT[] = {
+#embed "../shaders/prelude/fragment.glsl"
         };
         constexpr unsigned char PREFAB_RIBBON[] = {
 #embed "../shaders/hyprtail/ribbon.glsl"
@@ -29,12 +51,6 @@ namespace hyprtail::shader {
         };
         constexpr unsigned char PREFAB_SDF[] = {
 #embed "../shaders/hyprtail/sdf.glsl"
-        };
-        constexpr unsigned char IDLE_VERT[] = {
-#embed "../shaders/idle.vert"
-        };
-        constexpr unsigned char IDLE_FRAG[] = {
-#embed "../shaders/idle.frag"
         };
 
         template <size_t N>
@@ -56,7 +72,10 @@ namespace hyprtail::shader {
 
         const std::regex RE_INCLUDE{R"re(^\s*#\s*include\s+"([^"]+)"\s*$)re"};
         const std::regex RE_INCLUDE_ANY{R"re(^\s*#\s*include\b)re"};
-        const std::regex RE_PADDING{R"re(^\s*#\s*pragma\s+hyprtail\s+padding\s+(\S+)\s*$)re"};
+        const std::regex RE_CONTRACT{R"re(^\s*#\s*pragma\s+hyprtail\s+contract\s+(\S+)\s*$)re"};
+        const std::regex RE_TOPOLOGY{R"re(^\s*#\s*pragma\s+hyprtail\s+topology\s+(\S+)\s*$)re"};
+        const std::regex RE_PARAM{R"re(^\s*#\s*pragma\s+hyprtail\s+param\s+(.*)$)re"};
+        const std::regex RE_PADDING{R"re(^\s*#\s*pragma\s+hyprtail\s+padding\s+(.*)$)re"};
         const std::regex RE_PRAGMA_HT{R"re(^\s*#\s*pragma\s+hyprtail\b)re"};
         const std::regex RE_VERSION{R"re(^\s*#\s*version\b)re"};
 
@@ -90,7 +109,34 @@ namespace hyprtail::shader {
             SSource               out;
             std::set<std::string> done;       // include-once keys
             std::set<std::string> inProgress; // cycle detection
+            eStage                stage         = eStage::VERTEX;
+            bool                  contractSeen  = false;
+            bool                  topologySeen  = false;
         };
+
+        std::string preludeText(eStage stage, std::optional<eTopology> topology) {
+            std::string t{view(PRELUDE_COMMON)};
+            if (stage == eStage::FRAGMENT)
+                return t + std::string{view(PRELUDE_FRAGMENT)};
+            t += view(PRELUDE_VERTEX);
+            if (topology == eTopology::QUAD)
+                t += view(PRELUDE_QUAD);
+            else
+                t += view(PRELUDE_PATH);
+            return t;
+        }
+
+        std::optional<eTopology> parseTopology(std::string_view s) {
+            if (s == "path")
+                return eTopology::PATH;
+            if (s == "quad")
+                return eTopology::QUAD;
+            return std::nullopt;
+        }
+
+        bool isReserved(std::string_view name) {
+            return std::ranges::any_of(reservedParams(), [&](const auto& r) { return r.decl.name == name; });
+        }
 
         // One source unit: built-in prefab ("builtin:<name>") or a file path.
         struct SUnit {
@@ -153,19 +199,64 @@ namespace hyprtail::shader {
                 if (!isMain && std::regex_search(line, RE_VERSION))
                     return std::unexpected(std::format("{}: included files must not contain #version", where));
 
+                if (std::regex_match(line, m, RE_CONTRACT)) {
+                    if (!isMain)
+                        return std::unexpected(std::format("{}: #pragma hyprtail contract belongs in the main shader file, not an include", where));
+                    if (st.contractSeen)
+                        return std::unexpected(std::format("{}: duplicate #pragma hyprtail contract", where));
+                    if (m[1] != std::to_string(CONTRACT_VERSION))
+                        return std::unexpected(std::format("{}: this hyprtail implements contract {}, the shader declares contract {}", where, CONTRACT_VERSION, m[1].str()));
+                    st.contractSeen = true;
+
+                    // The prelude, as its own source string, then back here.
+                    const int preludeId = static_cast<int>(st.out.sourceNames.size());
+                    st.out.sourceNames.push_back("<hyprtail prelude>");
+                    st.out.text += std::format("#line 1 {}\n", preludeId);
+                    st.out.text += preludeText(st.stage, st.out.topology);
+                    st.out.text += std::format("\n#line {} {}\n", lineNo + 1, sourceId);
+                    continue;
+                }
+
+                const bool htPragma = std::regex_search(line, RE_PRAGMA_HT);
+                if ((htPragma || std::regex_search(line, RE_INCLUDE_ANY)) && isMain && !st.contractSeen)
+                    return std::unexpected(std::format("{}: \"#pragma hyprtail contract {}\" must come first, right after #version (it brings in the prelude)", where,
+                                                       CONTRACT_VERSION));
+
+                if (std::regex_match(line, m, RE_TOPOLOGY)) {
+                    // Already read by the pre-scan in preprocess(); only its
+                    // placement is checked here.
+                    if (!isMain)
+                        return std::unexpected(std::format("{}: #pragma hyprtail topology belongs in the main shader file, not an include", where));
+                    st.out.text += '\n';
+                    continue;
+                }
+
+                if (std::regex_match(line, m, RE_PARAM)) {
+                    auto decl = params::parseDecl(m[1].str());
+                    if (!decl)
+                        return std::unexpected(std::format("{}: {}", where, decl.error()));
+                    if (isReserved(decl->name))
+                        return std::unexpected(std::format("{}: \"{}\" is a reserved parameter; it is always available, don't declare it", where, decl->name));
+                    for (const auto& p : st.out.params) {
+                        if (p.decl.name == decl->name)
+                            return std::unexpected(std::format("{}: param {} already declared at {}", where, decl->name, p.where));
+                    }
+                    st.out.text += std::format("uniform {} {};\n", params::glslType(decl->type), decl->name);
+                    st.out.params.push_back({.decl = std::move(*decl), .where = where});
+                    continue;
+                }
+
                 if (std::regex_match(line, m, RE_PADDING)) {
-                    const std::string val = m[1];
-                    float             px  = 0.F;
-                    const auto [ptr, ec]  = std::from_chars(val.data(), val.data() + val.size(), px);
-                    if (ec != std::errc{} || ptr != val.data() + val.size() || px < 0.F || px > 4096.F)
-                        return std::unexpected(std::format("{}: #pragma hyprtail padding needs a number of pixels in 0..4096, got \"{}\"", where, val));
-                    st.out.declaredPaddingPx = std::max(st.out.declaredPaddingPx, px);
+                    auto expr = params::CExpr::parse(m[1].str());
+                    if (!expr)
+                        return std::unexpected(std::format("{}: #pragma hyprtail padding: {}", where, expr.error()));
+                    st.out.padding.push_back({.expr = std::move(*expr), .where = where});
                     st.out.text += '\n'; // keep line numbering
                     continue;
                 }
 
-                if (std::regex_search(line, RE_PRAGMA_HT))
-                    return std::unexpected(std::format("{}: unknown #pragma hyprtail directive", where));
+                if (htPragma)
+                    return std::unexpected(std::format("{}: unknown #pragma hyprtail directive (contract, topology, param, padding)", where));
 
                 if (std::regex_match(line, m, RE_INCLUDE)) {
                     std::string storage;
@@ -205,41 +296,104 @@ namespace hyprtail::shader {
         }
     }
 
-    std::string_view builtinVertex() {
-        return view(TRAIL_VERT);
+    const char* topologyName(eTopology t) {
+        return t == eTopology::QUAD ? "quad" : "path";
     }
 
-    std::string_view builtinFragment() {
-        return view(TRAIL_FRAG);
+    std::string_view builtin(std::string_view name) {
+        static const std::map<std::string, std::string_view, std::less<>> m{
+            {"classic/ribbon.vert", view(CLASSIC_RIBBON_VERT)},
+            {"classic/ribbon.frag", view(CLASSIC_RIBBON_FRAG)},
+            {"classic/ring.vert", view(CLASSIC_RING_VERT)},
+            {"classic/ring.frag", view(CLASSIC_RING_FRAG)},
+        };
+        const auto it = m.find(name);
+        return it == m.end() ? std::string_view{} : it->second;
     }
 
-    std::string_view builtinIdleVertex() {
-        return view(IDLE_VERT);
+    const std::vector<std::string>& preludeUniforms() {
+        static const std::vector<std::string> u{"ht_proj", "ht_nowMs", "ht_stillMs", "ht_anchor", "ht_extentPx", "fade_ms", "start_ms", "duration_ms"};
+        return u;
     }
 
-    std::string_view builtinIdleFragment() {
-        return view(IDLE_FRAG);
+    const std::vector<int>& preludeAttribLocations(eTopology t) {
+        static const std::vector<int> path{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13};
+        static const std::vector<int> none{};
+        return t == eTopology::PATH ? path : none;
     }
 
-    std::expected<SSource, std::string> preprocess(std::string_view mainText, const std::string& name, const std::filesystem::path& path) {
+    const std::vector<SReserved>& reservedParams() {
+        using params::eType;
+        const auto f = [](const char* name, double def, double lo, double hi, bool uniform) {
+            return SReserved{.decl = {.name = name, .type = eType::FLOAT, .def = {.type = eType::FLOAT, .x = def}, .min = lo, .max = hi}, .uniform = uniform};
+        };
+        const auto b = [](const char* name, bool def) {
+            return SReserved{.decl = {.name = name, .type = eType::BOOL, .def = {.type = eType::BOOL, .x = def ? 1.0 : 0.0}}, .uniform = false};
+        };
+        static const std::vector<SReserved> r{
+            b("enabled", true),
+            // Default depends on the topology (path: true, quad: false), see
+            // the layer.
+            b("draw_when_cursor_hidden", true),
+            f("fade_ms", 500.0, 1.0, 60000.0, true),
+            f("start_ms", 500.0, 0.0, 60000.0, true),
+            f("duration_ms", 1500.0, 0.0, 600000.0, true),
+        };
+        return r;
+    }
+
+    std::expected<SSource, std::string> preprocess(std::string_view mainText, const std::string& name, const std::filesystem::path& path, eStage stage) {
         try {
             SState     st;
+            st.stage           = stage;
             const bool builtin = path.empty();
             st.out.sourceNames.push_back(builtin ? "<" + name + ">" : path.string());
 
-            const SUnit unit{.key = builtin ? "builtin-main:" + name : path.string(), .displayName = st.out.sourceNames.front(), .text = mainText, .path = path};
+            // A copy: sourceNames grows below (prelude, includes).
+            const std::string displayName = st.out.sourceNames.front();
+
+            // Topology first: the vertex prelude depends on it, and it's
+            // injected at the contract pragma, which comes first.
+            {
+                std::istringstream in{std::string{mainText}};
+                std::string        line;
+                int                lineNo = 0;
+                while (std::getline(in, line)) {
+                    ++lineNo;
+                    std::smatch m;
+                    if (!std::regex_match(line, m, RE_TOPOLOGY))
+                        continue;
+                    const auto where = std::format("{}:{}", displayName, lineNo);
+                    if (stage == eStage::FRAGMENT)
+                        return std::unexpected(std::format("{}: #pragma hyprtail topology belongs in the geometry (vertex) shader", where));
+                    if (st.out.topology)
+                        return std::unexpected(std::format("{}: duplicate #pragma hyprtail topology", where));
+                    st.out.topology = parseTopology(m[1].str());
+                    if (!st.out.topology)
+                        return std::unexpected(std::format("{}: unknown topology \"{}\" (path, quad)", where, m[1].str()));
+                }
+            }
+
+            const SUnit unit{.key = builtin ? "builtin-main:" + name : path.string(), .displayName = displayName, .text = mainText, .path = path};
             if (auto r = process(st, unit, 0, 0, true); !r)
                 return std::unexpected(r.error());
+
+            if (!st.contractSeen)
+                return std::unexpected(std::format("{}: missing \"#pragma hyprtail contract {}\" after #version. Shaders written for earlier hyprtail versions need "
+                                                   "porting; the classic preset's shaders are the reference",
+                                                   displayName, CONTRACT_VERSION));
+            if (stage == eStage::VERTEX && !st.out.topology)
+                return std::unexpected(std::format("{}: geometry (vertex) shaders need \"#pragma hyprtail topology path\" or \"quad\"", displayName));
 
             return std::move(st.out);
         } catch (const std::exception& e) { return std::unexpected(std::format("{}: preprocessing failed: {}", name, e.what())); }
     }
 
-    std::expected<SSource, std::string> load(const std::filesystem::path& path) {
+    std::expected<SSource, std::string> load(const std::filesystem::path& path, eStage stage) {
         auto text = readFile(path);
         if (!text)
             return std::unexpected(text.error());
-        return preprocess(*text, path.string(), path);
+        return preprocess(*text, path.string(), path, stage);
     }
 
     std::string mapLog(const std::string& log, const SSource& src) {

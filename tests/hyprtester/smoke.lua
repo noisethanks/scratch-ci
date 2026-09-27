@@ -21,3 +21,7 @@ hl.config({
         },
     },
 })
+
+-- No Xwayland: the test doesn't need it, and it would claim an X display in
+-- the shared /tmp/.X11-unix.
+hl.config({ xwayland = { enabled = false } })

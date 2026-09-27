@@ -4,8 +4,7 @@
 //   #include "hyprtail/sdf.glsl"
 //
 // FRAGMENT SHADERS ONLY: ht_coverage uses fwidth, which vertex shaders don't
-// have, and the whole file fails to compile there. Include it after your
-// "precision highp float;" line.
+// have, and the whole file fails to compile there.
 //
 // Distances are in the same units as p (the stock idle shaders use logical
 // px): negative inside, positive outside. Functions only, prefixed ht_.

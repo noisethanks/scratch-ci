@@ -212,6 +212,16 @@ this file states the decision and marks what's still a placeholder.
 
 ## 5. Shader extensibility contract
 
+> **Superseded in part by contract 2 (§13.2-13.6, built in phase 2).** No
+> longer true below: the stock pair is now `shaders/classic/` (ribbon.* for
+> the trail layer, ring.* for the idle layer), there are no raw attributes
+> or fixed uniforms (the prelude declares them), padding is an expression
+> and no longer adds to a stock extent, and `hyprtail/ribbon.glsl` no longer
+> has `ht_startsSegment` (nodes carry `segmentStart`). Still true: separate
+> `.vert`/`.frag` paths, the contract check (now against the prelude and the
+> program's own params), the fallback policy, the include preprocessor and
+> prefabs, and color management (now for every `color` param).
+
 - Shader authors may supply custom vertex and/or fragment shaders.
 - **Shader files:** standalone GLSL ES 3.00 `.vert`/`.frag` files, laid out
   exactly like user-supplied shaders will be. The stock pair lives in
@@ -531,6 +541,14 @@ this file states the decision and marks what's still a placeholder.
   | `idle_vertex_shader` | path | `""` = built-in | |
   | `idle_fragment_shader` | path | `""` = built-in | |
 
+  Since phase 2 of §13 these keys feed the built-in `classic` preset:
+  `fade_ms`, `width`, `miter_limit`, `color_slow`, `color_fast` and the
+  `vertex_shader` / `fragment_shader` paths go to its `trail` layer;
+  `idle_enabled`, `idle_delay_ms` (`start_ms`), `idle_duration_ms`,
+  `idle_radius` (`radius`), `idle_when_hidden` (`draw_when_cursor_hidden`),
+  `color_slow` (`color`) and the idle shader paths to its `idle` layer.
+  Shader files set here must follow contract 2 (§13.2-13.6).
+
   Lua: `hl.config({ plugin = { hyprtail = { fade_ms = 400 } } })`;
   hyprlang: `plugin:hyprtail:fade_ms = 400`. Colors in Lua must be strings
   in Hyprland's color syntax, e.g. `color_slow = "rgba(1a66ffff)"`; numbers
@@ -566,9 +584,20 @@ this file states the decision and marks what's still a placeholder.
   adding an output, drawing on it and removing it mid-fade, unload, pointer
   motion after unload, reload (errors.log.1 kept), final unload. After every
   step the compositor must still answer IPC and errors.log must have nothing
-  past its header (warnings count). State-only: no pixel readback. Isolated
-  from the running session (own `XDG_RUNTIME_DIR`), but the headless
-  Hyprland uses the same GPU. Workspace changes are not covered.
+  past its header (warnings count). Also checks `hyprctl hyprtail` in both
+  formats. State-only: no pixel readback. Run from a terminal in a Wayland
+  session: the test Hyprland has its own short `XDG_RUNTIME_DIR` (so
+  hyprtester can't reach the running session, and its socket paths fit) but
+  connects to the session's Wayland socket as a client for its GPU
+  allocator (NOTES "Smoke test environment"). Uses the same GPU. Workspace
+  changes are not covered.
+- **Unit tests: `make test-unit`** (`tests/unit/unit.cpp`, `SANITIZE=1` for
+  AddressSanitizer and UBSan). No compositor, no GL: parameter pragmas and
+  values, padding expressions, shader preprocessing (contract 2 rules), the
+  node ring (distance restarts, seeds, birth-time rebasing). Then the
+  preprocessed built-in shaders through glslangValidator, each file and
+  every vertex/fragment pairing linked. A reference compiler: drivers can
+  still differ.
 - **Visual correctness:** staged validation ladder, a deliberately separate
   throwaway pass-element/harness, not branches in the real trail code:
   1. Dot at fixed position, no tracking, proves the pass element registers
@@ -617,9 +646,11 @@ this file states the decision and marks what's still a placeholder.
   targeting issue unresolved), not urgent, manual drag testing has been
   sufficient so far
 
-## 13. Customization model v2 (DRAFT, not implemented)
+## 13. Customization model v2 (DRAFT, partly built)
 
-**Status: proposal under review. Nothing in this section is built.**
+**Status:** phases 0-2 of §13.16 are built; phase 2 is untested (not yet run
+in any compositor). Built parts are marked **Built (phase N)** below, with
+any difference from the draft; everything else is still proposal.
 Decisions taken so far: no dynamic config keys; parameters go in one
 plugin-validated `params` string, and per-layer shader overrides are static
 keys indexed by layer number (§13.5, §13.8; NOTES "Phase 0 spikes", S2);
@@ -631,6 +662,8 @@ numbers, parameter names, `+ - * /` and parentheses only. Where it
 contradicts §5, §7 or §9, those sections still describe the code as it is;
 this section describes the intended replacement. Citations at `efb5099`
 unless noted. "Unverified" marks what needs a spike (§13.16, phase 0).
+Where a built part contradicts §5, §7 or §9, this section wins (§5 carries a
+pointer).
 
 ### 13.1 Model
 
@@ -655,6 +688,12 @@ element draws them in order, and its damage is the union of the layers'
 extents. Effects are therefore stackable (core ribbon plus glow) without a
 second ring, a second upload or a second damage lifecycle.
 
+**Built (phase 2), difference:** each layer keeps its own per-monitor damage
+lifecycle (`CLayer::damage`) inside the one pass element, so damage stays
+exact per layer instead of one union box. The only preset is the hardcoded
+`classic` (`src/Layer.cpp`), mapped from the current config keys (§13.8
+not built yet).
+
 ### 13.2 Nodes and the shader-side contract
 
 - **Fields:** birth position (global logical px, emit offset already applied,
@@ -663,18 +702,42 @@ second ring, a second upload or a second damage lifecycle.
 - **GPU layout:** 28 bytes. The seed and flags are packed into one integer
   attribute (`glVertexAttribIPointer`). GLES 3.0 has integer attributes, and
   the context is 3.2 with a 3.0 fallback (`OpenGL.cpp:199-220`).
-- **Relative values:** birth time and path distance are uploaded relative to
-  the newest node, as birth time is today, so float precision doesn't
-  degrade over a long session.
+- **Relative values:** birth time is uploaded relative to the newest node, so
+  float precision doesn't degrade over a long session. Path distance is
+  measured from the start of the node's segment and restarts at every break
+  (decided: counting through a gap would show as a jump in any shader that
+  uses distance for spacing, the same artifact class as the wrap-seam and
+  teleport-seam fixes; restarting keeps each segment's geometry
+  self-contained). It is uploaded as is.
 - **Seed:** hash of a per-load random value and the insertion counter. It is
   stable for the node's life.
 - **Shaders never touch attributes.** The loader injects a prelude that
-  declares the attributes and exposes accessors (`ht_node(...)` returning
-  position, age, velocity, distance, seed, segment start) plus
-  topology-specific helpers. The contract is the prelude API, so the
-  attribute layout can change without breaking user shaders. Today's
-  contract (§5) exposes raw attributes at fixed locations 0-11; v2 drops
-  that.
+  declares the attributes and exposes accessors plus topology-specific
+  helpers. The contract is the prelude API, so the attribute layout can
+  change without breaking user shaders. Contract 1 (§5) exposed raw
+  attributes at fixed locations 0-11; contract 2 drops that.
+
+**Built (phase 2):**
+- `SGpuNode` (`src/TrailBuffer.hpp`): pos (8), birthMs (4), velocity (8),
+  distPx (4), bits (4: bit 0 segment start, bits 1-31 seed) = 28 bytes.
+  Seed: splitmix64 of a per-load `std::random_device` value plus the
+  insertion counter (`CTrailRing::insert`).
+- `CNodeBuffer` (`src/LayerPassElement.*`): same VBO layout as before (front
+  pad, nodes, back pad), four bindings with divisor 1. 14 locations: prev
+  0-1 (pos, bits), p0 2-6 and p1 7-11 (pos, birth, velocity, dist, bits),
+  next 12-13 (pos, bits). GLES 3.0 guarantees 16. The bits attribute uses
+  `glVertexAttribIPointer` and is read as `uint`.
+- Prelude (`shaders/prelude/`, embedded): `common.glsl` (precision highp for
+  float and int, built-in uniforms `ht_proj`, `ht_nowMs`, `ht_stillMs`,
+  `ht_anchor`, `ht_extentPx`, and the reserved lifecycle uniforms `fade_ms`,
+  `start_ms`, `duration_ms`), `vertex.glsl` (standard varyings as `out`,
+  `ht_initVaryings()`, `ht_toClip()`, `HtNode`), `path.glsl` (attributes,
+  `ht_prev()`, `ht_p0()`, `ht_p1()`, `ht_next()`, `ht_atEnd()`,
+  `ht_side()`), `quad.glsl` (`ht_corner()`), `fragment.glsl` (varyings as
+  `in`, `ht_fragColor`). `HtNode` = pos, age, vel, dist, seed (0..1),
+  segmentStart; for prev/next only pos, seed and segmentStart are set. Every
+  built-in and reserved uniform is set for every layer, whatever its
+  topology.
 
 ### 13.3 Topologies
 
@@ -709,6 +772,13 @@ A geometry shader declares exactly one topology:
     shader does beyond the prelude curve must be covered by its padding
     declaration (§13.5).
 
+**Built (phase 2):** `path` (without `smooth`) and `quad`. Differences: quad
+stillness is the uniform `ht_stillMs`, not a function; path layers still
+draw all `size() - 1` instances (the visible-range re-pointing comes with
+phase 5). Not built: `path smooth N`, `instanced K` (phase 5), `expects`
+(phase 3). A geometry shader without a topology pragma, a second one, an
+unknown kind, or one in a fragment shader or include is refused.
+
 ### 13.4 Visibility and lifecycle parameters
 
 The fixed `fade_ms` and `idle_*` settings become reserved parameter names
@@ -716,7 +786,8 @@ The fixed `fade_ms` and `idle_*` settings become reserved parameter names
 timers:
 
 - **`path`, `instanced`:** `fade_ms`. A node is visible while its age is
-  below `fade_ms`. The ring keeps nodes for the largest value across layers.
+  below `fade_ms`. The ring keeps nodes for the largest value across layers
+  (not built: retention is still by `capacity` only, as before).
 - **`quad`:** `start_ms` and `duration_ms` (0 = until the pointer moves).
   The quad is visible while the time since the last pointer motion is in
   [`start_ms`, `start_ms + duration_ms`).
@@ -734,6 +805,14 @@ timers:
 - **Cursor hidden:** a per-layer `draw_when_cursor_hidden`. Default true for
   `path` and `instanced` (today: the trail is decoupled from cursor
   visibility, §7), false for `quad` (today's `idle_when_hidden = false`).
+
+**Built (phase 2):** reserved `enabled`, `draw_when_cursor_hidden`,
+`fade_ms`, `start_ms`, `duration_ms` (`shader::reservedParams()`), resolved
+per layer (`CLayer::resolve`). A layer with `enabled = false` isn't
+compiled. The idle effect is the classic preset's `idle` quad layer,
+anchored at the pointer; the stillness timer arms for the earliest
+`start_ms` across enabled quad layers. Not built: the quad layer's own
+offset (phase 6).
 
 ### 13.5 Shader-declared parameters, padding, contract version
 
@@ -791,6 +870,28 @@ timers:
   naming the supported range and pointing to migration notes. Before public
   release there is no compatibility layer for today's contract (v1).
 
+**Built (phase 2)** (`src/Params.*`, `src/ShaderSource.*`,
+`src/ShaderSlot.*`):
+- Pragmas `contract`, `topology`, `param`, `padding`. The contract pragma
+  must come first after `#version`, before any other hyprtail pragma or
+  `#include`: it is replaced by the prelude, which sets the default
+  precision the injected uniforms need.
+- Param names: lowercase letter or `_` first, then letters, digits, `_`;
+  `ht_` and `gl_` prefixes and the reserved names are refused. Colors accept
+  `0xAARRGGBB`, `rgba(RRGGBBAA)`, `rgb(RRGGBB)` (not Hyprland's decimal
+  `rgba(r, g, b, a)` form). `bool` and `int` uniforms are set with
+  `glUniform1i`.
+- Difference: a param declared in both stages (or twice through includes)
+  must be declared **identically** (type, default, range), not just with the
+  same type. A name declared twice in one stage is refused.
+- Padding names must be float, int or bool params of the program or
+  reserved names, checked before compiling. An evaluation error or a value
+  outside 0..4096 is a plugin warning (the declaration is ignored or
+  clamped).
+- Parameter values come from the pragma defaults and, in this phase, the
+  classic preset's mapping of the current config keys. The `params` string
+  is phase 3.
+
 ### 13.6 Standard varyings
 
 - **The fixed set** is declared by the prelude in both stages:
@@ -801,7 +902,7 @@ timers:
   | `ht_vAge` | float | ms |
   | `ht_vLife` | float | 1 to 0 over the visibility window |
   | `ht_vSpeed` | float | px/ms at birth |
-  | `ht_vDist` | float | path distance from the head, px |
+  | `ht_vDist` | float | path distance from the node's segment start, px |
   | `ht_vSeed` | float | 0..1 |
 
 - **Portability:** geometry shaders set the varyings through a prelude
@@ -815,6 +916,11 @@ timers:
   shader ribbon.vert doesn't write (standard varyings: ...)", or a type
   mismatch. The driver's link log is only shown if this check passes and
   linking still fails. Its format is driver-specific, so it isn't parsed.
+
+**Built (phase 2):** the set and `ht_initVaryings()`. `make test-unit`
+links every built-in vertex shader with every built-in fragment shader
+through glslangValidator. Not built: the pre-link check and plain messages
+(phase 3); until then a mismatch shows the driver's link log.
 
 ### 13.7 Presets
 
@@ -1023,7 +1129,7 @@ padding expressions, preset manifest, Bezier and Catmull-Rom bounds) are
 kept free of Hyprland headers and get unit tests (`make test-unit`, no
 compositor).
 
-0. **Spikes, no feature code.**
+0. **Spikes, no feature code (done).**
    - Host-binary exports: `CHyprOpenGLImpl::saveBufferForMirror`,
      `CMonitor::needsACopyFB`, `CPointerManager::getCursorBoxGlobal`,
      `currentCursorImage`, `getCurrentCursorTexture`.
@@ -1032,18 +1138,23 @@ compositor).
      string.
    - Whether `saveBufferForMirror` leaves the current framebuffer bound and
      the render data intact for a draw.
-1. **Diagnostics and status.** Batched notifications (§13.11) and
+1. **Diagnostics and status (built).** Batched notifications (§13.11) and
    `hyprctl hyprtail` (§13.13) on today's model. Both make every later phase
    easier to debug.
-2. **Restructure to source / layer / preset, behavior unchanged.**
-   - One pass element draws N layers.
-   - The prelude replaces raw attributes (contract v2).
-   - The node grows seed and distance.
-   - The idle effect becomes a `quad` layer, with generalized timers.
-   - Today's look ships as the built-in `classic` preset.
-3. **Shader contract features.** Topology pragma and `expects`, parameter
-   pragmas and the `params` string, padding expressions, the contract pragma,
-   standard varyings and the pre-link check.
+2. **Restructure and the whole contract v2 in one break** (merged with the
+   contract parts of the former phase 3, decided so custom shaders break
+   once). **Built, untested.**
+   - One pass element draws N layers; the idle effect is a `quad` layer
+     with generalized timers.
+   - Contract 2: prelude, `contract` and `topology` pragmas, param pragmas,
+     padding expressions, standard varyings.
+   - The node grows seed and distance (28 bytes, integer attribute).
+   - Today's look ships as the built-in `classic` preset; the current
+     config keys map onto it, so behavior should be unchanged.
+   - `make test-unit`: unit tests and glslangValidator over the built-ins.
+3. **Checks and the config front end.** The `params` string, the
+   `layer1_vertex` ... `layer4_fragment` keys, `expects`, and the pre-link
+   varying check with plain messages.
 4. **Presets and config surface v2.** Manifest parser, user preset
    directory, per-layer overrides, `subtle` and `vivid`, migration notes.
 5. **Topologies.** `instanced K` (plus a particle demo preset) and

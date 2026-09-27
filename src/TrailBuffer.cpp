@@ -1,19 +1,36 @@
 #include "TrailBuffer.hpp"
 
 #include <algorithm>
+#include <cmath>
 
-CTrailRing::CTrailRing(size_t capacity) : m_nodes(std::max<size_t>(capacity, 1)) {}
+namespace {
+    // splitmix64 finalizer: well-mixed bits from a counter.
+    uint64_t mix64(uint64_t x) {
+        x += 0x9E3779B97F4A7C15ULL;
+        x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
+        x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
+        return x ^ (x >> 31);
+    }
+}
+
+CTrailRing::CTrailRing(size_t capacity, uint64_t seedBase) : m_nodes(std::max<size_t>(capacity, 1)), m_seedBase(seedBase) {}
 
 void CTrailRing::insert(const SVec2f& pos, double nowMs, bool segmentStart) {
+    segmentStart = segmentStart || m_count == 0;
+
     SVec2f velocity{};
-    if (m_count > 0 && !segmentStart) {
+    double dist = 0.0; // restarts at every segment start
+    if (!segmentStart) {
         const auto&  prev = newest();
         const double dt   = nowMs - prev.birthTimeMs;
         if (dt > 0.0)
             velocity = {static_cast<float>((pos.x - prev.posPx.x) / dt), static_cast<float>((pos.y - prev.posPx.y) / dt)};
+        dist = prev.distPx + std::hypot(pos.x - prev.posPx.x, pos.y - prev.posPx.y);
     }
 
-    m_nodes[m_head] = SCursorNode{.posPx = pos, .birthTimeMs = nowMs, .velocity = velocity, .segmentStart = segmentStart || m_count == 0};
+    const auto seed = static_cast<uint32_t>(mix64(m_seedBase + m_inserted++) >> 33); // 31 bits
+
+    m_nodes[m_head] = SCursorNode{.posPx = pos, .birthTimeMs = nowMs, .velocity = velocity, .distPx = dist, .seed = seed, .segmentStart = segmentStart};
     m_head          = (m_head + 1) % m_nodes.size();
     m_count         = std::min(m_count + 1, m_nodes.size());
     ++m_generation;
@@ -75,7 +92,8 @@ void CTrailRing::orderedCopy(std::vector<SGpuNode>& out, double refMs) const {
             .posPx    = n.posPx,
             .birthMs  = static_cast<float>(n.birthTimeMs - refMs),
             .velocity = n.velocity,
-            .flags    = n.segmentStart ? GPU_FLAG_SEGMENT_START : 0.F,
+            .distPx   = static_cast<float>(n.distPx),
+            .bits     = (n.seed << 1) | (n.segmentStart ? GPU_BIT_SEGMENT_START : 0u),
         });
     }
 }

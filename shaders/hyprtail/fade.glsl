@@ -2,9 +2,6 @@
 //
 //   #include "hyprtail/fade.glsl"
 //
-// Include it after your "precision highp float;" line: fragment shaders
-// have no default float precision.
-//
 // Functions only, prefixed ht_. Fade is time-based (SPEC section 4): driven by
 // a node's age (nowMs - birthMs), not its position along the trail.
 

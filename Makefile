@@ -3,7 +3,7 @@ PLUGIN_NAME := hyprtail
 SOURCE_FILES := $(wildcard src/*.cpp)
 HEADER_FILES := $(wildcard src/*.hpp)
 # Embedded into the plugin with #embed (src/ShaderSource.cpp).
-SHADER_FILES := $(wildcard shaders/*.vert shaders/*.frag shaders/hyprtail/*.glsl)
+SHADER_FILES := $(wildcard shaders/*/*.vert shaders/*/*.frag shaders/*/*.glsl)
 OBJECT_FILES := $(patsubst src/%.cpp, out/%.o, $(SOURCE_FILES))
 
 OUTPUT := out/$(PLUGIN_NAME).so
@@ -54,7 +54,7 @@ CXXFLAGS   += -Iout
 # DEV value out/ was built with, see its rule.
 BUILD_MODE := out/build-mode
 
-.PHONY: all clean load unload smoke check-pin check-headers FORCE
+.PHONY: all clean load unload smoke test-unit check-pin check-headers FORCE
 
 all: $(OUTPUT)
 
@@ -128,19 +128,53 @@ load: all
 unload:
 	hyprctl plugin unload $(CURDIR)/$(OUTPUT)
 
+# Unit tests for the Hyprland-free parts (parameter pragmas, padding
+# expressions, shader preprocessing, node ring), then the preprocessed
+# built-in shaders through glslangValidator (GLSL ES 3.00 syntax and
+# semantics, no GPU). No compositor involved.
+# `make test-unit SANITIZE=1` builds with AddressSanitizer and UBSan.
+UNIT_OUT := out/unit
+UNIT_FLAGS := $(if $(filter 1,$(SANITIZE)),-O0 -fsanitize=address -fsanitize=undefined,)
+
+test-unit:
+	@mkdir -p $(UNIT_OUT)
+	$(CXX) -std=c++26 -Wall -g $(UNIT_FLAGS) tests/unit/unit.cpp src/Params.cpp src/ShaderSource.cpp src/TrailBuffer.cpp -o $(UNIT_OUT)/unit
+	rm -rf $(UNIT_OUT)/glsl
+	OUT_DIR=$(UNIT_OUT)/glsl $(UNIT_OUT)/unit
+	@command -v glslangValidator >/dev/null || { echo "glslangValidator not found, skipping the GLSL check" >&2; exit 0; }; \
+	status=0; for f in $(UNIT_OUT)/glsl/*; do \
+		if glslangValidator "$$f" >$$f.log 2>&1; then echo "glsl ok: $$f"; else echo "glsl FAILED: $$f" >&2; cat $$f.log >&2; status=1; fi; \
+	done; \
+	for v in $(UNIT_OUT)/glsl/*.vert; do for fr in $(UNIT_OUT)/glsl/*.frag; do \
+		if glslangValidator -l "$$v" "$$fr" >$(UNIT_OUT)/glsl/link.log 2>&1; then echo "glsl link ok: $$(basename $$v) + $$(basename $$fr)"; \
+		else echo "glsl link FAILED: $$v + $$fr" >&2; cat $(UNIT_OUT)/glsl/link.log >&2; status=1; fi; \
+	done; done; exit $$status
+
 # Lifecycle smoke test (SPEC §10): load, duplicate refusal, monitor hotplug,
 # unload and reload of the plugin in a headless Hyprland started from the
 # external/Hyprland checkout, which must be built with tests (`make clear &&
-# make debug` there). Run it at every re-pin.
+# make debug` there). Run it at every re-pin, from a terminal in a Wayland
+# session.
 #
-# It starts its own Hyprland and cannot reach a running session: hyprtester
-# talks to the newest instance under $XDG_RUNTIME_DIR/hypr
-# (hyprtester/src/hyprctlCompat.cpp:26-80), so XDG_RUNTIME_DIR is a fresh
-# directory and the session's display variables are unset. XDG_STATE_HOME is
-# scratch too, so errors.log is the test's own. The test file and config are
-# copied into the checkout for the build and removed afterwards. On failure
-# the scratch directory (Hyprland log under run/hypr/, errors.log under
-# state/hyprtail/) is kept and its path printed.
+# Environment for the test Hyprland (NOTES "Smoke test environment"):
+# - Its own XDG_RUNTIME_DIR, so hyprtester (which talks to the newest
+#   instance under $XDG_RUNTIME_DIR/hypr, hyprtester/src/hyprctlCompat.cpp:26-80)
+#   can't reach the running session. Short: the socket path is the runtime
+#   dir plus 82 characters and must fit in 107 (Hyprland Compositor.cpp:192-217,
+#   EventManager.cpp:21-24; HyprCtl.cpp:2331-2333 silently truncates instead).
+# - The session's Wayland socket as an absolute WAYLAND_DISPLAY: at this pin
+#   Hyprland always starts headless + DRM-if-available + Wayland-fallback
+#   (Compositor.cpp:307-319, HYPRLAND_HEADLESS_ONLY isn't read), the headless
+#   backend has no DRM fd, and without an allocator from DRM (unavailable
+#   inside a session) or Wayland, aquamarine's start() fails ("CBackend::create()
+#   failed!", aquamarine Backend.cpp:163-178). libwayland accepts an absolute
+#   WAYLAND_DISPLAY independent of XDG_RUNTIME_DIR (wayland-client.c:1164-1185).
+#   The test Hyprland is a Wayland client of the session: nothing is loaded
+#   into it. Its one Wayland output is disabled by test.lua's catch-all rule.
+# - Scratch XDG_STATE_HOME, so errors.log is the test's own.
+# The test file and config are copied into the checkout for the build and
+# removed afterwards. On failure the scratch directory (Hyprland log under
+# hypr/, errors.log under state/hyprtail/) is kept and its path printed.
 HYPRTESTER_DIR := $(HYPRLAND_SRC)/hyprtester
 SMOKE_TEST     := $(HYPRTESTER_DIR)/src/tests/main/hyprtail_smoke.cpp
 SMOKE_CONFIG   := $(HYPRTESTER_DIR)/hyprtail_smoke.lua
@@ -150,14 +184,21 @@ smoke:
 	@if [ ! -x $(HYPRLAND_SRC)/build/Hyprland ] || [ ! -d $(HYPRLAND_SRC)/build/hyprtester ]; then \
 		echo "error: external/Hyprland isn't built with tests; run 'make clear && make debug' in external/Hyprland" >&2; exit 1; \
 	fi
-	@tmp=$$(mktemp -d -t hyprtail-smoke.XXXXXX) || exit 1; \
+	@case "$$WAYLAND_DISPLAY" in \
+		"") echo "error: run make smoke inside a Wayland session (WAYLAND_DISPLAY unset); the test Hyprland needs it for a GPU allocator" >&2; exit 1 ;; \
+		/*) wl="$$WAYLAND_DISPLAY" ;; \
+		*) wl="$$XDG_RUNTIME_DIR/$$WAYLAND_DISPLAY" ;; \
+	esac; \
+	if [ ! -S "$$wl" ]; then echo "error: session Wayland socket $$wl not found" >&2; exit 1; fi; \
+	tmp=$$(mktemp -d /tmp/hts.XXXXXX) || exit 1; \
+	if [ $${#tmp} -gt 25 ]; then echo "error: runtime dir $$tmp too long for Hyprland's socket paths" >&2; rm -rf "$$tmp"; exit 1; fi; \
 	trap 'rm -f $(SMOKE_TEST) $(SMOKE_CONFIG)' EXIT; \
 	cp tests/hyprtester/hyprtail_smoke.cpp $(SMOKE_TEST) && \
 	cat $(HYPRTESTER_DIR)/test.lua tests/hyprtester/smoke.lua > $(SMOKE_CONFIG) && \
 	cmake --build $(HYPRLAND_SRC)/build --target hyprtester -j$$(nproc) || exit 1; \
-	mkdir -p "$$tmp/run" "$$tmp/state" && chmod 700 "$$tmp/run" || exit 1; \
-	cd $(HYPRLAND_SRC) && env -u WAYLAND_DISPLAY -u DISPLAY -u HYPRLAND_INSTANCE_SIGNATURE \
-		XDG_RUNTIME_DIR="$$tmp/run" XDG_STATE_HOME="$$tmp/state" HYPRTAIL_SO="$(CURDIR)/$(OUTPUT)" \
+	mkdir -p "$$tmp/state" || exit 1; \
+	cd $(HYPRLAND_SRC) && env -u DISPLAY -u HYPRLAND_INSTANCE_SIGNATURE \
+		WAYLAND_DISPLAY="$$wl" XDG_RUNTIME_DIR="$$tmp" XDG_STATE_HOME="$$tmp/state" HYPRTAIL_SO="$(CURDIR)/$(OUTPUT)" \
 		./build/hyprtester/hyprtester -c $(SMOKE_CONFIG) -b ./build/Hyprland -p hyprtester/plugin/hyprtestplugin.so hyprtailLifecycle; \
 	status=$$?; \
 	if [ $$status -eq 0 ]; then rm -rf "$$tmp"; echo "smoke: passed"; \

@@ -2,20 +2,11 @@
 //
 //   #include "hyprtail/ribbon.glsl"
 //
-// Include it after your "precision highp float;" line: fragment shaders
-// have no default float precision.
-//
 // Functions only, no uniforms or attributes: pass everything in. Names are
 // prefixed ht_ to stay out of the way of user code. Included at most once
 // per shader (the loader ignores repeated includes).
 
 const float HT_EPS = 1e-3;
-
-// Flags bit 0: this node starts a new segment (not connected to the node
-// before it).
-bool ht_startsSegment(float flags) {
-    return mod(flags, 2.0) >= 1.0;
-}
 
 // Clip-space position that draws nothing (outside the clip volume). Give it
 // to all four vertices of an instance to skip that segment.

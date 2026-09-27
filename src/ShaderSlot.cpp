@@ -21,7 +21,12 @@ namespace hyprtail {
         // there (e.g. a shader written for a newer plugin version reading
         // palette uniforms an older plugin never sets draws fully
         // transparent), so it's treated as a failure.
-        std::optional<std::string> contractCheck(GLuint prog, const SShaderContract& contract) {
+        struct SContract {
+            std::vector<std::string> uniforms;
+            std::vector<int>         attribLocations;
+        };
+
+        std::optional<std::string> contractCheck(GLuint prog, const SContract& contract) {
             std::vector<std::string> problems;
             std::array<char, 256>    name{};
 
@@ -36,7 +41,7 @@ namespace hyprtail {
                 if (n.starts_with("gl_"))
                     continue;
                 if (std::ranges::find(contract.uniforms, n) == contract.uniforms.end())
-                    problems.push_back(std::format("uniform `{}` is not provided by this hyprtail version (it would stay 0)", n));
+                    problems.push_back(std::format("uniform `{}` is not provided by the plugin (it would stay 0); declare it with #pragma hyprtail param", n));
             }
 
             count = 0;
@@ -57,7 +62,7 @@ namespace hyprtail {
             if (problems.empty())
                 return std::nullopt;
 
-            std::string out = "shader uses inputs this hyprtail version doesn't provide (written for another version? see the contract in the stock shaders):";
+            std::string out = "shader uses inputs the plugin doesn't provide:";
             for (const auto& p : problems)
                 out += "\n  " + p;
             return out;
@@ -69,7 +74,7 @@ namespace hyprtail {
         // program against the slot's contract. Raw shader/program objects
         // only, no cached GL state touched. Returns the error, or nullopt if
         // both stages compile, link and fit the contract.
-        std::optional<std::string> glslCheck(const SShaderPair& pair, const SShaderContract& contract) {
+        std::optional<std::string> glslCheck(const SShaderPair& pair, const SContract& contract) {
             const auto infoLog = [](GLuint obj, bool program) {
                 GLint len = 0;
                 program ? glGetProgramiv(obj, GL_INFO_LOG_LENGTH, &len) : glGetShaderiv(obj, GL_INFO_LOG_LENGTH, &len);
@@ -138,15 +143,49 @@ namespace hyprtail {
         }
     }
 
-    CShaderSlot::CShaderSlot(std::string name, std::string vertName, std::string_view vertBuiltin, std::string fragName, std::string_view fragBuiltin,
-                             SShaderContract contract) :
-        m_name(std::move(name)), m_vertName(std::move(vertName)), m_fragName(std::move(fragName)), m_vertBuiltin(vertBuiltin), m_fragBuiltin(fragBuiltin),
-        m_contract(std::move(contract)) {}
+    namespace {
+        // The declarations of both stages have to fit together: one
+        // topology (vertex), parameters declared identically wherever they
+        // appear, padding expressions over known scalar parameters.
+        std::expected<SProgramInfo, std::string> programInfo(const SShaderPair& pair) {
+            SProgramInfo info;
+            info.topology = pair.vert.topology.value_or(shader::eTopology::PATH);
+
+            for (const auto* src : {&pair.vert, &pair.frag}) {
+                for (const auto& p : src->params) {
+                    const auto it = std::ranges::find_if(info.params, [&](const auto& d) { return d.name == p.decl.name; });
+                    if (it == info.params.end()) {
+                        info.params.push_back(p.decl);
+                        continue;
+                    }
+                    const bool same = it->type == p.decl.type && params::format(it->def) == params::format(p.decl.def) && it->min == p.decl.min && it->max == p.decl.max;
+                    if (!same)
+                        return std::unexpected(std::format("param {} is declared differently in the two stages ({}); declare it identically", p.decl.name, p.where));
+                }
+            }
+
+            for (const auto* src : {&pair.vert, &pair.frag}) {
+                for (const auto& pad : src->padding) {
+                    for (const auto& n : pad.expr.names()) {
+                        const bool param = std::ranges::any_of(info.params, [&](const auto& d) { return d.name == n && d.type != params::eType::VEC2 && d.type != params::eType::COLOR; });
+                        const bool reserved = std::ranges::any_of(shader::reservedParams(), [&](const auto& r) { return r.decl.name == n; });
+                        if (!param && !reserved)
+                            return std::unexpected(std::format("{}: padding uses \"{}\", which isn't a float, int or bool param of this program", pad.where, n));
+                    }
+                    info.padding.push_back(pad);
+                }
+            }
+            return info;
+        }
+    }
+
+    CShaderSlot::CShaderSlot(std::string name, std::string vertBuiltin, std::string fragBuiltin) :
+        m_name(std::move(name)), m_vertBuiltin(std::move(vertBuiltin)), m_fragBuiltin(std::move(fragBuiltin)) {}
 
     const SShaderPair& CShaderSlot::builtin() {
         if (!m_builtin) {
-            auto vert = shader::preprocess(m_vertBuiltin, m_vertName, {});
-            auto frag = shader::preprocess(m_fragBuiltin, m_fragName, {});
+            auto vert = shader::preprocess(shader::builtin(m_vertBuiltin), m_vertBuiltin, {}, shader::eStage::VERTEX);
+            auto frag = shader::preprocess(shader::builtin(m_fragBuiltin), m_fragBuiltin, {}, shader::eStage::FRAGMENT);
             // Built-ins are fixed at build time; a failure here is a plugin bug.
             if (!vert || !frag)
                 throw std::runtime_error(std::format("{}: built-in shader preprocessing failed: {}", m_name, !vert ? vert.error() : frag.error()));
@@ -161,14 +200,14 @@ namespace hyprtail {
         SShaderPair pair   = builtin();
         bool        failed = false;
 
-        const auto  loadStage = [&](const std::string& configured, const char* stage, shader::SSource& out, std::string& origin) {
+        const auto  loadStage = [&](const std::string& configured, const char* stage, shader::eStage st, shader::SSource& out, std::string& origin) {
             const auto path = cfg::resolveShaderPath(configured);
             if (path.empty())
                 return; // built-in
 
             origin = path.string();
             watch.push_back(path); // even if missing, so creating it reloads
-            auto src = shader::load(path);
+            auto src = shader::load(path, st);
             if (!src) {
                 diag::resetKey(key);
                 diag::report(eSeverity::WARN, key, std::format("{}: {} shader: {}\nKeeping the current shader.", m_name, stage, src.error()));
@@ -180,8 +219,8 @@ namespace hyprtail {
             pair.builtin = false;
         };
 
-        loadStage(vertConfigured, "vertex", pair.vert, pair.vertOrigin);
-        loadStage(fragConfigured, "fragment", pair.frag, pair.fragOrigin);
+        loadStage(vertConfigured, "vertex", shader::eStage::VERTEX, pair.vert, pair.vertOrigin);
+        loadStage(fragConfigured, "fragment", shader::eStage::FRAGMENT, pair.frag, pair.fragOrigin);
 
         if (!failed)
             m_pending = std::move(pair);
@@ -190,7 +229,15 @@ namespace hyprtail {
     }
 
     std::optional<std::string> CShaderSlot::compileAndActivate(const SShaderPair& pair) {
-        if (auto error = glslCheck(pair, m_contract))
+        auto info = programInfo(pair);
+        if (!info)
+            return std::format("shaders {} + {}: {}", pair.vert.sourceNames.front(), pair.frag.sourceNames.front(), info.error());
+
+        SContract contract{.uniforms = shader::preludeUniforms(), .attribLocations = shader::preludeAttribLocations(info->topology)};
+        for (const auto& p : info->params)
+            contract.uniforms.push_back(p.name);
+
+        if (auto error = glslCheck(pair, contract))
             return error;
 
         // silent: failures are ours to report; core's error bar would label
@@ -206,7 +253,8 @@ namespace hyprtail {
             m_shader->destroy();
 
         m_shader            = shader;
-        m_declaredPaddingPx = pair.declaredPaddingPx();
+        m_info              = std::move(*info);
+        ++m_generation;
         m_activeOrigin      = pair.vertOrigin + '\n' + pair.fragOrigin;
         m_activeVertOrigin  = pair.vertOrigin;
         m_activeFragOrigin  = pair.fragOrigin;
@@ -271,18 +319,22 @@ namespace hyprtail {
         return m_shader;
     }
 
-    float CShaderSlot::declaredPaddingPx() const {
-        return m_declaredPaddingPx;
+    const SProgramInfo& CShaderSlot::info() const {
+        return m_info;
     }
 
-    GLint CShaderSlot::loc(const char* uniform) {
+    uint64_t CShaderSlot::generation() const {
+        return m_generation;
+    }
+
+    GLint CShaderSlot::loc(const std::string& uniform) {
         if (!m_shader)
             return -1;
         const auto it = m_locs.find(uniform);
         if (it != m_locs.end())
             return it->second;
         // Custom uniforms aren't in eShaderUniform, look them up directly.
-        const GLint l = glGetUniformLocation(m_shader->program(), uniform);
+        const GLint l = glGetUniformLocation(m_shader->program(), uniform.c_str());
         m_locs.emplace(uniform, l);
         return l;
     }
@@ -299,6 +351,7 @@ namespace hyprtail {
         return {
             .active     = m_shader != nullptr,
             .pending    = m_pending.has_value(),
+            .topology   = m_shader ? shader::topologyName(m_info.topology) : "",
             .vertOrigin = m_activeVertOrigin,
             .fragOrigin = m_activeFragOrigin,
             .lastResult = m_lastResult,
