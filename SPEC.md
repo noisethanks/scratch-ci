@@ -671,11 +671,12 @@ this file states the decision and marks what's still a placeholder.
 
 **Status:** phases 0-2 of §13.16 are built; phase 3's checks and config
 front end (`params`, `layer1_vertex`..`layer4_fragment`, `expects`, the
-pre-link varying check) and phase 4's presets/config-surface-v2
-(`preset.conf`, `preset =`, the old-key removal) are also built. Phases
-2-4 are untested (not yet run in any compositor). Built parts are marked
-**Built (phase N)** below, with any difference from the draft; everything
-else is still proposal.
+pre-link varying check), phase 4's presets/config-surface-v2
+(`preset.conf`, `preset =`, the old-key removal), and phase 7's
+screenshare exclude (moved up ahead of phase 5) are also built. Phases
+2-4 and 7 are untested (not yet run in any compositor). Built parts are
+marked **Built (phase N)** below, with any difference from the draft;
+everything else is still proposal.
 Decisions taken so far: no dynamic config keys; parameters go in one
 plugin-validated `params` string, and per-layer shader overrides are static
 keys indexed by layer number (§13.5, §13.8; NOTES "Phase 0 spikes", S2);
@@ -1181,6 +1182,59 @@ behavior).
   General rule: use exported members, never header-inline singletons with
   local statics.
 
+**Built (phase 7)** (`Config.*`, `src/main.cpp`): `screenshare` (`Config.*`,
+default `"exclude"`, validated against exactly these two values). The table
+above still describes the *baseline*, pre-this-feature behavior for
+citation purposes; with this built and `screenshare` at its default, the
+monitor/region-capture and mirrored-output rows flip to "excluded" (the
+change the feature exists to make), the other three rows are unaffected
+(they already matched the desired default with no code change needed).
+
+- **Mechanism as built:** `runLifecycle()` (`main.cpp`) still runs
+  `CMonitorDamage::update()` for every layer unconditionally (so damage
+  bookkeeping never depends on where the actual draw happens), but only
+  adds the normal `CLayerPassElement` to `m_renderPass` when
+  `!excludeCaptures() || !pMonitor->needsACopyFB()`. Otherwise it stashes
+  the collected `SLayerDraw`s on that monitor's per-render state
+  (`SMonitorFrame::pendingCaptureDraws`) instead. The new hook,
+  `hkSaveBufferForMirror`, calls the original first (so the copy is clean),
+  then constructs a `CLayerPassElement` on the stack from the stashed draws
+  and calls `.draw()` on it directly -- not through `m_renderPass` (which
+  only runs before `endRender()`, too early for this) but as a plain
+  virtual call, which is safe: `IPassElement` (`PassElement.hpp:23`) is a
+  bare virtual-dispatch base with no side effects at construction; the pass
+  system, not the object, is what manages queued elements' lifetime.
+- **Damage correctness, verified by tracing the exact chain at the pin
+  (not assumed from the phase-0 spike alone):** `GLRenderer.cpp:88`
+  (`m_renderPass.render(m_renderData.damage)`) runs the pass with the
+  render's own accumulated damage, which already includes this monitor's
+  layer boxes (added by `damageInRender()`, `RenderUtil.cpp`, earlier the
+  same render, before `endRender()`). `Pass.cpp:132` copies that in;
+  `:163`/`:172` sets `finalDamage` from it (plus a blur expansion when
+  anything needs blur) -- always a superset, never narrower.
+  `GLRenderer.cpp:98` calls `end()` only after the pass has already run, and
+  `OpenGL.cpp:786` sets `m_renderData.damage = finalDamage` there, before
+  `saveBufferForMirror` (`:801-802`) and so before our hook fires. So the
+  damage region live when the hook draws is coarser than the per-element
+  region `Pass.cpp:193-194` normally computes (that one is occlusion-culled
+  by `simplify()`), but always a superset of it -- scissoring to it can't
+  crop the trail, only rasterize a marginally wider area no geometry
+  reaches anyway. No explicit damage assignment was added in the hook; it
+  wasn't needed.
+- **Self-check and fallback as built:** `onRenderStageInternal` gets a
+  `RENDER_POST` branch (`Renderer.cpp:2250`, after `endRender()`). If a
+  monitor's `awaitingCaptureDraw` is still set there, the hook didn't fire
+  this render; the plugin reports once (`hook:capture:<monitor>`) and sets
+  `captureHookUnavailable`, sticky, so `runLifecycle()`'s branch above
+  stops stashing draws for that monitor and simply doesn't draw while it
+  needs a copy -- the damage.update() calls already ran, so the region
+  just redraws with no trail, no artifacts. The same fallback applies from
+  install time if `saveBufferForMirror` couldn't be hooked at all.
+- **Status** (`hyprctl hyprtail`): `hooks.capture`, top-level `screenshare`,
+  and per-monitor `needsCopyFB`/`captureFallback` -- lets the mechanism be
+  confirmed live (a mirror or capture detected, the hook firing, no
+  fallback) without needing an external capture tool.
+
 ### 13.13 Status command
 
 **Built (phase 1) on the current model**; see §9. Layer, preset and
@@ -1266,6 +1320,11 @@ compositor).
    `path smooth N` with exact Bezier bounds.
 6. **Pointer features.** Emit offset with the shape-change break, `warp =
    curve`.
-7. **Screenshare exclude.** The hook, the fallback, capture tests (grim for
-   screencopy, a portal client for image-copy-capture, window capture).
-   Must land before public release.
+7. **Screenshare exclude (built, untested; moved up ahead of phase 5).**
+   The hook, the fallback, `screenshare = "exclude"|"include"`. Not done:
+   capture tests with real external tools (grim for screencopy, a portal
+   client for image-copy-capture, window capture) -- the nested check that
+   *is* planned only confirms the mechanism doesn't corrupt or crash
+   (mirror setup, viewed directly in nested) and that the trail is
+   genuinely absent from a mirror output; a real screencopy/portal client
+   is still needed before public release, per the original note.

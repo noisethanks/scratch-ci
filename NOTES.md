@@ -515,6 +515,63 @@ Built, not yet run in any compositor. SPEC §13.1-13.6 and §13.16 have the what
   (`hyprpm update`). Read it carefully before trusting it blindly on a
   first failure.
 
+## Phase 7: screenshare exclude (built, untested; moved up ahead of phase 5)
+
+- **The damage-safety question, traced and cited before writing the hook,
+  not after:** the user asked directly whether the manual `.draw()` call
+  needed to set `m_renderData.damage` itself, matching what
+  `Pass.cpp:193-194` normally does for a queued element, or whether it
+  would rely on stale/wrong state with no crash to reveal it. Traced the
+  exact chain at the pin rather than trusting the phase-0 spike's own
+  claim on faith: `GLRenderer.cpp:88` runs the pass with the render's own
+  accumulated damage (already includes our layers' boxes, added earlier
+  the same render via `damageInRender()`); `Pass.cpp:132/163/172` derives
+  `finalDamage` from that, always a superset (blur-widened at most, never
+  narrower); `GLRenderer.cpp:98` calls `end()` only after the pass ran;
+  `OpenGL.cpp:786` sets `m_renderData.damage = finalDamage` there, before
+  `saveBufferForMirror`. Conclusion: what's live when the hook fires is
+  coarser than the tightest per-element region, but never narrower than
+  our own contribution -- scissoring to it can't crop the trail, only
+  waste a little rasterization outside geometry that isn't there anyway.
+  No fix needed; the trace itself is now the citation, in both `main.cpp`
+  (at `hkSaveBufferForMirror`) and SPEC §13.12, not just here.
+- **Why calling `CLayerPassElement::draw()` directly, outside
+  `m_renderPass`, is safe:** checked `PassElement.hpp` before relying on
+  it. `IPassElement` is a bare abstract base -- virtual dispatch and two
+  cached bools, no registration or side effect at construction. The pass
+  system (`m_renderPass.add()`/`CRenderPass::render()`) is what manages a
+  queued element's lifetime and draw order; the object itself doesn't
+  care who calls `draw()` or when, as long as `g_pHyprRenderer->m_renderData`
+  is in a state `drawLayer()` can read from -- which it is, per the
+  damage trace above and the earlier S3 spike notes on framebuffer/blend
+  state after `saveBufferForMirror` returns.
+- **Per-monitor vs. global fallback state:** SPEC's own wording ("switches
+  *that monitor* to the fallback") was taken literally --
+  `captureHookUnavailable` lives on `SMonitorFrame`, not as one global
+  flag. In practice a hook that misses at all almost certainly misses for
+  every monitor (it's a build characteristic, not a monitor-specific
+  one), but per-monitor state costs nothing extra (the map already
+  exists) and matches the spec text exactly, including for a
+  hypothetical future case where only some monitors take a different
+  code path to `end()`.
+- **Stability risk assessment:** yes, warranted, and scoped narrowly per
+  the user's own request. Genuinely new relative to everything shipped so
+  far: a hook target never hooked before (`CHyprOpenGLImpl::saveBufferForMirror`),
+  and a real GL draw call (shader, blend, scissor, VAO) from a new call
+  site *inside* the host's own `end()`, between two host GL calls that
+  each explicitly re-establish their own state afterward (`bindFB`,
+  `blend(false)`) rather than assuming anything was left alone -- which
+  is what makes reusing `drawLayer()`'s existing cleanup (unbinds VAO,
+  clears scissor) sufficient without new cleanup code. Nested test scope,
+  per the user's explicit widening: not just "doesn't crash" but a real
+  functional check -- set up a mirror in the nested instance
+  (`needsACopyFB()`'s own trigger, no external capture tool needed),
+  confirm the trail still renders correctly on the *source* monitor via
+  the hook path, and confirm it's genuinely absent on the *mirror output*
+  itself, viewed directly. Everything else (the `screenshare` setting,
+  `checkEnum`) is CPU-only, host-test-only like phases 3, 4 and the rest
+  of this one.
+
 ## Open questions
 
 - [x] Hyprland commit to pin: `efb5099` (v0.56.2, host package)

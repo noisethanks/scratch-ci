@@ -1,8 +1,10 @@
 #include "Config.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <format>
+#include <string_view>
 
 #include <config/ConfigManager.hpp>
 #include <config/values/types/BoolValue.hpp>
@@ -27,6 +29,7 @@ namespace hyprtail::cfg {
             SP<CStringValue>                preset;
             std::array<SP<CStringValue>, 4> layerVertex, layerFragment;
             SP<CStringValue>                params;
+            SP<CStringValue>                screenshare;
         };
 
         SRegistered& reg() {
@@ -53,6 +56,22 @@ namespace hyprtail::cfg {
                 return x;
             }
             diag::report(eSeverity::WARN, std::format("config:{}", v->name()), std::format("{} = {} is outside {}..{}; keeping {}", v->name(), x, lo, hi, fallback));
+            return fallback;
+        }
+
+        // One of `allowed`, else report and keep `fallback`.
+        std::string checkEnum(const SP<CStringValue>& v, std::initializer_list<std::string_view> allowed, const std::string& fallback) {
+            if (!v)
+                return fallback;
+            const auto val = v->value();
+            if (std::ranges::find(allowed, std::string_view{val}) != allowed.end()) {
+                diag::resetKey(std::format("config:{}", v->name()));
+                return val;
+            }
+            std::string list;
+            for (const auto& a : allowed)
+                list += (list.empty() ? "" : ", ") + std::string{a};
+            diag::report(eSeverity::WARN, std::format("config:{}", v->name()), std::format("{} = \"{}\" isn't one of {}; keeping \"{}\"", v->name(), val, list, fallback));
             return fallback;
         }
     }
@@ -84,9 +103,12 @@ namespace hyprtail::cfg {
             r.layerFragment[i] = makeShared<CStringValue>(LAYER_FRAG_KEYS[i], "fragment shader override for this layer of the preset, empty uses the preset's own shader", "");
         }
         r.params = makeShared<CStringValue>("plugin:hyprtail:params", R"(per-layer parameter overrides: "<layer>:<name>=<value> ..." (SPEC section 13.5))", "");
+        r.screenshare =
+            makeShared<CStringValue>("plugin:hyprtail:screenshare", "\"exclude\" (default) to keep the trail out of monitor/region captures and mirrors, or \"include\"",
+                                     DEFAULTS.screenshare.c_str());
 
         bool ok = true;
-        for (const SP<IValue>& v : std::initializer_list<SP<IValue>>{r.capacity, r.minSpacing, r.interpolateWarps, r.damagePadding, r.preset, r.params})
+        for (const SP<IValue>& v : std::initializer_list<SP<IValue>>{r.capacity, r.minSpacing, r.interpolateWarps, r.damagePadding, r.preset, r.params, r.screenshare})
             ok = add(handle, v) && ok;
         for (size_t i = 0; i < 4; ++i) {
             ok = add(handle, r.layerVertex[i]) && ok;
@@ -128,6 +150,8 @@ namespace hyprtail::cfg {
         }
         if (r.params)
             v.params = r.params->value();
+
+        v.screenshare = checkEnum(r.screenshare, {"exclude", "include"}, previous.screenshare);
 
         return v;
     }

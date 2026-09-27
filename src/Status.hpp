@@ -31,11 +31,15 @@ namespace hyprtail::status {
         uint64_t                         draws        = 0; // renders that drew at least one layer
         uint64_t                         emptySkips   = 0; // renders without damage (workspace skipped)
         std::vector<std::optional<CBox>> layerBoxes;       // per layer: last drawn box, logical monitor-local
+
+        // Screenshare exclude (SPEC §13.12).
+        bool needsCopyFB     = false; // needsACopyFB() as of the last render: mirrored, or captured
+        bool captureFallback = false; // the capture hook missed a render here; not drawing while it needs a copy
     };
 
     struct SSnapshot {
-        std::string rev, builtHash, runningHash, preset;
-        bool        cursorHook = false, warpHook = false;
+        std::string rev, builtHash, runningHash, preset, screenshare;
+        bool        cursorHook = false, warpHook = false, captureHook = false;
         uint64_t    renders    = 0;
 
         struct {

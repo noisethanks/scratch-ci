@@ -36,6 +36,11 @@ namespace hyprtail::cfg {
         // "<layer>:<name>=<value> ..." parameter overrides (SPEC §13.5),
         // validated against each layer's shader-declared params.
         std::string params;
+
+        // Screenshare exclude (SPEC §13.12): "exclude" (default) or
+        // "include" (today's behavior). A bad value warns and keeps the
+        // previous one, same as the numeric settings.
+        std::string screenshare = "exclude";
     };
 
     // Register all values. Call in PLUGIN_INIT. Returns false if any failed

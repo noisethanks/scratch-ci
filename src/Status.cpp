@@ -58,11 +58,13 @@ namespace hyprtail::status {
     std::string text(const SSnapshot& s) {
         std::string out = std::format("hyprtail {}\n", s.rev);
         out += std::format("  hyprland: running {}, built against {}{}\n", s.runningHash, s.builtHash, s.runningHash == s.builtHash ? "" : " (MISMATCH)");
-        out += std::format("  hooks: cursor {}, warp {}\n", s.cursorHook ? "active" : "unavailable (trail draws above the cursor)",
-                           s.warpHook ? "active" : "unavailable (warps always connect)");
+        out += std::format("  hooks: cursor {}, warp {}, capture {}\n", s.cursorHook ? "active" : "unavailable (trail draws above the cursor)",
+                           s.warpHook ? "active" : "unavailable (warps always connect)",
+                           s.captureHook ? "active" : "unavailable (screenshare exclude degrades to not drawing on monitors that need a copy)");
         out += std::format("  renders: {}\n", s.renders);
 
         out += std::format("  preset: {}\n", s.preset);
+        out += std::format("  screenshare: {}\n", s.screenshare);
         out += std::format("  source: {}/{} points, generation {}, pending break {}, warps {}, pointer still for {:.0f} ms{}\n", s.source.nodes, s.source.capacity,
                            s.source.generation, s.source.pendingBreak ? "yes" : "no", s.source.interpolateWarps ? "connect" : "break", s.source.stillMs,
                            s.source.gpuFailed ? ", NODE BUFFER FAILED (see errors.log)" : "");
@@ -88,8 +90,10 @@ namespace hyprtail::status {
         if (s.monitors.empty())
             out += "    none\n";
         for (const auto& m : s.monitors) {
-            out += std::format("    {}: {} renders (lifecycle via hook {}, fallback {}), {} with layers drawn, {} without damage\n", m.name, m.renders, m.hookRuns,
-                               m.fallbackRuns, m.draws, m.emptySkips);
+            out += std::format("    {}: {} renders (lifecycle via hook {}, fallback {}), {} with layers drawn, {} without damage{}\n", m.name, m.renders, m.hookRuns,
+                               m.fallbackRuns, m.draws, m.emptySkips,
+                               !m.needsCopyFB ? "" : m.captureFallback ? ", needs a copy (mirrored/captured), capture hook fallback active: not drawing there" :
+                                                                          ", needs a copy (mirrored/captured), drawn via the capture hook");
             for (size_t i = 0; i < m.layerBoxes.size() && i < s.layers.size(); ++i)
                 out += std::format("      {}: {}\n", s.layers[i].name, boxText(m.layerBoxes[i]));
         }
@@ -101,8 +105,9 @@ namespace hyprtail::status {
 
     std::string json(const SSnapshot& s) {
         std::string out = "{";
-        out += std::format(R"("rev": "{}", "builtHash": "{}", "runningHash": "{}", "preset": "{}", )", esc(s.rev), esc(s.builtHash), esc(s.runningHash), esc(s.preset));
-        out += std::format(R"("hooks": {{"cursor": {}, "warp": {}}}, "renders": {}, )", b(s.cursorHook), b(s.warpHook), s.renders);
+        out += std::format(R"("rev": "{}", "builtHash": "{}", "runningHash": "{}", "preset": "{}", "screenshare": "{}", )", esc(s.rev), esc(s.builtHash), esc(s.runningHash),
+                           esc(s.preset), esc(s.screenshare));
+        out += std::format(R"("hooks": {{"cursor": {}, "warp": {}, "capture": {}}}, "renders": {}, )", b(s.cursorHook), b(s.warpHook), b(s.captureHook), s.renders);
         out += std::format(R"("source": {{"nodes": {}, "capacity": {}, "generation": {}, "pendingBreak": {}, "interpolateWarps": {}, "gpuFailed": {}, "stillMs": {:.1f}}}, )",
                            s.source.nodes, s.source.capacity, s.source.generation, b(s.source.pendingBreak), b(s.source.interpolateWarps), b(s.source.gpuFailed),
                            s.source.stillMs);
@@ -125,8 +130,9 @@ namespace hyprtail::status {
             std::string boxes;
             for (size_t j = 0; j < m.layerBoxes.size(); ++j)
                 boxes += std::format("{}{}", j ? ", " : "", boxJson(m.layerBoxes[j]));
-            out += std::format(R"({}{{"name": "{}", "renders": {}, "hookRuns": {}, "fallbackRuns": {}, "draws": {}, "emptyDamageSkips": {}, "layerBoxes": [{}]}})",
-                               i ? ", " : "", esc(m.name), m.renders, m.hookRuns, m.fallbackRuns, m.draws, m.emptySkips, boxes);
+            out += std::format(
+                R"({}{{"name": "{}", "renders": {}, "hookRuns": {}, "fallbackRuns": {}, "draws": {}, "emptyDamageSkips": {}, "needsCopyFB": {}, "captureFallback": {}, "layerBoxes": [{}]}})",
+                i ? ", " : "", esc(m.name), m.renders, m.hookRuns, m.fallbackRuns, m.draws, m.emptySkips, b(m.needsCopyFB), b(m.captureFallback), boxes);
         }
         out += "], ";
 

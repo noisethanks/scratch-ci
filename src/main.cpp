@@ -14,6 +14,7 @@
 #include <plugins/HookSystem.hpp>
 #include <plugins/PluginSystem.hpp>
 #include <config/lua/ConfigManager.hpp>
+#include <render/OpenGL.hpp>
 #include <render/Renderer.hpp>
 #include <pointer/PointerManager.hpp>
 #include <pointer/PointerController.hpp>
@@ -49,6 +50,7 @@ static HANDLE s_handle = nullptr;
 
 typedef void (*origRenderSoftwareCursorsFor)(void*, PHLMONITOR, const Time::steady_tp&, CRegion&, std::optional<Vector2D>, bool, bool);
 typedef void (*origControllerWarpTo)(const void*, const Vector2D&, bool);
+typedef bool (*origSaveBufferForMirror)(void*, const CBox&);
 
 
 // Which render each monitor is in, and which render the cursor hook already
@@ -61,14 +63,27 @@ struct SMonitorFrame {
 
     // Counters for `hyprctl hyprtail`.
     uint64_t hookRuns = 0, fallbackRuns = 0, draws = 0, emptySkips = 0;
+
+    // Screenshare exclude (SPEC §13.12): runLifecycle() sets awaitingCaptureDraw
+    // and stashes this render's draws here instead of adding a CLayerPassElement,
+    // when this monitor needsACopyFB(). hkSaveBufferForMirror() consumes them
+    // (drawing directly, after the original, so the copy is clean); the
+    // RENDER_POST self-check in onRenderStageInternal catches it if the hook
+    // never fires and sets captureHookUnavailable, sticky, so the fallback
+    // (draw nothing while this monitor needs a copy) applies from then on.
+    bool                    awaitingCaptureDraw    = false;
+    bool                    captureHookUnavailable = false;
+    std::vector<SLayerDraw> pendingCaptureDraws;
+    double                  pendingCaptureNowMs = 0.0;
 };
 
 static uint64_t                                              s_frames = 0;
 static Time::steady_tp                                       s_epoch;
 static UP<SPreset>                                           s_preset;
 static wl_event_source*                                      s_idleTimer  = nullptr;
-static CFunctionHook*                                        s_cursorHook = nullptr;
-static CFunctionHook*                                        s_warpHook   = nullptr;
+static CFunctionHook*                                        s_cursorHook  = nullptr;
+static CFunctionHook*                                        s_warpHook    = nullptr;
+static CFunctionHook*                                        s_captureHook = nullptr;
 static CHyprSignalListener                                   s_renderStageListener;
 static CHyprSignalListener                                   s_mouseMoveListener;
 static CHyprSignalListener                                   s_workspaceActiveListener;
@@ -102,6 +117,13 @@ static bool cursorHidden() {
 // games, mostly. No trail while one is active (SPEC §7).
 static bool pointerConstrained() {
     return g_pInputManager && g_pInputManager->isConstrained();
+}
+
+// Screenshare exclude (SPEC §13.12): anything but the literal "include"
+// (a bad config value already normalized to "exclude" by cfg::read()) means
+// keep the trail out of monitor/region captures and mirrors.
+static bool excludeCaptures() {
+    return s_config.screenshare != "include";
 }
 
 // ---------------------------------------------------------------- layers
@@ -270,6 +292,25 @@ static void runLifecycle(const PHLMONITOR& pMonitor) {
     if (draws.empty())
         return;
 
+    // Screenshare exclude (SPEC §13.12): while this monitor needs a mirror/
+    // capture copy, skip the normal pass element (it runs and draws before
+    // end()'s copy, Renderer.cpp:2160-2229 vs OpenGL.cpp:801-806 -- too
+    // early, it would be baked into the copy) and stash the draws for
+    // hkSaveBufferForMirror() instead, which runs after the copy. If the
+    // hook isn't installed, or the RENDER_POST self-check already caught it
+    // missing a previous render, fall back to not drawing at all: the
+    // damage.update() calls above already ran, so the region simply
+    // redraws without a trail, no artifacts.
+    if (excludeCaptures() && pMonitor->needsACopyFB()) {
+        if (s_captureHook && !mf.captureHookUnavailable) {
+            mf.pendingCaptureDraws = std::move(draws);
+            mf.pendingCaptureNowMs = nowMs;
+            mf.awaitingCaptureDraw = true;
+            ++mf.draws; // deferred, not skipped: it's still drawn, just later
+        }
+        return;
+    }
+
     g_pHyprRenderer->m_renderPass.add(makeUnique<CLayerPassElement>(&p, std::move(draws), nowMs));
     ++mf.draws;
 }
@@ -372,8 +413,50 @@ static void hkControllerWarpTo(const void* thisptr, const Vector2D& pos, bool fo
     });
 }
 
+// Screenshare exclude (SPEC §13.12). Called from CHyprOpenGLImpl::end()
+// (OpenGL.cpp:801-802) exactly when this monitor needsACopyFB(): the
+// original takes the mirror/capture copy from currentFB first; we then draw
+// directly into currentFB, which is current again once the original's own
+// bindTempFB guard unwinds (OpenGL.cpp:2540-2541, 2556-2558). end() copies
+// that same framebuffer to the real output right after (:808-829), so the
+// trail still reaches the screen, just not the copy that was already taken.
+//
+// m_renderData.damage isn't set explicitly here -- it doesn't need to be.
+// By this point it holds finalDamage (OpenGL.cpp:786), which traces back
+// through GLRenderer.cpp:88 (m_renderPass.render(m_renderData.damage)) and
+// Pass.cpp:132/163/172 to the same render's damage accumulator our own
+// damageInRender() added this monitor's layer boxes to earlier this render,
+// in runLifecycle(), well before endRender(). finalDamage is always a
+// superset of that (blur-widened at most, never narrower), so scissoring to
+// it can't crop our draw -- only be marginally wider than the tightest
+// per-element region Pass.cpp:193-194 would normally compute. See NOTES
+// "Phase 7" for the full trace.
+static bool hkSaveBufferForMirror(void* thisptr, const CBox& box) {
+    const bool ok = (*(origSaveBufferForMirror)s_captureHook->m_original)(thisptr, box);
+
+    if (!g_pHyprRenderer || !s_preset)
+        return ok;
+    const auto pMonitor = g_pHyprRenderer->m_renderData.pMonitor.lock();
+    if (!pMonitor)
+        return ok;
+
+    hyprtail::diag::guard("capture-hook", [&] {
+        auto& mf = s_monFrame[pMonitor.get()];
+        if (!mf.awaitingCaptureDraw)
+            return; // this monitor didn't defer anything this render
+        mf.awaitingCaptureDraw = false;
+        if (!mf.pendingCaptureDraws.empty()) {
+            CLayerPassElement el(s_preset.get(), std::move(mf.pendingCaptureDraws), mf.pendingCaptureNowMs);
+            el.draw();
+        }
+        mf.pendingCaptureDraws.clear();
+    });
+
+    return ok;
+}
+
 static void onRenderStageInternal(eRenderStage stage) {
-    if ((stage != RENDER_BEGIN && stage != RENDER_LAST_MOMENT) || !g_pHyprRenderer || !s_preset)
+    if ((stage != RENDER_BEGIN && stage != RENDER_LAST_MOMENT && stage != RENDER_POST) || !g_pHyprRenderer || !s_preset)
         return;
 
     const auto pMonitor = g_pHyprRenderer->m_renderData.pMonitor.lock();
@@ -387,6 +470,26 @@ static void onRenderStageInternal(eRenderStage stage) {
     // RENDER_LAST_MOMENT (:2227).
     if (stage == RENDER_BEGIN) {
         ++mf.renderSerial;
+        return;
+    }
+
+    // RENDER_POST (:2250), after endRender() -- and so after end() and its
+    // saveBufferForMirror call -- has already run. Self-check (SPEC §13.12):
+    // if runLifecycle() stashed draws for the capture hook this render but
+    // they're still sitting here unconsumed, the hook never fired (a future
+    // build could inline a second copy of end() our export-based hook, S1,
+    // can't catch). Fall back for this monitor from now on: don't draw while
+    // it needs a copy, rather than risk the trail leaking into one.
+    if (stage == RENDER_POST) {
+        if (mf.awaitingCaptureDraw) {
+            mf.awaitingCaptureDraw    = false;
+            mf.captureHookUnavailable = true;
+            mf.pendingCaptureDraws.clear();
+            hyprtail::diag::report(
+                eSeverity::WARN, "hook:capture:" + pMonitor->m_name,
+                std::format("the screenshare-exclude hook didn't fire for {} this render; falling back to not drawing there while it needs a mirror/capture copy.",
+                           pMonitor->m_name));
+        }
         return;
     }
 
@@ -602,6 +705,7 @@ static void teardown() noexcept {
         s_renderStageListener.reset();
         removeHook(s_cursorHook);
         removeHook(s_warpHook);
+        removeHook(s_captureHook);
 
         // Remove any queued elements before GPU resources go away so draw()
         // can't run against a deleted VAO/program.
@@ -648,6 +752,14 @@ static void installHooks() {
     if (!s_warpHook)
         hyprtail::diag::report(eSeverity::WARN, "hook:warp",
                                "could not hook CPointerController::warpTo. Warps will draw a connecting line instead of breaking the trail.");
+
+    // Screenshare exclude (SPEC §13.12). Without it exclude mode degrades to
+    // not drawing on any monitor that needs a mirror/capture copy, same as
+    // the RENDER_POST self-check's own fallback (onRenderStageInternal).
+    s_captureHook = installHook(pmf_address(&Render::GL::CHyprOpenGLImpl::saveBufferForMirror), reinterpret_cast<void*>(&hkSaveBufferForMirror));
+    if (!s_captureHook)
+        hyprtail::diag::report(eSeverity::WARN, "hook:capture",
+                               "could not hook CHyprOpenGLImpl::saveBufferForMirror. screenshare = \"exclude\" degrades to not drawing on monitors that need a mirror/capture copy.");
 }
 
 // Make a render happen soon, so a pending shader compiles (GL is only
@@ -803,8 +915,10 @@ static hyprtail::status::SSnapshot statusSnapshot() {
     s.runningHash = __hyprland_api_get_hash();
     s.cursorHook  = s_cursorHook != nullptr;
     s.warpHook    = s_warpHook != nullptr;
+    s.captureHook = s_captureHook != nullptr;
     s.renders     = s_frames;
     s.preset      = s_preset ? s_preset->activePreset.name : "";
+    s.screenshare = s_config.screenshare;
 
     const double nowMs = msSinceEpoch(Time::steadyNow());
 
@@ -841,14 +955,15 @@ static hyprtail::status::SSnapshot statusSnapshot() {
     for (const auto& m : State::monitorState()->allMonitors()) {
         if (!m)
             continue;
-        hyprtail::status::SMonitor out{.name = m->m_name};
+        hyprtail::status::SMonitor out{.name = m->m_name, .needsCopyFB = m->needsACopyFB()};
         if (const auto it = s_monFrame.find(m.get()); it != s_monFrame.end()) {
-            const auto& mf   = it->second;
-            out.renders      = mf.renderSerial;
-            out.hookRuns     = mf.hookRuns;
-            out.fallbackRuns = mf.fallbackRuns;
-            out.draws        = mf.draws;
-            out.emptySkips   = mf.emptySkips;
+            const auto& mf     = it->second;
+            out.renders        = mf.renderSerial;
+            out.hookRuns       = mf.hookRuns;
+            out.fallbackRuns   = mf.fallbackRuns;
+            out.draws          = mf.draws;
+            out.emptySkips     = mf.emptySkips;
+            out.captureFallback = mf.captureHookUnavailable;
         }
         if (s_preset) {
             for (const auto& l : s_preset->layers)
