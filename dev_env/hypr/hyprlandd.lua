@@ -58,11 +58,11 @@ hl.config({
 hl.on("hyprland.start", function()
     -- "second" doesn't exist until this runs, has to be created and
     -- configured here, unlike the primary above.
-    -- hl.exec_cmd(
-    --     "hyprctl output create wayland second && "
-    --     .. "sleep 0.2 && "
-    --     .. "hyprctl eval 'hl.monitor({ output = \"second\", mode = \""
-    --     .. SECOND_MODE
-    --     .. "\", position = \"1280x0\", scale = 1 })'"
-    -- )
+    hl.exec_cmd(
+        "hyprctl output create wayland second && "
+        .. "sleep 0.2 && "
+        .. "hyprctl eval 'hl.monitor({ output = \"second\", mode = \""
+        .. SECOND_MODE
+        .. "\", position = \"1280x0\", scale = 1, mirror = \"WAYLAND-1\" })'"
+    )
 end)

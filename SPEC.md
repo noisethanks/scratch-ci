@@ -471,8 +471,8 @@ this file states the decision and marks what's still a placeholder.
   points are global, so after a layout change they could draw in the wrong
   place until they fade. Config reloads that change nothing don't clear it.
   A monitor that disappears mid-fade needs nothing more: its points have
-  nowhere to draw, and core warps the pointer off it, which breaks the trail
-  (unless `interpolate_warps`).
+  nowhere to draw, and core warps the pointer off it, which the warp hook
+  turns into a break, a line, or a curve, per `warp` (§13.10).
 - **Open, not yet tested:** buffer handling/culling for a monitor the trail
   isn't currently over, and damage propagation when the trail's bounding box
   straddles a seam between two outputs. Live multi-monitor hardware is now
@@ -490,14 +490,13 @@ this file states the decision and marks what's still a placeholder.
 > defaults move into `preset.conf` (built-in `subtle`, `classic`, or a user
 > preset directory); `preset = "<name>"` selects one; `layer1_vertex` ..
 > `layer4_fragment` still override a layer's shader by config; the `params`
-> string still overrides a layer's parameters by config. Kept as-is,
-> deliberately not per that literal removal list: `interpolate_warps` --
-> its named replacement (`warp`, §13.10) is phase 6, still unbuilt, and
-> removing the old key now would delete the "connect the trail across
-> warps" feature outright with nothing to take its place, which is a
-> regression, not the rename §13.8 otherwise describes. `capacity`,
-> `min_spacing` and `damage_padding` were never on the removed list and are
-> unaffected. Still true below: the reporting, batching, status and
+> string still overrides a layer's parameters by config. **Also removed, now
+> that phase 6 is built:** `interpolate_warps`, replaced by `warp =
+> "break"|"line"|"curve"` (§13.10); its removal was deferred until this
+> replacement existed (§13.8), which it now does. Phase 6 also adds
+> `emit_from` and `emit_offset` (§13.9), new keys, nothing to migrate.
+> `capacity`, `min_spacing` and `damage_padding` were never on the removed
+> list and are unaffected. Still true below: the reporting, batching, status and
 > failure-policy paragraphs (all still built as described); the API choice
 > (V2 only); the sparse-by-design principle.
 
@@ -548,7 +547,7 @@ this file states the decision and marks what's still a placeholder.
   | `capacity` | int, points | 64 | 2..4096 |
   | `min_spacing` | float, logical px | 2 | 0..256 |
   | `miter_limit` | float, half-widths | 2 | 1..16 |
-  | `interpolate_warps` | bool | false | |
+  | `interpolate_warps` | bool | false | removed (phase 6): see `warp`, §13.10 |
   | `damage_padding` | float, px, additive (§5) | 0 | 0..4096 |
   | `vertex_shader` | path | `""` = built-in | |
   | `fragment_shader` | path | `""` = built-in | |
@@ -660,8 +659,9 @@ this file states the decision and marks what's still a placeholder.
 - Color management built (§5): palette converted like core's colors;
   verify on an HDR / color-managed output
 - Performance: measure before optimizing damage (NOTES "Performance")
-- **Backlog:** bezier curves for warp interpolation (`interpolateWarps`
-  currently draws a straight segment). Now in scope of the §13 draft.
+- **Built (phase 6):** bezier curves for warp interpolation (`warp = "curve"`,
+  §13.10), a quadratic Bezier inserted on the CPU rather than
+  `interpolateWarps`'s straight segment.
 - Cursor-warp tooling reliability for scripting the validation ladder
   (`hyprctl eval hl.dsp.movecursor` field names unconfirmed, `wlrctl`
   targeting issue unresolved), not urgent, manual drag testing has been
@@ -672,9 +672,10 @@ this file states the decision and marks what's still a placeholder.
 **Status:** phases 0-2 of §13.16 are built; phase 3's checks and config
 front end (`params`, `layer1_vertex`..`layer4_fragment`, `expects`, the
 pre-link varying check), phase 4's presets/config-surface-v2
-(`preset.conf`, `preset =`, the old-key removal), and phase 7's
-screenshare exclude (moved up ahead of phase 5) are also built. Phases
-2-4 and 7 are untested (not yet run in any compositor). Built parts are
+(`preset.conf`, `preset =`, the old-key removal), phase 6's pointer
+features (`emit_from`, `emit_offset`, `warp`), and phase 7's screenshare
+exclude (moved up ahead of phase 5) are also built. Phases 2-4, 6 and 7
+are untested (not yet run in any compositor). Built parts are
 marked **Built (phase N)** below, with any difference from the draft;
 everything else is still proposal.
 Decisions taken so far: no dynamic config keys; parameters go in one
@@ -1059,58 +1060,82 @@ would have linked fine.
   state file, no extra reload; the first-parse caveat (§9) is unchanged.
 
   **Built (phase 4):** `preset`, `params`, the eight `layerN_*` keys,
-  `capacity`, `min_spacing`, `damage_padding` (`Config.*`). Not built:
-  `emit_from`, `emit_offset` (phase 6), `warp` (phase 6), `screenshare`
-  (phase 7) -- registering them now, unbuilt, would just be dead config
-  surface; they're added with their own phases instead.
+  `capacity`, `min_spacing`, `damage_padding` (`Config.*`). **Built (phase
+  6):** `emit_from`, `emit_offset`, `warp`. `screenshare` is built too,
+  under phase 7 (§13.12). Every key this list names is now registered.
 - **Removed:** `fade_ms`, `width`, `miter_limit`, `interpolate_warps`,
   `vertex_shader`, `fragment_shader`, `color_slow`, `color_fast`, all
   `idle_*`. They become preset parameters or layer overrides. Old keys get
   Hyprland's own "unknown config key" error; a migration table goes in the
   README. There is no compatibility shim before public release.
 
-  **Built (phase 4), one deliberate deviation from this list:**
-  `fade_ms`/`width`/`miter_limit`/`color_slow`/`color_fast`/
-  `vertex_shader`/`fragment_shader`/all `idle_*` are removed exactly as
-  written above. `interpolate_warps` is **not** removed. Read literally,
-  this list would delete it before its named replacement (`warp`, §13.10)
-  exists, which isn't a rename -- it's deleting a working feature
-  ("connect the trail across warps") with nothing to take its place until
-  phase 6. Keeping it until `warp` actually ships is the correct read of
-  this section's own intent, not an exception to it: nothing here is
-  about removing working features early, only about retiring config keys
-  once their replacement exists.
+  **Built (phase 4), one deliberate deviation from this list (resolved in
+  phase 6):** `fade_ms`/`width`/`miter_limit`/`color_slow`/`color_fast`/
+  `vertex_shader`/`fragment_shader`/all `idle_*` were removed exactly as
+  written above; `interpolate_warps` was deliberately kept until its named
+  replacement (`warp`, §13.10) existed, since removing it first would have
+  deleted a working feature ("connect the trail across warps") with
+  nothing to take its place. Phase 6 ships `warp`, so `interpolate_warps`
+  is now removed too -- this list's original intent, completed, not
+  contradicted by the wait.
 
 ### 13.9 Emit offset
+
+**Built (phase 6)**, two deviations from the draft below (`Config.*`,
+`main.cpp`'s `emitPoint`/`hkControllerWarpTo`).
 
 - **`emit_from`** (string): `"hotspot"` (default, today's behavior) or
   `"x y"`, a position normalized to the cursor image box (`0 0` = top left,
   `0.5 0.5` = center).
 - **`emit_offset`** (vec2, logical px), added after. Lua `{x, y}` or
-  `"x y"` (`LuaConfigVec2.cpp:14-40`).
+  `"x y"` (`LuaConfigVec2.cpp:14-40`); the plugin's own `emit_from` uses the
+  same space-separated grammar for its `"x y"` case, but as a plain
+  `CStringValue` (it also has to accept the `"hotspot"` literal), not a
+  `CVec2Value`.
 - **Cursor image box:** `CPointerManager::getCursorBoxGlobal()` is the
   pointer position minus the hotspot, with size = image size / scale
   (`PointerManager.cpp:719-721`); the raw values come from
   `currentCursorImage()` (`PointerManager.hpp:76-89`). Core keeps one image
-  for all outputs (TODO at `PointerManager.hpp:165`). With no cursor image
-  (`hasCursor()`, `PointerManager.cpp:116-118`) it falls back to the hotspot
-  plus the pixel offset.
+  for all outputs (TODO at `PointerManager.hpp:165`).
+- **Deviation: `hasCursor()` is private.** The draft cited it
+  (`PointerManager.cpp:116-118`) for the "no cursor image" fallback, but
+  it's declared in `CPointerManager`'s private section
+  (`PointerManager.hpp`, after `recheckPointerPosition`), not callable from
+  a plugin. Built: the same check (`pBuffer || surface`) inlined from the
+  public `currentCursorImage()` accessor's public fields, same result.
 - **Applied at insert:** the node's position is the emit point, so bounds and
-  damage stay exact from nodes alone. Quad layers don't use it; they have
-  their own offset (§13.4).
+  damage stay exact from nodes alone. Quad layers don't use it; they still
+  anchor to the raw pointer position (`SPreset::lastPos`, fed only by
+  `Pointer::mgr()->position()`, never the emit point) -- structurally
+  already true before this phase, so no idle-layer code changed. The
+  `offset_from`/`offset` pair §13.4 describes for quad layers is a further,
+  separate feature, not part of phase 6's own scope (§13.16); still
+  proposal.
 - **Shape changes:** a cursor shape change moves the emit point without any
-  motion. `CPointerManager::m_events.cursorChanged` (`PointerManager.hpp:92-94`,
-  emitted e.g. at `PointerManager.cpp:135`) sets `pendingBreak` whenever
-  `emit_from` isn't the hotspot.
+  motion. `CPointerManager::m_events.cursorChanged` (`PointerManager.hpp:92-94`)
+  fires for more than actual shape changes -- every same-buffer re-apply
+  whose hotspot/scale changed, but also unconditionally on a new buffer or
+  surface object even with identical geometry, and on every frame commit of
+  an animated client cursor surface (`PointerManager.cpp:135,153,165,187,
+  201,286`). **Deviation: gated on the box geometry actually differing**
+  (hotspot and logical size, compared against what was last recorded), not
+  on the event firing at all -- otherwise an emit-offset trail would break
+  far more often than a real shape change warrants.
 
 ### 13.10 Warp interpolation
+
+**Built (phase 6)** (`main.cpp`'s `insertWarpCurve`/`hkControllerWarpTo`),
+as drafted below.
 
 - **Setting:** `warp = "break" | "line" | "curve"` replaces
   `interpolate_warps` (false = break, true = line).
 - **`curve`:** the warp hook inserts nodes along a quadratic Bezier from the
   newest node to the target.
   - The control point follows the newest node's velocity, for tangent
-    continuity.
+    continuity: placed along the incoming velocity direction, at half the
+    chord length. Zero velocity (a fresh segment) falls back to the
+    chord's midpoint, which makes the curve degenerate to a straight line
+    with no special-casing needed.
   - Node count comes from length / `min_spacing`, capped at a quarter of
     the capacity.
   - Birth times are spread between the previous node's birth and now, so
@@ -1318,8 +1343,10 @@ compositor).
    notes in the README (the SPEC §9 note above covers it for now).
 5. **Topologies.** `instanced K` (plus a particle demo preset) and
    `path smooth N` with exact Bezier bounds.
-6. **Pointer features.** Emit offset with the shape-change break, `warp =
-   curve`.
+6. **Pointer features (built, untested).** Emit offset with the
+   shape-change break, `warp = curve`. Per-layer `offset_from`/`offset`
+   for quad layers (§13.4) is a separate, further feature, not part of
+   this phase; still proposal.
 7. **Screenshare exclude (built, untested; moved up ahead of phase 5).**
    The hook, the fallback, `screenshare = "exclude"|"include"`. Not done:
    capture tests with real external tools (grim for screencopy, a portal

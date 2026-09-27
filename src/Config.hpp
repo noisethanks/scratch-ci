@@ -3,9 +3,11 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 
 #include <plugins/PluginAPI.hpp>
+#include <helpers/math/Math.hpp>
 
 // User settings (SPEC section 9), registered through the V2 config API
 // (HyprlandAPI::addConfigValueV2), which works with both the Lua and the
@@ -15,17 +17,29 @@
 // Lua:      hl.config({ plugin = { hyprtail = { capacity = 128 } } })
 // hyprlang: plugin:hyprtail:capacity = 128
 namespace hyprtail::cfg {
+    // SPEC §13.10. Replaces `interpolate_warps` (false = break, true = line);
+    // the phase-6 replacement this key's removal was deferred to has shipped.
+    enum class eWarpMode : uint8_t {
+        BREAK, // default: a warp starts a new segment
+        LINE,  // connects with a straight sweep (today's interpolate_warps = true)
+        CURVE, // connects with nodes along a quadratic Bezier
+    };
+
+    const char* warpModeName(eWarpMode m);
+
     struct SValues {
         std::string preset          = "subtle"; // SPEC §13.7
         size_t      capacity        = 64;
         float       minSpacingPx    = 2.F;
-        // Kept despite SPEC §13.8's literal "Removed" list: its replacement
-        // (`warp = "break"|"line"|"curve"`, §13.10) is phase 6, not built.
-        // Removing this now, with nothing to replace it, would delete the
-        // "connect the trail across warps" feature outright until phase 6
-        // ships -- not a rename, a regression. See NOTES "Phase 4".
-        bool        interpolateWarps = false;
-        float       damagePaddingPx  = 0.F; // on top of stock extent and shader-declared padding
+        eWarpMode   warp            = eWarpMode::BREAK;
+        float       damagePaddingPx = 0.F; // on top of stock extent and shader-declared padding
+
+        // Emit offset (SPEC §13.9). nullopt = "hotspot" (default, today's
+        // behavior); otherwise a position normalized to the cursor image
+        // box (CPointerManager::getCursorBoxGlobal). emitOffsetPx (logical
+        // px) is added after, always.
+        std::optional<Vector2D> emitFromNorm;
+        Vector2D                emitOffsetPx{0.0, 0.0};
 
         // Per-layer shader overrides, static keys indexed by the layer's
         // position in the preset's layer list (SPEC §13.7): layer1_vertex

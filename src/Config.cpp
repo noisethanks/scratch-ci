@@ -4,6 +4,8 @@
 #include <cmath>
 #include <cstdlib>
 #include <format>
+#include <optional>
+#include <sstream>
 #include <string_view>
 
 #include <config/ConfigManager.hpp>
@@ -11,6 +13,7 @@
 #include <config/values/types/FloatValue.hpp>
 #include <config/values/types/IntValue.hpp>
 #include <config/values/types/StringValue.hpp>
+#include <config/values/types/Vec2Value.hpp>
 
 #include "Diagnostics.hpp"
 
@@ -18,6 +21,14 @@ using hyprtail::diag::eSeverity;
 using namespace Config::Values;
 
 namespace hyprtail::cfg {
+    const char* warpModeName(eWarpMode m) {
+        switch (m) {
+            case eWarpMode::LINE: return "line";
+            case eWarpMode::CURVE: return "curve";
+            default: return "break";
+        }
+    }
+
     namespace {
         // Names are stored as raw const char* by IValue: literals only.
         // Min/max are also enforced by Hyprland when parsing, with its own
@@ -25,11 +36,13 @@ namespace hyprtail::cfg {
         struct SRegistered {
             SP<CFloatValue>                 minSpacing, damagePadding;
             SP<CIntValue>                   capacity;
-            SP<CBoolValue>                  interpolateWarps;
+            SP<CStringValue>                warp;
             SP<CStringValue>                preset;
             std::array<SP<CStringValue>, 4> layerVertex, layerFragment;
             SP<CStringValue>                params;
             SP<CStringValue>                screenshare;
+            SP<CStringValue>                emitFrom;
+            SP<CVec2Value>                  emitOffset;
         };
 
         SRegistered& reg() {
@@ -74,6 +87,17 @@ namespace hyprtail::cfg {
             diag::report(eSeverity::WARN, std::format("config:{}", v->name()), std::format("{} = \"{}\" isn't one of {}; keeping \"{}\"", v->name(), val, list, fallback));
             return fallback;
         }
+
+        // "x y", two whitespace-separated numbers and nothing else, same
+        // grammar as the Lua vec2 string form (LuaConfigVec2.cpp:14-25).
+        std::optional<Vector2D> parseTwoFloats(std::string_view text) {
+            std::istringstream in{std::string{text}};
+            double             x = 0.0, y = 0.0;
+            std::string        tail;
+            if (!(in >> x >> y) || (in >> tail))
+                return std::nullopt;
+            return Vector2D{x, y};
+        }
     }
 
     bool registerValues(HANDLE handle) {
@@ -84,11 +108,17 @@ namespace hyprtail::cfg {
             makeShared<CIntValue>("plugin:hyprtail:capacity", "max number of trail points kept", sc<Config::INTEGER>(DEFAULTS.capacity), SIntValueOptions{.min = 2, .max = 4096});
         r.minSpacing = makeShared<CFloatValue>("plugin:hyprtail:min_spacing", "min pointer travel between trail points, logical px", DEFAULTS.minSpacingPx,
                                                SFloatValueOptions{.min = 0.F, .max = 256.F});
-        r.interpolateWarps =
-            makeShared<CBoolValue>("plugin:hyprtail:interpolate_warps", "connect the trail across pointer warps instead of breaking it", DEFAULTS.interpolateWarps);
+        r.warp = makeShared<CStringValue>("plugin:hyprtail:warp", "how the trail crosses a pointer warp: \"break\" (default), \"line\", or \"curve\" (SPEC section 13.10)",
+                                          warpModeName(DEFAULTS.warp));
         r.damagePadding = makeShared<CFloatValue>("plugin:hyprtail:damage_padding", "extra damage padding on top of the stock extent and shader-declared padding, px",
                                                   DEFAULTS.damagePaddingPx, SFloatValueOptions{.min = 0.F, .max = 4096.F});
         r.preset        = makeShared<CStringValue>("plugin:hyprtail:preset", "which preset to use (SPEC section 13.7); built-in: subtle, classic", DEFAULTS.preset.c_str());
+        r.emitFrom      = makeShared<CStringValue>("plugin:hyprtail:emit_from",
+                                                    "where on the cursor image trail points are emitted from: \"hotspot\" (default), or a normalized \"x y\" position in "
+                                                    "the cursor image box (0 0 = top-left, 0.5 0.5 = center) (SPEC section 13.9)",
+                                                    "hotspot");
+        r.emitOffset    = makeShared<CVec2Value>("plugin:hyprtail:emit_offset", "fixed pixel offset added after emit_from, logical px (SPEC section 13.9)",
+                                               Config::VEC2{sc<float>(DEFAULTS.emitOffsetPx.x), sc<float>(DEFAULTS.emitOffsetPx.y)});
 
         // Per-layer shader overrides (SPEC §13.7): static keys indexed by
         // position in the preset's layer list, capped at 4. Names must be
@@ -108,7 +138,8 @@ namespace hyprtail::cfg {
                                      DEFAULTS.screenshare.c_str());
 
         bool ok = true;
-        for (const SP<IValue>& v : std::initializer_list<SP<IValue>>{r.capacity, r.minSpacing, r.interpolateWarps, r.damagePadding, r.preset, r.params, r.screenshare})
+        for (const SP<IValue>& v :
+             std::initializer_list<SP<IValue>>{r.capacity, r.minSpacing, r.warp, r.damagePadding, r.preset, r.params, r.screenshare, r.emitFrom, r.emitOffset})
             ok = add(handle, v) && ok;
         for (size_t i = 0; i < 4; ++i) {
             ok = add(handle, r.layerVertex[i]) && ok;
@@ -137,10 +168,33 @@ namespace hyprtail::cfg {
                 diag::report(eSeverity::WARN, "config:plugin:hyprtail:capacity", std::format("plugin:hyprtail:capacity = {} is outside 2..4096; keeping {}", c, previous.capacity));
         }
 
-        if (r.interpolateWarps)
-            v.interpolateWarps = r.interpolateWarps->value();
+        {
+            const auto text = checkEnum(r.warp, {"break", "line", "curve"}, warpModeName(previous.warp));
+            v.warp           = text == "line" ? eWarpMode::LINE : text == "curve" ? eWarpMode::CURVE : eWarpMode::BREAK;
+        }
         if (r.preset)
             v.preset = r.preset->value();
+
+        if (r.emitFrom) {
+            const auto  text = r.emitFrom->value();
+            const char* key  = "config:plugin:hyprtail:emit_from";
+            if (text == "hotspot") {
+                v.emitFromNorm = std::nullopt;
+                diag::resetKey(key);
+            } else if (const auto parsed = parseTwoFloats(text)) {
+                v.emitFromNorm = parsed;
+                diag::resetKey(key);
+            } else {
+                diag::report(eSeverity::WARN, key,
+                             std::format("plugin:hyprtail:emit_from = \"{}\" isn't \"hotspot\" or \"x y\"; keeping {}", text,
+                                         previous.emitFromNorm ? std::format("\"{} {}\"", previous.emitFromNorm->x, previous.emitFromNorm->y) : std::string{"\"hotspot\""}));
+                v.emitFromNorm = previous.emitFromNorm;
+            }
+        }
+        if (r.emitOffset) {
+            const auto vec = r.emitOffset->value();
+            v.emitOffsetPx = {vec.x, vec.y};
+        }
 
         for (size_t i = 0; i < 4; ++i) {
             if (r.layerVertex[i])

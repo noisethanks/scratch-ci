@@ -44,6 +44,7 @@
 
 using hyprtail::diag::eSeverity;
 using hyprtail::shader::eTopology;
+using hyprtail::cfg::eWarpMode;
 
 static HANDLE s_handle = nullptr;
 
@@ -93,6 +94,7 @@ static CHyprSignalListener                                   s_configReloadListe
 static CHyprSignalListener                                   s_monitorRemovedListener;
 static CHyprSignalListener                                   s_monitorDestroyListener;
 static CHyprSignalListener                                   s_layoutChangedListener;
+static CHyprSignalListener                                   s_cursorShapeListener;
 static SP<SHyprCtlCommand>                                   s_statusCommand;
 static hyprtail::cfg::SValues                                s_config;
 static hyprtail::CFileWatch                                  s_fileWatch;
@@ -207,12 +209,30 @@ static void prepareLayers() {
         armIdleTimer();
 }
 
+// Emit point for the next inserted node (SPEC §13.9): the raw pointer
+// position ("hotspot", default), or a position normalized to the cursor
+// image box, plus a fixed pixel offset added after. hasCursor() is private
+// (PointerManager.hpp), so the "no cursor image" fallback is inlined here
+// from the public currentCursorImage() accessor instead of calling it.
+static SVec2f emitPoint(const SPreset& p) {
+    Vector2D base = Pointer::mgr()->position();
+    if (p.emitFromNorm) {
+        const auto& img = Pointer::mgr()->currentCursorImage();
+        if (img.pBuffer || img.surface) {
+            const CBox box = Pointer::mgr()->getCursorBoxGlobal(); // pos = pointer - hotspot, size = image/scale
+            base           = Vector2D{box.x, box.y} + Vector2D{box.w, box.h} * (*p.emitFromNorm);
+        }
+    }
+    base += p.emitOffsetPx;
+    return SVec2f{sc<float>(base.x), sc<float>(base.y)};
+}
+
 // Sample the pointer once per render into the source ring: insert only on
 // real movement (at least min_spacing from the newest node). The trail
 // follows the pointer whether or not the cursor is shown (SPEC §7).
 // Breaks (SPEC §7): lock and workspace events break unconditionally; so
 // does a pointer constraint, during which nothing is inserted. Warps break
-// unless interpolateWarps (hkControllerWarpTo).
+// only when warpMode == BREAK (hkControllerWarpTo).
 static void sampleSource(double nowMs, bool locked) {
     auto& p = *s_preset;
     if (locked || pointerConstrained()) {
@@ -220,10 +240,9 @@ static void sampleSource(double nowMs, bool locked) {
         return;
     }
 
-    const Vector2D cursorPos = Pointer::mgr()->position();
-    const SVec2f   pos{sc<float>(cursorPos.x), sc<float>(cursorPos.y)};
+    const SVec2f pos = emitPoint(p);
 
-    bool           insert = p.ring.empty();
+    bool         insert = p.ring.empty();
     if (!insert) {
         const auto& newest = p.ring.newest().posPx;
         insert             = std::hypot(pos.x - newest.x, pos.y - newest.y) >= p.minSpacingPx;
@@ -385,10 +404,50 @@ static void hkRenderSoftwareCursorsFor(void* thisptr, PHLMONITOR pMonitor, const
     (*(origRenderSoftwareCursorsFor)s_cursorHook->m_original)(thisptr, pMonitor, now, damage, overridePos, screencopy, forceRender);
 }
 
+// Bezier warp interpolation (SPEC §13.10, warp = "curve"): inserts nodes on
+// the CPU along a quadratic Bezier from the trail's current end to the warp
+// target, so damage stays exact and every topology works without special
+// casing -- the same argument as `path smooth N`'s CPU-computed control
+// points (§13.3). Nothing to curve from if the ring is empty: falls back to
+// a plain connect at the next sample, same as `line`.
+static void insertWarpCurve(SPreset& p, const Vector2D& to, double nowMs) {
+    if (p.ring.empty())
+        return;
+
+    // Bound to the ring's backing storage, not invalidated by insert()
+    // below: a fixed-capacity circular buffer only reallocates on resize(),
+    // never on insert(). Stays the pre-warp state through the whole loop.
+    const auto&  prev = p.ring.newest();
+    const SVec2f p0   = prev.posPx;
+    const SVec2f p2{sc<float>(to.x), sc<float>(to.y)};
+    const float  chord = std::hypot(p2.x - p0.x, p2.y - p0.y);
+
+    // Control point along the incoming velocity, for tangent continuity at
+    // p0. Zero velocity (a fresh segment) falls back to the chord's
+    // midpoint, which makes the quadratic Bezier degenerate to a straight
+    // line -- no special-casing needed.
+    SVec2f       p1 = {(p0.x + p2.x) / 2.F, (p0.y + p2.y) / 2.F};
+    if (const float speed = std::hypot(prev.velocity.x, prev.velocity.y); speed > 1e-6F)
+        p1 = {p0.x + prev.velocity.x / speed * chord * 0.5F, p0.y + prev.velocity.y / speed * chord * 0.5F};
+
+    // Length / min_spacing, capped at a quarter of the capacity (SPEC §13.10).
+    const int    n  = std::clamp(sc<int>(std::round(chord / std::max(p.minSpacingPx, 0.01F))), 1, std::max<int>(1, sc<int>(p.ring.capacity() / 4)));
+    const double t0 = prev.birthTimeMs;
+    for (int i = 1; i <= n; ++i) {
+        const float  t = sc<float>(i) / sc<float>(n);
+        const float  u = 1.F - t;
+        const SVec2f curvePos{u * u * p0.x + 2.F * u * t * p1.x + t * t * p2.x, u * u * p0.y + 2.F * u * t * p1.y + t * t * p2.y};
+        // Birth times spread between the previous node's birth and now, so
+        // the fade sweeps along the curve.
+        p.ring.insert(curvePos, t0 + (nowMs - t0) * t, false);
+    }
+}
+
 // Programmatic warps (dispatchers, layouts, focus changes) go through here
-// (PointerController.cpp:16-29). With interpolateWarps off, a warp starts a
-// new segment; on, it connects (straight sweep). Only that decision is ours;
-// the original always runs, unwrapped.
+// (PointerController.cpp:16-29). warpMode decides what happens to the trail:
+// break starts a new segment, line connects with a straight sweep (the next
+// natural sample does that for free), curve bakes in a Bezier immediately.
+// Only that decision is ours; the original always runs, unwrapped.
 // Coverage gap: warp sites that call CPointerManager::warpTo directly bypass
 // this and always connect (PointerWarp.cpp:76, InputCapture.cpp:206,
 // InputManager.cpp:2248, WorkspacePlacementController.cpp:356).
@@ -403,13 +462,18 @@ static void hkControllerWarpTo(const void* thisptr, const Vector2D& pos, bool fo
 
     hyprtail::diag::guard("warp-hook", [&] {
         // Actual result, not the target: with cursor:no_warps nothing moves.
-        const Vector2D to = Pointer::mgr()->position();
-        noteMotion(to, msSinceEpoch(Time::steadyNow()));
+        const Vector2D to    = Pointer::mgr()->position();
+        const double   nowMs = msSinceEpoch(Time::steadyNow());
+        noteMotion(to, nowMs);
 
-        if (!s_preset || s_preset->interpolateWarps || pointerConstrained())
+        if (!s_preset || to == from || pointerConstrained())
             return;
-        if (to != from)
-            s_preset->pendingBreak = true;
+
+        switch (s_preset->warpMode) {
+            case eWarpMode::BREAK: s_preset->pendingBreak = true; break;
+            case eWarpMode::LINE: break;
+            case eWarpMode::CURVE: insertWarpCurve(*s_preset, to, nowMs); break;
+        }
     });
 }
 
@@ -607,7 +671,7 @@ static std::unordered_map<Monitor::CMonitor*, CBox> currentLayout() {
 // Nothing else refers to the monitor: GL objects are global and pass
 // elements live for one render. A layer that was drawing on it simply stops
 // drawing there; the pointer is warped off it (Monitor.cpp:478-480), which
-// breaks the trail via the warp hook unless interpolateWarps.
+// the warp hook turns into a break, a line, or a curve, per warpMode.
 static void onMonitorGone(const PHLMONITOR& pMonitor) {
     hyprtail::diag::guard("monitor-removed", [&] {
         if (!pMonitor)
@@ -702,6 +766,7 @@ static void teardown() noexcept {
         s_monitorDestroyListener.reset();
         s_layoutChangedListener.reset();
         s_mouseMoveListener.reset();
+        s_cursorShapeListener.reset();
         s_renderStageListener.reset();
         removeHook(s_cursorHook);
         removeHook(s_warpHook);
@@ -746,8 +811,8 @@ static void installHooks() {
         hyprtail::diag::report(eSeverity::WARN, "hook:cursor",
                                "could not hook CPointerManager::renderSoftwareCursorsFor. Running degraded: the trail draws above the cursor instead of beneath it.");
 
-    // Warp detection for interpolateWarps = false. Without it every warp
-    // connects (straight sweep).
+    // Warp detection for warpMode != line. Without it every warp connects
+    // (straight sweep).
     s_warpHook = installHook(pmf_address(&Pointer::CPointerController::warpTo), reinterpret_cast<void*>(&hkControllerWarpTo));
     if (!s_warpHook)
         hyprtail::diag::report(eSeverity::WARN, "hook:warp",
@@ -890,9 +955,11 @@ static void applyConfig() {
     auto& p  = *s_preset;
     s_config = hyprtail::cfg::read(s_config);
 
-    p.minSpacingPx     = s_config.minSpacingPx;
-    p.interpolateWarps = s_config.interpolateWarps;
-    p.damagePaddingPx  = s_config.damagePaddingPx;
+    p.minSpacingPx    = s_config.minSpacingPx;
+    p.warpMode        = s_config.warp;
+    p.damagePaddingPx = s_config.damagePaddingPx;
+    p.emitFromNorm    = s_config.emitFromNorm;
+    p.emitOffsetPx    = s_config.emitOffsetPx;
 
     p.pendingPreset = hyprtail::preset::load(s_config.preset);
 
@@ -927,10 +994,10 @@ static hyprtail::status::SSnapshot statusSnapshot() {
         s.source.nodes            = p.ring.size();
         s.source.capacity         = p.ring.capacity();
         s.source.generation       = p.ring.generation();
-        s.source.pendingBreak     = p.pendingBreak;
-        s.source.interpolateWarps = p.interpolateWarps;
-        s.source.gpuFailed        = p.gpuFailed;
-        s.source.stillMs          = nowMs - p.lastMotionMs;
+        s.source.pendingBreak = p.pendingBreak;
+        s.source.warpMode     = hyprtail::cfg::warpModeName(p.warpMode);
+        s.source.gpuFailed    = p.gpuFailed;
+        s.source.stillMs      = nowMs - p.lastMotionMs;
 
         for (const auto& l : p.layers) {
             hyprtail::status::SLayer out{
@@ -1011,8 +1078,10 @@ static PLUGIN_DESCRIPTION_INFO pluginInit() {
     // render, GL current) builds it -- the same path a later preset switch
     // takes, see applyPendingState().
     s_preset = makeUnique<SPreset>(s_config.capacity, seedBase);
-    s_preset->lastPos      = Pointer::mgr()->position();
-    s_preset->lastMotionMs = 0.0;
+    s_preset->lastPos               = Pointer::mgr()->position();
+    s_preset->lastMotionMs          = 0.0;
+    s_preset->lastCursorHotspot     = Pointer::mgr()->hotspot();
+    s_preset->lastCursorSizeLogical = Pointer::mgr()->cursorSizeLogical();
 
     // Stillness timer for quad layers on Hyprland's event loop (main thread),
     // like the file watch.
@@ -1049,6 +1118,26 @@ static PLUGIN_DESCRIPTION_INFO pluginInit() {
     s_renderStageListener = Event::bus()->m_events.render.stage.listen([](eRenderStage stage) { onRenderStage(stage); });
 
     s_mouseMoveListener = Event::bus()->m_events.input.mouse.move.listen([](Vector2D, Event::SCallbackInfo&) { onMouseMove(); });
+
+    // Shape change without motion moves the emit point (SPEC §13.9). Gate on
+    // the box geometry (hotspot, logical size) actually differing:
+    // cursorChanged also fires for same-shape re-applies and every commit of
+    // an animated client cursor surface (PointerManager.cpp:135, 153, 165,
+    // 187, 201, 286), most of which don't move the box at all.
+    s_cursorShapeListener = Pointer::mgr()->m_events.cursorChanged.listen([] {
+        hyprtail::diag::guard("cursor-shape-changed", [] {
+            if (!s_preset)
+                return;
+            const Vector2D hotspot = Pointer::mgr()->hotspot();
+            const Vector2D size    = Pointer::mgr()->cursorSizeLogical();
+            if (hotspot == s_preset->lastCursorHotspot && size == s_preset->lastCursorSizeLogical)
+                return;
+            s_preset->lastCursorHotspot     = hotspot;
+            s_preset->lastCursorSizeLogical = size;
+            if (s_preset->emitFromNorm)
+                s_preset->pendingBreak = true;
+        });
+    });
 
     // Teleport handling (SPEC §7): break the polyline on content changes.
     s_workspaceActiveListener = Event::bus()->m_events.workspace.active.listen([] { onContentChanged(); });

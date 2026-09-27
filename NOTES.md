@@ -501,19 +501,83 @@ Built, not yet run in any compositor. SPEC §13.1-13.6 and §13.16 have the what
   it's a real, visible design choice (subtle's palette can't currently
   differ by speed even though the mechanism exists), not an implementation
   detail to bury in a comment.
-- **`interpolate_warps` kept, contra §13.8's literal removal list:** its
-  named replacement, `warp = "break"|"line"|"curve"` (§13.10), is phase 6,
-  unbuilt. Removing the old key now, with phase 6 still ahead, would
-  delete "connect the trail across warps" outright with no way to get it
-  back until then — a regression dressed up as a rename. Framed in SPEC
-  §9 and §13.8 as the correct reading of that section's own intent (retire
-  a key once its replacement exists), not as an exception carved out of it.
+- **`interpolate_warps` removed, now that phase 6 shipped its named
+  replacement:** `warp = "break"|"line"|"curve"` (§13.10). It was kept past
+  §13.8's literal removal list only until this replacement existed —
+  removing it earlier would have deleted "connect the trail across warps"
+  outright with nothing to take its place, a regression dressed up as a
+  rename. See "Phase 6" below.
 - **Not compiler-checked in this session:** `src/Preset.cpp` is new,
   Hyprland-header-free, and not wired into `make test-unit` (no new test
   cases were written — out of scope, this session is host-testing only per
   CLAUDE.md). Its first real compile happens on the host build
   (`hyprpm update`). Read it carefully before trusting it blindly on a
   first failure.
+
+## Phase 6: pointer features (built, untested)
+
+- **`hasCursor()` is private, contra the original SPEC §13.9 citation.**
+  It's declared in `CPointerManager`'s private section
+  (`PointerManager.hpp`, grouped with `recheckPointerPosition` and other
+  internals), not reachable from a plugin. Its body is trivial
+  (`m_currentCursorImage.pBuffer || m_currentCursorImage.surface`,
+  `PointerManager.cpp:116-118`) and both fields are public on the public
+  `currentCursorImage()` accessor's return value, so the fix is inlining
+  the same check rather than calling the private method — same result, no
+  behavior difference from the draft's intent.
+- **`cursorChanged` fires far more often than "the shape actually
+  changed," caught in review before writing code.** Traced every
+  `m_events.cursorChanged.emit()` site (`PointerManager.cpp:135, 153, 165,
+  187, 201, 286`): a same-buffer/same-surface re-apply only emits if
+  hotspot or scale changed (already a real filter), but a *new*
+  buffer/surface object emits unconditionally even when its hotspot and
+  size are numerically identical to the old one (common: many cursor-theme
+  shapes share a box), and an animated client cursor surface emits on
+  every frame commit regardless of whether the box moved at all. Fix:
+  track the last-seen `(hotspot, cursorSizeLogical())` pair
+  (`SPreset::lastCursorHotspot`/`lastCursorSizeLogical`) and only set
+  `pendingBreak` when it actually differs, unconditionally kept up to date
+  on every event (not just while `emit_from` is non-default) so toggling
+  `emit_from` at runtime never compares against a stale pair.
+- **Quad/idle anchoring needed no code change.** SPEC §13.4 says a quad
+  layer anchors to the actual pointer, not the newest node; checked that
+  `SPreset::lastPos` (the idle anchor, `ht_anchor`) is fed only by
+  `noteMotion(Pointer::mgr()->position(), ...)` — the raw pointer, never
+  the emit-adjusted insert point — at every call site (`sampleSource`,
+  `onMouseMoveInternal`, `hkControllerWarpTo`). Already decoupled from
+  `emit_offset` by construction; nothing to fix.
+- **§13.4's per-layer `offset_from`/`offset` for quad layers, scoped out
+  of this phase, confirmed with the user first.** It's a real SPEC §13.4
+  design note but isn't in phase 6's own scope line (§13.16: "Emit offset
+  ... `warp = curve`" only), and building it would mean extending the
+  reserved-parameter system (`shader::reservedParams()`, numeric-only
+  `params::eType`) with a value that's either a literal `"hotspot"` or a
+  normalized vec2 — not a clean fit without adding a new param type for a
+  single niche setting. Deferred; still proposal.
+- **`hyprutils::Animation::CBezierCurve` considered and rejected for the
+  warp curve.** Found via `external/hyprutils/tests/animation/Bezier.cpp`:
+  it's an easing-curve solver (`getYForPoint(x)`, expects `x` roughly
+  monotonic, four control points), built for animation timing curves, not
+  a parametric 2D position curve. Wrong tool for interpolating a pointer
+  path in space. Hand-rolled the quadratic Bezier directly instead (position
+  + control-point-from-velocity, ~6 lines), matching `path smooth N`'s own
+  precedent of a CPU-computed formula mirroring the shader's curve
+  (§13.3), rather than pulling in an unrelated library.
+- **Control point construction:** placed along the pre-warp node's
+  velocity direction, at half the chord length — any positive distance
+  along that ray gives the same tangent at the start (a quadratic Bezier's
+  tangent at t=0 is the direction `P1 - P0`), so the exact distance only
+  affects how much the curve bulges, not whether it's C1-continuous.
+  Zero velocity (a fresh segment start) falls back to the chord's
+  midpoint, which is exactly the straight-line case for a quadratic
+  Bezier — no `if` needed to special-case it.
+- **Reference validity across the insert loop:** `insertWarpCurve` binds
+  `const auto& prev = p.ring.newest()` once before inserting the curve's
+  points one at a time. Safe because `CTrailRing` is a fixed-capacity
+  circular buffer (`TrailBuffer.hpp`) that only reallocates its backing
+  vector in `resize()`, never in `insert()`, so `prev` keeps pointing at
+  the same slot (the pre-warp node) through the whole loop even as new
+  nodes are written elsewhere in the ring.
 
 ## Phase 7: screenshare exclude (built, untested; moved up ahead of phase 5)
 
@@ -575,7 +639,7 @@ Built, not yet run in any compositor. SPEC §13.1-13.6 and §13.16 have the what
 ## Open questions
 
 - [x] Hyprland commit to pin: `efb5099` (v0.56.2, host package)
-- [ ] Backlog: bezier curves for warp interpolation (`interpolateWarps = true` currently draws a straight segment).
+- [x] Backlog: bezier curves for warp interpolation (`warp = "curve"`, phase 6; `interpolateWarps` removed).
 - [ ] **Blocked:** verify no trail over direct-scanned-out fullscreen clients (hardware cursors). mpv fullscreen with `render:direct_scanout = 1` dies with a Wayland protocol error (`wl_surface.attach` invalid arguments), with or without the plugin loaded, so Hyprland or mpv, not us. Browsers never qualify (not opaque, subsurfaces). Need another client that actually gets scanned out.
 - [ ] Data-model fork: discrete point-history buffer vs. accumulation/ping-pong framebuffer, needs deciding before struct fields or buffer storage mechanism are finalized (see Data model section)
 - [ ] `SCursorNode` final field list, buffer size, fade/decay function, once the fork above is decided and a concrete visual target is picked from the references

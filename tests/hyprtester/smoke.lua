@@ -14,7 +14,7 @@ hl.config({
     plugin = {
         hyprtail = {
             fade_ms           = 500, -- FADE_MS in hyprtail_smoke.cpp
-            interpolate_warps = true, -- the test moves by warps; connect them into a ribbon
+            warp              = "line", -- the test moves by warps; connect them into a ribbon
             idle_enabled      = true,
             idle_delay_ms     = 50,
             idle_duration_ms  = 200,

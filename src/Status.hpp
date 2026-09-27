@@ -43,12 +43,12 @@ namespace hyprtail::status {
         uint64_t    renders    = 0;
 
         struct {
-            size_t   nodes = 0, capacity = 0;
-            uint64_t generation       = 0;
-            bool     pendingBreak     = false;
-            bool     interpolateWarps = false;
-            bool     gpuFailed        = false;
-            double   stillMs          = 0.0;
+            size_t      nodes = 0, capacity = 0;
+            uint64_t    generation   = 0;
+            bool        pendingBreak = false;
+            std::string warpMode     = "break";
+            bool        gpuFailed    = false;
+            double      stillMs      = 0.0;
         } source;
 
         std::vector<SLayer>   layers;

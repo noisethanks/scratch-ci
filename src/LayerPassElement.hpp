@@ -9,6 +9,7 @@
 #include <render/Shader.hpp>
 #include <helpers/memory/Memory.hpp>
 
+#include "Config.hpp"
 #include "Layer.hpp"
 #include "Preset.hpp"
 #include "TrailBuffer.hpp"
@@ -70,18 +71,31 @@ struct SPreset {
     hyprtail::preset::SResolved                activePreset; // default-empty until the first prepareLayers()
 
     // Source settings.
-    float  minSpacingPx     = 2.F;
-    bool   interpolateWarps = false;
-    float  damagePaddingPx  = 0.F; // config, added to every layer's reach
+    float                    minSpacingPx    = 2.F;
+    hyprtail::cfg::eWarpMode warpMode        = hyprtail::cfg::eWarpMode::BREAK; // SPEC §13.10
+    float                    damagePaddingPx = 0.F;                            // config, added to every layer's reach
+
+    // Emit offset (SPEC §13.9): nullopt = hotspot. Applied at insert only;
+    // quad layers don't use it (they anchor to lastPos below).
+    std::optional<Vector2D>  emitFromNorm;
+    Vector2D                 emitOffsetPx{0.0, 0.0};
 
     // Next insert starts a new segment: workspace changes, lock, pointer
-    // constraints, and warps unless interpolateWarps.
+    // constraints, and warps when warpMode == BREAK.
     bool   pendingBreak = false;
 
     // Pointer stillness, for quad layers: last position seen and when it
     // changed (ms since plugin load).
     Vector2D lastPos;
     double   lastMotionMs = 0.0;
+
+    // Last cursor-image geometry seen (SPEC §13.9's shape-change break):
+    // hotspot and logical size at the last cursorChanged event that
+    // actually moved the box, so same-shape re-applies and animated-cursor
+    // frame commits (which also fire cursorChanged, PointerManager.cpp:135,
+    // 153, 165, 187, 201, 286) don't spuriously break the trail.
+    Vector2D lastCursorHotspot;
+    Vector2D lastCursorSizeLogical;
 
     // The node buffer couldn't be created: path layers are off until reload.
     bool     gpuFailed = false;

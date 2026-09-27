@@ -65,8 +65,8 @@ namespace hyprtail::status {
 
         out += std::format("  preset: {}\n", s.preset);
         out += std::format("  screenshare: {}\n", s.screenshare);
-        out += std::format("  source: {}/{} points, generation {}, pending break {}, warps {}, pointer still for {:.0f} ms{}\n", s.source.nodes, s.source.capacity,
-                           s.source.generation, s.source.pendingBreak ? "yes" : "no", s.source.interpolateWarps ? "connect" : "break", s.source.stillMs,
+        out += std::format("  source: {}/{} points, generation {}, pending break {}, warp {}, pointer still for {:.0f} ms{}\n", s.source.nodes, s.source.capacity,
+                           s.source.generation, s.source.pendingBreak ? "yes" : "no", s.source.warpMode, s.source.stillMs,
                            s.source.gpuFailed ? ", NODE BUFFER FAILED (see errors.log)" : "");
 
         for (const auto& l : s.layers) {
@@ -108,8 +108,8 @@ namespace hyprtail::status {
         out += std::format(R"("rev": "{}", "builtHash": "{}", "runningHash": "{}", "preset": "{}", "screenshare": "{}", )", esc(s.rev), esc(s.builtHash), esc(s.runningHash),
                            esc(s.preset), esc(s.screenshare));
         out += std::format(R"("hooks": {{"cursor": {}, "warp": {}, "capture": {}}}, "renders": {}, )", b(s.cursorHook), b(s.warpHook), b(s.captureHook), s.renders);
-        out += std::format(R"("source": {{"nodes": {}, "capacity": {}, "generation": {}, "pendingBreak": {}, "interpolateWarps": {}, "gpuFailed": {}, "stillMs": {:.1f}}}, )",
-                           s.source.nodes, s.source.capacity, s.source.generation, b(s.source.pendingBreak), b(s.source.interpolateWarps), b(s.source.gpuFailed),
+        out += std::format(R"("source": {{"nodes": {}, "capacity": {}, "generation": {}, "pendingBreak": {}, "warp": "{}", "gpuFailed": {}, "stillMs": {:.1f}}}, )",
+                           s.source.nodes, s.source.capacity, s.source.generation, b(s.source.pendingBreak), esc(s.source.warpMode), b(s.source.gpuFailed),
                            s.source.stillMs);
 
         out += R"("layers": [)";
