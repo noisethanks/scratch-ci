@@ -480,6 +480,27 @@ this file states the decision and marks what's still a placeholder.
 
 ## 9. Config surface
 
+> **Superseded in part by phase 4 of §13.16 (built).** The key table below
+> and its "feed the built-in classic preset" paragraph describe contract-1
+> config keys that no longer exist: `fade_ms`, `width`, `miter_limit`,
+> `color_slow`, `color_fast`, `vertex_shader`, `fragment_shader`, and all
+> `idle_*` keys are removed outright (§13.8), with no compatibility shim --
+> Hyprland's own "unknown config key" error, not a plugin one. What
+> replaces each is in §13.7/§13.8: shader identity and per-layer parameter
+> defaults move into `preset.conf` (built-in `subtle`, `classic`, or a user
+> preset directory); `preset = "<name>"` selects one; `layer1_vertex` ..
+> `layer4_fragment` still override a layer's shader by config; the `params`
+> string still overrides a layer's parameters by config. Kept as-is,
+> deliberately not per that literal removal list: `interpolate_warps` --
+> its named replacement (`warp`, §13.10) is phase 6, still unbuilt, and
+> removing the old key now would delete the "connect the trail across
+> warps" feature outright with nothing to take its place, which is a
+> regression, not the rename §13.8 otherwise describes. `capacity`,
+> `min_spacing` and `damage_padding` were never on the removed list and are
+> unaffected. Still true below: the reporting, batching, status and
+> failure-policy paragraphs (all still built as described); the API choice
+> (V2 only); the sparse-by-design principle.
+
 - **Errors surface as notifications, never only as log lines**
   (`debug:disable_logs` defaults to true). Every failure goes through one
   reporting path (`src/Diagnostics.*`): Hyprland log always; notification plus
@@ -650,10 +671,11 @@ this file states the decision and marks what's still a placeholder.
 
 **Status:** phases 0-2 of §13.16 are built; phase 3's checks and config
 front end (`params`, `layer1_vertex`..`layer4_fragment`, `expects`, the
-pre-link varying check) are also built. Phases 2 and 3 are untested (not
-yet run in any compositor). Built parts are marked **Built (phase N)**
-below, with any difference from the draft; everything else is still
-proposal.
+pre-link varying check) and phase 4's presets/config-surface-v2
+(`preset.conf`, `preset =`, the old-key removal) are also built. Phases
+2-4 are untested (not yet run in any compositor). Built parts are marked
+**Built (phase N)** below, with any difference from the draft; everything
+else is still proposal.
 Decisions taken so far: no dynamic config keys; parameters go in one
 plugin-validated `params` string, and per-layer shader overrides are static
 keys indexed by layer number (§13.5, §13.8; NOTES "Phase 0 spikes", S2);
@@ -975,20 +997,40 @@ would have linked fine.
 
   An unknown parameter name is an error that lists the declared ones. So is
   a layer key for a layer not listed in `layers`.
+
+  **Built (phase 4)** (`src/Preset.*`): `contract`/`description`/`layers`
+  plus `<layer>:vertex`/`fragment`/`<name>`, `#` comments anywhere on a
+  line, blank lines ignored. Difference: no `hyprtail/<name>.vert`-style
+  built-in main-shader library exists yet (only `#include "hyprtail/<name>"`
+  prefab *snippets* do, §5); a built-in preset's `vertex`/`fragment` values
+  are checked against `shader::builtin()`'s existing names
+  (`classic/ribbon.vert` etc.) instead, and a user preset's non-built-in
+  value is a path relative to its own directory, exactly like today's
+  `layer1_vertex` override. Structural mistakes (unknown top-level key, a
+  `<layer>:` key for a layer not in `layers`, a bad/missing `contract`,
+  `layers` empty/duplicated/over 4, an unrecognized built-in name in a
+  *built-in* preset) are parse-time errors; an unknown *parameter* name
+  needs the compiled program's declared params, so it's deferred to
+  `CLayer::resolve()` (`params:<layer>`, entry ignored) same as always. Any
+  failure loading the *selected* preset (not found, parse error) is
+  reported (`preset:<name>`) and falls back to the embedded `subtle`
+  manifest, guaranteed to parse since it ships with the plugin.
 - **Selection and overrides:**
-  - `preset = "<name>"` selects a preset.
+  - `preset = "<name>"` selects a preset. **Built (phase 4)**
+    (`plugin:hyprtail:preset`, `Config.*`): default `subtle`.
   - Per-stage shader overrides, static keys indexed by the layer's position
     in the preset's `layers` list: `layer1_vertex`, `layer1_fragment`, up to
     `layer4_*` (layers are capped at four). `""` = the preset's shader. An
     override for a layer number the preset doesn't have is a plugin warning.
 
-    **Built (phase 3):** the eight `layer1_vertex` .. `layer4_fragment`
-    keys (`Config.hpp/.cpp`), ahead of the full manifest/`preset.conf` this
-    section otherwise describes (still phase 4): each stage independently
-    falls back to today's per-name config keys (`vertex_shader` etc.) when
-    unset, since those aren't removed until phase 4's config-surface-v2
-    (§13.8). An override for an index beyond the classic preset's two
-    layers is one batched warning (`config:plugin:hyprtail:layerN`).
+    **Built (phase 3, superseded by phase 4):** the eight keys themselves
+    were built in phase 3, ahead of the manifest. What they fall back to
+    when unset changed with phase 4: originally the old per-name config
+    keys (`vertex_shader` etc., since removed, see §13.8), now the active
+    preset's own per-layer shader (`SLayerSpec::vertPath`/`fragPath`, built
+    in `hyprtail::preset::load()`). The unused-index warning is unchanged,
+    now checked against whichever preset is actually active
+    (`config:plugin:hyprtail:layerN`).
   - Parameters, including reserved ones: the `params` string (§13.5).
 - **Stacking:** yes, up to 4 layers, one shared source, drawn in order.
 - **Blending:** premultiplied "over" only, as today. A shader outputting
@@ -996,10 +1038,16 @@ would have linked fine.
   function, so layers never change GL blend state.
 - **Shipped:**
   - `subtle` (default): one narrow `path` layer, short fade, neutral low
-    alpha, no idle layer.
+    alpha, no idle layer. **Built (phase 4)** (`presets/subtle/`): reuses
+    `classic/ribbon.*` rather than a new shader -- see NOTES "Phase 4" for
+    why pinning `color_slow`/`color_fast` equal is presented here as an
+    interim stand-in for a genuine single-color mode, not a hidden detail.
   - `vivid`: `path` core plus a wide soft glow layer, speed-based palette,
-    `quad` idle pulse.
+    `quad` idle pulse. **Not built**: needs a real glow shader and a
+    speed-based palette, out of scope for a config-surface phase.
   - Optional `classic` (today's stock look), which makes migration easy.
+    **Built (phase 4)** (`presets/classic/`): reproduces today's hardcoded
+    defaults exactly, proving the manifest system is behavior-preserving.
 
 ### 13.8 Config surface v2
 
@@ -1008,11 +1056,29 @@ would have linked fine.
   `layer4_fragment`, `capacity`, `min_spacing`, `emit_from`, `emit_offset`,
   `warp`, `screenshare`, `damage_padding`. No runtime registration, no
   state file, no extra reload; the first-parse caveat (§9) is unchanged.
+
+  **Built (phase 4):** `preset`, `params`, the eight `layerN_*` keys,
+  `capacity`, `min_spacing`, `damage_padding` (`Config.*`). Not built:
+  `emit_from`, `emit_offset` (phase 6), `warp` (phase 6), `screenshare`
+  (phase 7) -- registering them now, unbuilt, would just be dead config
+  surface; they're added with their own phases instead.
 - **Removed:** `fade_ms`, `width`, `miter_limit`, `interpolate_warps`,
   `vertex_shader`, `fragment_shader`, `color_slow`, `color_fast`, all
   `idle_*`. They become preset parameters or layer overrides. Old keys get
   Hyprland's own "unknown config key" error; a migration table goes in the
   README. There is no compatibility shim before public release.
+
+  **Built (phase 4), one deliberate deviation from this list:**
+  `fade_ms`/`width`/`miter_limit`/`color_slow`/`color_fast`/
+  `vertex_shader`/`fragment_shader`/all `idle_*` are removed exactly as
+  written above. `interpolate_warps` is **not** removed. Read literally,
+  this list would delete it before its named replacement (`warp`, §13.10)
+  exists, which isn't a rename -- it's deleting a working feature
+  ("connect the trail across warps") with nothing to take its place until
+  phase 6. Keeping it until `warp` actually ships is the correct read of
+  this section's own intent, not an exception to it: nothing here is
+  about removing working features early, only about retiring config keys
+  once their replacement exists.
 
 ### 13.9 Emit offset
 
@@ -1192,8 +1258,10 @@ compositor).
 3. **Checks and the config front end (built, untested).** The `params`
    string, the `layer1_vertex` ... `layer4_fragment` keys, `expects`, and
    the pre-link varying check with plain messages.
-4. **Presets and config surface v2.** Manifest parser, user preset
-   directory, per-layer overrides, `subtle` and `vivid`, migration notes.
+4. **Presets and config surface v2 (built, untested).** Manifest parser,
+   user preset directory, `subtle` and `classic`. Not built: `vivid`
+   (needs a real glow shader, out of scope for this phase), migration
+   notes in the README (the SPEC §9 note above covers it for now).
 5. **Topologies.** `instanced K` (plus a particle demo preset) and
    `path smooth N` with exact Bezier bounds.
 6. **Pointer features.** Emit offset with the shape-change break, `warp =

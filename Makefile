@@ -4,6 +4,8 @@ SOURCE_FILES := $(wildcard src/*.cpp)
 HEADER_FILES := $(wildcard src/*.hpp)
 # Embedded into the plugin with #embed (src/ShaderSource.cpp).
 SHADER_FILES := $(wildcard shaders/*/*.vert shaders/*/*.frag shaders/*/*.glsl)
+# Embedded built-in preset manifests, #embed (src/Preset.cpp).
+PRESET_FILES := $(wildcard presets/*/*.conf)
 OBJECT_FILES := $(patsubst src/%.cpp, out/%.o, $(SOURCE_FILES))
 
 OUTPUT := out/$(PLUGIN_NAME).so
@@ -61,7 +63,7 @@ all: $(OUTPUT)
 $(OUTPUT): $(OBJECT_FILES)
 	$(CXX) -shared $^ $(LDFLAGS) -o $@
 
-out/%.o: src/%.cpp $(HEADER_FILES) $(SHADER_FILES) $(BUILD_MODE) | $(HEADER_CHECK)
+out/%.o: src/%.cpp $(HEADER_FILES) $(SHADER_FILES) $(PRESET_FILES) $(BUILD_MODE) | $(HEADER_CHECK)
 	@mkdir -p out
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 

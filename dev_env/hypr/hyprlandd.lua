@@ -1,4 +1,4 @@
-local PRIMARY_NAME = "WAYLAND-1"  -- CONFIRM THIS
+local PRIMARY_NAME = "WAYLAND-1" -- CONFIRM THIS
 
 local PRIMARY_MODE = "1280x720@60"
 local SECOND_MODE  = "1280x720@60"
@@ -10,51 +10,50 @@ local mainMod      = "ALT"
 local mainModShift = "ALT + SHIFT"
 hl.bind(mainMod .. " + Q", hl.dsp.window.close(), { description = "Kill Active Window" })
 
-local terminal     = "ghostty"
+local terminal = "ghostty"
 hl.bind(mainMod .. " + L", hl.dsp.exec_cmd(terminal),
     { description = "New Terminal" })
 
 hl.config({
-    cursor ={
-        no_hardware_cursors= 1,
+    cursor = {
+        no_hardware_cursors = 1,
         hide_on_key_press = 1
     },
     input = {
-        follow_mouse                = 1,
+        follow_mouse = 1,
     },
-    debug ={
+    debug = {
         disable_logs = false
     }
 })
 
--- hyprtail settings (SPEC section 9). Defaults shown. With the plugin loaded
--- by hand (make load) rather than hl.plugin.load, these keys are unknown until
--- it loads, so Hyprland shows a config error until then; loading the plugin
--- triggers a reload that clears it.
--- hl.config({
---     plugin = {
---         hyprtail = {
---             fade_ms           = 500,
---             width             = 8,
---             capacity          = 64,
---             min_spacing       = 2,
---             miter_limit       = 2,
---             interpolate_warps = false,
---             damage_padding    = 0,
---             vertex_shader     = "",  -- "" = built-in; relative = next to this file; ~ works
---             fragment_shader   = "",
---             color_slow        = "rgba(1a66ffff)",  -- sRGB, color-managed
---             color_fast        = "rgba(ff1a1aff)",
---             idle_enabled         = false,
---             idle_delay_ms        = 500,
---             idle_duration_ms     = 1500,  -- 0 = until the pointer moves
---             idle_radius          = 24,
---             idle_when_hidden     = false,
---             idle_vertex_shader   = "",
---             idle_fragment_shader = "",
---         },
---     },
--- })
+-- hyprtail settings (SPEC section 9, config surface v2 as of §13.16 phase 4).
+-- Defaults shown, commented. With the plugin loaded by hand (make load)
+-- rather than hl.plugin.load, these keys are unknown until it loads, so
+-- Hyprland shows a config error until then; loading the plugin triggers a
+-- reload that clears it.
+--
+-- classic (not the default, "subtle" is) has the idle ring layer, off by
+-- default in that preset's own manifest (presets/classic/preset.conf); turn
+-- it on here with a params override rather than editing the preset, so this
+-- file is the one thing that needs changing to get the idle layer active
+-- for nested testing.
+hl.config({
+    plugin = {
+        hyprtail = {
+            preset            = "classic",
+            params            = "idle:enabled=true",
+            --             capacity          = 64,
+            --             min_spacing       = 2,
+            --             interpolate_warps = false,
+            --             damage_padding    = 0,
+            --             layer1_vertex     = "",  -- "" = the preset's own shader; relative = next to a *user* preset dir; ~ works
+            --             layer1_fragment   = "",
+            --             layer2_vertex     = "",
+            --             layer2_fragment   = "",
+        },
+    },
+})
 
 hl.on("hyprland.start", function()
     -- "second" doesn't exist until this runs, has to be created and

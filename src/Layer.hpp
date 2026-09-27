@@ -14,13 +14,12 @@
 namespace hyprtail {
     struct SLayerSpec {
         std::string                        name;
-        std::string                        vertBuiltin, fragBuiltin; // shader::builtin() names
-        std::map<std::string, std::string> defaults;                 // param name -> value text
-    };
+        std::string                        vertBuiltin, fragBuiltin; // shader::builtin() names; the slot's always-safe identity
+        std::string                        vertPath, fragPath;       // preset's own per-stage override, absolute path, "" = use *Builtin above (SPEC §13.7)
+        std::map<std::string, std::string> defaults;                 // param name -> value text, from the preset manifest
 
-    // The built-in "classic" preset: today's look. Layer "trail" (path
-    // ribbon) and layer "idle" (quad ring, off by default).
-    const std::vector<SLayerSpec>& classicPreset();
+        bool operator==(const SLayerSpec&) const = default;
+    };
 
     // Values for the active program, recomputed when the program or the
     // overrides change.
@@ -46,16 +45,14 @@ namespace hyprtail {
 
         const std::string& name() const;
 
-        // Preset defaults merged with config values (config wins), as value
-        // text by parameter name. Unknown names are ignored, silently: the
-        // classic preset's config mapping sets names a user shader may not
-        // declare.
-        void               setOverrides(std::map<std::string, std::string> overrides);
-
         // Entries of the `params` config string (SPEC §13.5) addressed to
-        // this layer, value text by parameter name. Applied on top of
-        // setOverrides(); unlike it, an unknown name here is reported
-        // (params:<layer>), not silently ignored.
+        // this layer, value text by parameter name. Applied on top of the
+        // active preset's own per-layer defaults (SLayerSpec::defaults, set
+        // once at construction -- a manifest edit rebuilds the whole CLayer
+        // with a fresh set, see NOTES "Phase 4"), so `params` wins. An
+        // unknown name is reported (params:<layer>) and ignored, matching
+        // the manifest's own "is an error" language (SPEC §13.7/§13.5) for
+        // both tiers.
         void               setParamOverrides(std::map<std::string, std::string> overrides);
 
         // Recompute res if the program or the overrides changed. Reports bad

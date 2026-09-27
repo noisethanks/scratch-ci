@@ -34,6 +34,7 @@
 #include "FileWatch.hpp"
 #include "Layer.hpp"
 #include "LayerPassElement.hpp"
+#include "Preset.hpp"
 #include "RenderUtil.hpp"
 #include "Status.hpp"
 
@@ -153,10 +154,19 @@ static void noteMotion(const Vector2D& pos, double nowMs) {
     armIdleTimer();
 }
 
-// GL is current: compile pending programs (config reload, file change) or
-// fall back to the built-in ones, then resolve parameter values. A layer
-// whose built-in program fails is disabled.
+// Applies whatever applyConfig() queued: a preset switch, layerN's
+// unused-index check, and the `params` string. Defined in the config
+// section below, alongside applyConfig() and reloadShaders(), which it
+// reuses to queue newly-constructed layers' shaders for this same render.
+static void applyPendingState();
+
+// GL is current: apply any queued preset switch (a new set of layers), then
+// compile pending programs (config reload, file change) or fall back to the
+// built-in ones, then resolve parameter values. A layer whose built-in
+// program fails is disabled.
 static void prepareLayers() {
+    applyPendingState();
+
     bool newlyResolved = false;
     for (auto& l : s_preset->layers) {
         if (l->disabled || !l->enabledSetting())
@@ -651,85 +661,76 @@ static void kickRender() {
 
 // ---------------------------------------------------------------- config
 
-// Shader paths of a classic-preset layer: a `layerN_vertex`/`layerN_fragment`
-// override (SPEC §13.7, N = 1-based position in the preset's layer list)
-// wins per stage if set, else the old per-name config keys (§13.8 not built
-// yet).
-static std::pair<std::string, std::string> layerShaderPaths(size_t index, const std::string& layer) {
-    std::pair<std::string, std::string> def;
-    if (layer == "trail")
-        def = {s_config.vertexShader, s_config.fragmentShader};
-    else if (layer == "idle")
-        def = {s_config.idleVertexShader, s_config.idleFragmentShader};
+// Shader paths of a layer at this position in the active preset: a
+// `layerN_vertex`/`layerN_fragment` override (SPEC §13.7, N = 1-based) wins
+// per stage if set, else the active preset's own per-layer shader (a
+// built-in name, or the path it resolved against its own directory).
+static std::pair<std::string, std::string> layerShaderPaths(size_t index) {
+    std::pair<std::string, std::string> fromPreset;
+    if (index < s_preset->activePreset.layers.size())
+        fromPreset = {s_preset->activePreset.layers[index].vertPath, s_preset->activePreset.layers[index].fragPath};
 
     if (index >= s_config.layerVertex.size())
-        return def;
-    return {s_config.layerVertex[index].empty() ? def.first : s_config.layerVertex[index],
-            s_config.layerFragment[index].empty() ? def.second : s_config.layerFragment[index]};
+        return fromPreset;
+    return {s_config.layerVertex[index].empty() ? fromPreset.first : s_config.layerVertex[index],
+            s_config.layerFragment[index].empty() ? fromPreset.second : s_config.layerFragment[index]};
 }
 
-// Parameter values of the classic preset's layers from the current config
-// keys, on top of the preset's defaults.
-static std::map<std::string, std::string> layerOverrides(const hyprtail::SLayerSpec& spec) {
-    using namespace hyprtail::params;
-    const auto color = [](uint64_t argb) { return format(SValue{.type = eType::COLOR, .argb = static_cast<uint32_t>(argb)}); };
-    const auto num   = [](double v) { return std::format("{}", v); };
-
-    auto       out = spec.defaults;
-    if (spec.name == "trail") {
-        out["fade_ms"]     = num(s_config.fadeMs);
-        out["width"]       = num(s_config.widthPx);
-        out["miter_limit"] = num(s_config.miterLimit);
-        out["color_slow"]  = color(s_config.colorSlow);
-        out["color_fast"]  = color(s_config.colorFast);
-    } else if (spec.name == "idle") {
-        out["enabled"]                 = s_config.idleEnabled ? "true" : "false";
-        out["start_ms"]                = num(s_config.idleDelayMs);
-        out["duration_ms"]             = num(s_config.idleDurationMs);
-        out["radius"]                  = num(s_config.idleRadiusPx);
-        out["draw_when_cursor_hidden"] = s_config.idleWhenHidden ? "true" : "false";
-        out["color"]                   = color(s_config.colorSlow);
-    }
-    return out;
-}
-
-// Re-read every layer's shader stages (config path or built-in), preprocess
-// them, and queue them for compilation at the next render (CShaderSlot).
-// Errors keep the active programs.
+// Re-read every layer's shader stages (config path, preset path, or
+// built-in), preprocess them, and queue them for compilation at the next
+// render (CShaderSlot). Errors keep the active programs.
 static void reloadShaders() {
     std::vector<std::filesystem::path> watch;
     for (size_t i = 0; i < s_preset->layers.size(); ++i) {
         auto&      l            = s_preset->layers[i];
-        const auto [vert, frag] = layerShaderPaths(i, l->name());
+        const auto [vert, frag] = layerShaderPaths(i);
         l->slot.reload(vert, frag, watch);
     }
     s_fileWatch.setFiles(watch);
     kickRender();
 }
 
-// Config values -> preset, on load and every Hyprland config reload.
-static void applyConfig() {
-    auto& p  = *s_preset;
-    s_config = hyprtail::cfg::read(s_config);
+// GL is current (called from prepareLayers(), before anything else):
+// applies whatever applyConfig() queued.
+//
+// A preset switch first: swaps `layers` to fresh CLayer objects built from
+// `pendingPreset` only if it actually differs from `activePreset` (a
+// manifest re-parse with no real change, or an unrelated config reload, is
+// a no-op here), releasing the old layers' GL programs first (the shared
+// preset.gpu/quadVao are per-preset-*instance*, not per-preset-*definition*,
+// so they're left alone). Reconstructing here, rather than mutating an
+// existing CLayer's identity, is safe because a CLayerPassElement's raw
+// CLayer* pointers (SLayerDraw) are collected fresh every render, after
+// this point, and never outlive the render they were collected for -- see
+// NOTES "Phase 4".
+//
+// Then layerN's unused-index check and the `params` string, both against
+// whichever layers are now active -- so they're correct even the same
+// render a preset switch happens, not one render behind it.
+static void applyPendingState() {
+    auto& p = *s_preset;
 
-    p.minSpacingPx     = s_config.minSpacingPx;
-    p.interpolateWarps = s_config.interpolateWarps;
-    p.damagePaddingPx  = s_config.damagePaddingPx;
-
-    const auto& specs = hyprtail::classicPreset();
-    for (size_t i = 0; i < p.layers.size() && i < specs.size(); ++i)
-        p.layers[i]->setOverrides(layerOverrides(specs[i]));
+    if (p.pendingPreset && *p.pendingPreset != p.activePreset) {
+        for (auto& l : p.layers)
+            l->slot.release();
+        p.layers.clear();
+        for (const auto& spec : p.pendingPreset->layers)
+            p.layers.push_back(makeUnique<hyprtail::CLayer>(spec));
+        p.activePreset = *p.pendingPreset;
+        reloadShaders();
+    }
+    p.pendingPreset.reset();
 
     // layer1_vertex .. layer4_fragment (SPEC §13.7): an override for an
-    // index the current preset has no layer for is a plugin warning.
+    // index the active preset has no layer for is a plugin warning.
     {
         std::string unused;
-        for (size_t i = specs.size(); i < s_config.layerVertex.size(); ++i)
+        for (size_t i = p.activePreset.layers.size(); i < s_config.layerVertex.size(); ++i)
             if (!s_config.layerVertex[i].empty() || !s_config.layerFragment[i].empty())
                 unused += std::format(" layer{}", i + 1);
         if (!unused.empty())
             hyprtail::diag::report(eSeverity::WARN, "config:plugin:hyprtail:layerN",
-                                   std::format("preset \"classic\" has {} layer(s); override(s) for{} ignored", specs.size(), unused));
+                                   std::format("preset \"{}\" has {} layer(s); override(s) for{} ignored", p.activePreset.name, p.activePreset.layers.size(), unused));
         else
             hyprtail::diag::resetKey("config:plugin:hyprtail:layerN");
     }
@@ -767,6 +768,21 @@ static void applyConfig() {
         } else
             hyprtail::diag::resetKey("config:plugin:hyprtail:params");
     }
+}
+
+// Config values -> preset, on load and every Hyprland config reload. GL
+// isn't guaranteed current here (a config reload isn't necessarily inside
+// a render), so this only resolves and queues; applyPendingState() (GL
+// current, from prepareLayers()) does the actual layer/shader work.
+static void applyConfig() {
+    auto& p  = *s_preset;
+    s_config = hyprtail::cfg::read(s_config);
+
+    p.minSpacingPx     = s_config.minSpacingPx;
+    p.interpolateWarps = s_config.interpolateWarps;
+    p.damagePaddingPx  = s_config.damagePaddingPx;
+
+    p.pendingPreset = hyprtail::preset::load(s_config.preset);
 
     // Keeps the newest points; the VBO is reallocated at the next draw
     // (CNodeBuffer::ensure), where GL is current.
@@ -788,7 +804,7 @@ static hyprtail::status::SSnapshot statusSnapshot() {
     s.cursorHook  = s_cursorHook != nullptr;
     s.warpHook    = s_warpHook != nullptr;
     s.renders     = s_frames;
-    s.preset      = "classic";
+    s.preset      = s_preset ? s_preset->activePreset.name : "";
 
     const double nowMs = msSinceEpoch(Time::steadyNow());
 
@@ -875,9 +891,11 @@ static PLUGIN_DESCRIPTION_INFO pluginInit() {
     std::random_device rd;
     const uint64_t     seedBase = (static_cast<uint64_t>(rd()) << 32) ^ rd();
 
+    // `layers` starts empty: applyConfig() below queues the configured
+    // preset (default "subtle"), and the first prepareLayers() (the first
+    // render, GL current) builds it -- the same path a later preset switch
+    // takes, see applyPendingState().
     s_preset = makeUnique<SPreset>(s_config.capacity, seedBase);
-    for (const auto& spec : hyprtail::classicPreset())
-        s_preset->layers.push_back(makeUnique<hyprtail::CLayer>(spec));
     s_preset->lastPos      = Pointer::mgr()->position();
     s_preset->lastMotionMs = 0.0;
 

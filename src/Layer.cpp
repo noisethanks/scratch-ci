@@ -8,25 +8,10 @@
 using hyprtail::diag::eSeverity;
 
 namespace hyprtail {
-    const std::vector<SLayerSpec>& classicPreset() {
-        static const std::vector<SLayerSpec> p{
-            {.name = "trail", .vertBuiltin = "classic/ribbon.vert", .fragBuiltin = "classic/ribbon.frag", .defaults = {}},
-            {.name = "idle", .vertBuiltin = "classic/ring.vert", .fragBuiltin = "classic/ring.frag", .defaults = {{"enabled", "false"}}},
-        };
-        return p;
-    }
-
     CLayer::CLayer(const SLayerSpec& spec) : slot(spec.name, spec.vertBuiltin, spec.fragBuiltin), m_name(spec.name), m_overrides(spec.defaults) {}
 
     const std::string& CLayer::name() const {
         return m_name;
-    }
-
-    void CLayer::setOverrides(std::map<std::string, std::string> overrides) {
-        if (overrides == m_overrides)
-            return;
-        m_overrides = std::move(overrides);
-        ++m_overridesVersion;
     }
 
     void CLayer::setParamOverrides(std::map<std::string, std::string> overrides) {
@@ -77,17 +62,18 @@ namespace hyprtail {
         for (const auto& d : info.params)
             all.emplace_back(d, d.def);
 
-        // m_overrides (preset/config mapping) first, then m_paramOverrides
-        // (the `params` string) on top, so params wins. An unknown name is
-        // silently ignored from m_overrides (it deliberately sets names a
-        // user shader may not declare) but reported from m_paramOverrides,
-        // per SPEC §13.5.
-        const auto applyOverrides = [&](const std::map<std::string, std::string>& overrides, bool warnUnknown) {
+        // m_overrides (the active preset's own per-layer defaults) first,
+        // then m_paramOverrides (the `params` string) on top, so params
+        // wins. Both report an unknown name (SPEC §13.5/§13.7 "is an
+        // error"): a preset manifest naming a param its own shader doesn't
+        // declare is an authoring mistake worth surfacing, not the silent
+        // best-effort mapping this used to be before presets were real (see
+        // NOTES "Phase 4").
+        const auto applyOverrides = [&](const std::map<std::string, std::string>& overrides) {
             for (const auto& [name, text] : overrides) {
                 const auto it = std::ranges::find_if(all, [&](const auto& e) { return e.first.name == name; });
                 if (it == all.end()) {
-                    if (warnUnknown)
-                        problems += std::format("\n  {}: not a parameter of this layer; ignoring", name);
+                    problems += std::format("\n  {}: not a parameter of this layer; ignoring", name);
                     continue;
                 }
                 auto v = params::parseValue(it->first.type, text);
@@ -101,8 +87,8 @@ namespace hyprtail {
                 it->second = *v;
             }
         };
-        applyOverrides(m_overrides, false);
-        applyOverrides(m_paramOverrides, true);
+        applyOverrides(m_overrides);
+        applyOverrides(m_paramOverrides);
 
         const auto lookup = [&all](std::string_view n) -> std::optional<double> {
             const auto it = std::ranges::find_if(all, [&](const auto& e) { return e.first.name == n; });

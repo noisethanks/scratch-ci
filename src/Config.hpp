@@ -12,30 +12,20 @@
 // legacy hyprlang config provider. V1 addConfigValue/getConfigValue only work
 // with the legacy provider at the pinned commit.
 //
-// Lua:      hl.config({ plugin = { hyprtail = { fade_ms = 400 } } })
-// hyprlang: plugin:hyprtail:fade_ms = 400
+// Lua:      hl.config({ plugin = { hyprtail = { capacity = 128 } } })
+// hyprlang: plugin:hyprtail:capacity = 128
 namespace hyprtail::cfg {
     struct SValues {
-        double      fadeMs           = 500.0;
-        float       widthPx          = 8.F;
-        size_t      capacity         = 64;
-        float       minSpacingPx     = 2.F;
-        float       miterLimit       = 2.F;
+        std::string preset          = "subtle"; // SPEC §13.7
+        size_t      capacity        = 64;
+        float       minSpacingPx    = 2.F;
+        // Kept despite SPEC §13.8's literal "Removed" list: its replacement
+        // (`warp = "break"|"line"|"curve"`, §13.10) is phase 6, not built.
+        // Removing this now, with nothing to replace it, would delete the
+        // "connect the trail across warps" feature outright until phase 6
+        // ships -- not a rename, a regression. See NOTES "Phase 4".
         bool        interpolateWarps = false;
         float       damagePaddingPx  = 0.F; // on top of stock extent and shader-declared padding
-        uint64_t    colorSlow        = 0xFF1A66FF; // ARGB, sRGB; stock palette at rest speed
-        uint64_t    colorFast        = 0xFFFF1A1A; // ARGB, sRGB; stock palette at speedRef and above
-        std::string vertexShader;           // "" = built-in
-        std::string fragmentShader;         // "" = built-in
-
-        // Idle/presence slot (SPEC section 7).
-        bool        idleEnabled        = false;
-        double      idleDelayMs        = 500.0;
-        double      idleDurationMs     = 1500.0; // 0 = until the pointer moves
-        float       idleRadiusPx       = 24.F;
-        bool        idleWhenHidden     = false;
-        std::string idleVertexShader;   // "" = built-in
-        std::string idleFragmentShader; // "" = built-in
 
         // Per-layer shader overrides, static keys indexed by the layer's
         // position in the preset's layer list (SPEC §13.7): layer1_vertex

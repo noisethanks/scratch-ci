@@ -433,6 +433,88 @@ Built, not yet run in any compositor. SPEC §13.1-13.6 and §13.16 have the what
   CLAUDE.md's rule — host test only (`hyprpm update && hyprpm reload -f`,
   then `hyprctl hyprtail`).
 
+## Phase 4: presets and config surface v2 (built, untested)
+
+- **Why full layer reconstruction on a preset switch is safe, not just
+  convenient:** the original plan sketched a `CShaderSlot::rebind()` that
+  mutates an existing slot's identity in place, specifically to avoid
+  resizing `s_preset->layers` mid-render. Re-reading `LayerPassElement.cpp`
+  showed that fear was unfounded: `CLayerPassElement` holds raw `CLayer*`
+  pointers (`SLayerDraw`) collected fresh every render, *after*
+  `prepareLayers()` runs, and a pass element never outlives the render it
+  was queued for (Hyprland draws and discards it before the next one).
+  Nothing holds a `CLayer*` across a render boundary. So `applyPendingState()`
+  (called at the top of `prepareLayers()`, GL current) just releases the old
+  layers' `CShaderSlot`s and replaces `s_preset->layers` outright with fresh
+  `CLayer` objects from the new preset's spec — no rebind API needed at all,
+  and no dangling-pointer risk. This is *why* the nested test the user
+  approved (switching `preset` between `subtle`/`classic`, including right
+  after startup and mid-idle-timer) is still worth running despite the
+  simpler mechanism: constructing/destroying whole `CLayer`/`CShaderSlot`
+  objects after init is still new relative to phase 3 (which only ever
+  recompiled an *existing* slot's shader), even though the reasoning above
+  says it should be safe.
+- **`CLayer::setOverrides()` deleted, not just changed:** phase 3 gave
+  `CLayer` a second override map (`m_paramOverrides`, for the `params`
+  string) alongside the original `m_overrides`, which back then was fed by
+  `main.cpp`'s hardcoded per-name config mapping (`layerOverrides()`). Now
+  that presets are real, `m_overrides` is seeded once at construction from
+  `SLayerSpec::defaults` (the preset manifest's own per-layer keys) and
+  never needs re-seeding: a manifest edit or a different preset entirely
+  goes through full `CLayer` reconstruction (see above), which already
+  re-seeds it via the constructor. `setOverrides()` had no remaining
+  caller, so it was removed rather than left as dead API. Its old
+  silently-ignore-unknown behavior is gone too: an unknown name in a
+  preset's own defaults now warns (`params:<layer>`), matching §13.7's "is
+  an error" language, whereas before presets were real that silence was
+  deliberate (the classic per-name mapping set names a swapped-in shader
+  might not declare).
+- **`std::string`'s constructor from `string_view` is `explicit`:**
+  `Preset.cpp`'s manifest parser builds `key`/`value` as `string_view`s
+  (via a local `trim()`), and assigning one straight to a
+  `std::optional<std::string>` or a `std::map<std::string,std::string>`
+  value (`raw.description = value;`, `entry[...] = value;`) does not
+  compile — `operator=` needs an implicit conversion, and
+  `basic_string`'s converting constructor from a `string_view`-like type
+  is explicit (a well-known C++17/20 gotcha). Fixed by wrapping:
+  `std::string{value}`. `emplace_back(piece)` on a `vector<string>` is
+  unaffected since direct-init can call an explicit constructor.
+- **Built-in preset shader names vs. a safe `CShaderSlot` identity:**
+  `CShaderSlot`'s constructor takes a `vertBuiltin`/`fragBuiltin` name and
+  its `builtin()` throws if `shader::builtin(name)` is empty (an assumed
+  plugin bug today, since `classicPreset()` used to hardcode only known-good
+  names). Once preset manifests can name *anything*, `Preset.cpp`'s
+  `resolveStage()` never lets an unresolved name reach `SLayerSpec`: a
+  recognized `shader::builtin()` name is used as-is; anything else, in a
+  *user* preset only, becomes a path override (`vertPath`/`fragPath`) laid
+  on top of an always-safe fallback identity (`classic/ribbon.vert`/`.frag`)
+  — exactly the same split `layer1_vertex`/`layer4_fragment` config
+  overrides already use. A built-in preset naming an unrecognized shader
+  has no directory to resolve a path against, so it's a structural load
+  error instead, caught before any `CLayer`/`CShaderSlot` exists.
+- **`subtle`'s flat color is a shader-reuse compromise, not a new
+  capability:** `classic/ribbon.frag` only declares `color_slow`/
+  `color_fast` (a two-color speed gradient), no single flat `color` param
+  (unlike `ring.frag`, which has one). Rather than write a new shader for
+  `subtle`, its manifest pins both to the same neutral low-alpha value.
+  Documented in SPEC §13.7 itself, not just here, per explicit request —
+  it's a real, visible design choice (subtle's palette can't currently
+  differ by speed even though the mechanism exists), not an implementation
+  detail to bury in a comment.
+- **`interpolate_warps` kept, contra §13.8's literal removal list:** its
+  named replacement, `warp = "break"|"line"|"curve"` (§13.10), is phase 6,
+  unbuilt. Removing the old key now, with phase 6 still ahead, would
+  delete "connect the trail across warps" outright with no way to get it
+  back until then — a regression dressed up as a rename. Framed in SPEC
+  §9 and §13.8 as the correct reading of that section's own intent (retire
+  a key once its replacement exists), not as an exception carved out of it.
+- **Not compiler-checked in this session:** `src/Preset.cpp` is new,
+  Hyprland-header-free, and not wired into `make test-unit` (no new test
+  cases were written — out of scope, this session is host-testing only per
+  CLAUDE.md). Its first real compile happens on the host build
+  (`hyprpm update`). Read it carefully before trusting it blindly on a
+  first failure.
+
 ## Open questions
 
 - [x] Hyprland commit to pin: `efb5099` (v0.56.2, host package)

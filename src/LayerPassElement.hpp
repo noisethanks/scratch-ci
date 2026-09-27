@@ -10,6 +10,7 @@
 #include <helpers/memory/Memory.hpp>
 
 #include "Layer.hpp"
+#include "Preset.hpp"
 #include "TrailBuffer.hpp"
 
 // GPU mirror of the pointer-history ring: one VAO + VBO of SGpuNode.
@@ -58,6 +59,15 @@ struct SPreset {
     CNodeBuffer                    gpu;
     std::vector<UP<hyprtail::CLayer>> layers;
     GLuint                         quadVao = 0; // empty: quad layers use gl_VertexID only
+
+    // The active preset (SPEC §13.7): which layers exist and their built-in/
+    // path shader identity and defaults. `pendingPreset` is queued by
+    // applyConfig() (main thread) on every config reload; prepareLayers()
+    // (GL current) swaps `layers` to match it only if it actually differs
+    // from `activePreset`, so an unrelated reload doesn't recompile shaders
+    // or interrupt a running fade.
+    std::optional<hyprtail::preset::SResolved> pendingPreset;
+    hyprtail::preset::SResolved                activePreset; // default-empty until the first prepareLayers()
 
     // Source settings.
     float  minSpacingPx     = 2.F;
