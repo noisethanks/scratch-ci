@@ -72,7 +72,11 @@ namespace hyprtail::status {
             out += std::format("  layer {}: {}\n", l.name, state);
             out += std::format("    shader: {}\n", shaderText(l.shader));
             if (l.resolved) {
-                out += std::format("    lifecycle: fade {:.0f} ms, start {:.0f} ms, duration {:.0f} ms, reach {:.1f} px\n", l.fadeMs, l.startMs, l.durationMs, l.extentPx);
+                if (l.shader.topology == "quad")
+                    out += std::format("    lifecycle: fade {:.0f} ms, start {:.0f} ms, duration {:.0f} ms, reach {:.1f} px\n", l.fadeMs, l.startMs, l.durationMs,
+                                       l.extentPx);
+                else
+                    out += std::format("    lifecycle: fade {:.0f} ms, reach {:.1f} px\n", l.fadeMs, l.extentPx);
                 std::string params;
                 for (const auto& [name, value] : l.params)
                     params += std::format(" {}={}", name, value);
