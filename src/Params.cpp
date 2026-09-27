@@ -219,6 +219,27 @@ namespace hyprtail::params {
         return std::nullopt;
     }
 
+    SParsedParams parseParamsString(std::string_view text) {
+        SParsedParams out;
+        for (const auto tok : splitWs(text)) {
+            const auto colon = tok.find(':');
+            const auto eq    = tok.find('=');
+            if (colon == std::string_view::npos || eq == std::string_view::npos || eq < colon) {
+                out.problems.push_back(std::format("\"{}\" is not <layer>:<name>=<value>", tok));
+                continue;
+            }
+            const auto layer = trim(tok.substr(0, colon));
+            const auto name  = trim(tok.substr(colon + 1, eq - colon - 1));
+            const auto value = tok.substr(eq + 1);
+            if (layer.empty() || name.empty()) {
+                out.problems.push_back(std::format("\"{}\" is not <layer>:<name>=<value>", tok));
+                continue;
+            }
+            out.entries.push_back({.layer = std::string{layer}, .name = std::string{name}, .value = std::string{value}});
+        }
+        return out;
+    }
+
     // ---------------------------------------------------------------- expressions
 
     std::expected<CExpr, std::string> CExpr::parse(std::string_view text) {

@@ -401,6 +401,38 @@ Built, not yet run in any compositor. SPEC §13.1-13.6 and §13.16 have the what
 - **Git index slip:** while deleting the old shaders I ran `git rm --cached` on them, which staged the deletions. I reverted it immediately with `git reset -q HEAD -- <files>`, so the deletions are unstaged working-tree changes only. Nothing was committed.
 - **Stability risk (nested test warranted, per CLAUDE.md):** new GL resource handling. A new VBO layout with an integer attribute, a second VAO for quad layers, and per-layer draws with raw uniform setting. A mistake there crashes the compositor. The unit tests and glslang can't exercise the GL calls.
 
+## Phase 3: checks and the config front end (built, untested)
+
+- **`params` string precedence:** `CLayer` now holds two override maps,
+  `m_overrides` (the phase-2 classic-preset/config mapping, unknown names
+  silently ignored — it deliberately sets names a user shader may not
+  declare) and `m_paramOverrides` (the `params` string, unknown names
+  reported). `resolve()` applies `m_overrides` first, then
+  `m_paramOverrides` on top, so `params` wins — this stands in for
+  `preset.conf` in the precedence chain (§13.5) until phase 4 gives it a
+  real one.
+- **`layer1_vertex`/`layer4_fragment` naming constraint:** `IValue` stores
+  its name as a raw `const char*` (`Config.cpp`'s own comment on
+  `SRegistered`, "literals only") — building the eight key names with
+  `std::format` would leave a dangling pointer once the temporary string is
+  destroyed. Used two `static constexpr std::array<const char*, 4>` of
+  literals instead, indexed in a loop.
+- **`expects`/varying-check ordering, changed after review:** the pre-link
+  varying check (§13.6) is a regex line-scan, not real GLSL parsing, so it
+  can miss a declaration (multi-name `out`, `layout(...)`) or, in
+  principle, misfire on something structured like a declaration inside a
+  comment. Original plan ran it *before* the real compile/link attempt and
+  used it to reject early; changed so the real `glLinkProgram` always runs
+  first and unconditionally, and the scan is only consulted after an actual
+  link failure, to replace the raw driver log with a plain message — never
+  to block or skip the attempt itself. Removes any false-positive risk of
+  rejecting a shader that would have linked fine.
+- **Stability risk assessment:** no new GL resource handling or hooks
+  (config parsing, pragma parsing, and a link-failure-only text scan that
+  runs after the real GL calls, not instead of them), so no nested test per
+  CLAUDE.md's rule — host test only (`hyprpm update && hyprpm reload -f`,
+  then `hyprctl hyprtail`).
+
 ## Open questions
 
 - [x] Hyprland commit to pin: `efb5099` (v0.56.2, host package)

@@ -29,15 +29,28 @@ namespace hyprtail {
         ++m_overridesVersion;
     }
 
+    void CLayer::setParamOverrides(std::map<std::string, std::string> overrides) {
+        if (overrides == m_paramOverrides)
+            return;
+        m_paramOverrides = std::move(overrides);
+        ++m_overridesVersion;
+    }
+
     bool CLayer::resolved() const {
         return slot.shader() && res.generation == slot.generation();
     }
 
     bool CLayer::enabledSetting() const {
-        const auto it = m_overrides.find("enabled");
-        if (it == m_overrides.end())
+        // m_paramOverrides (the `params` string) takes precedence over
+        // m_overrides (the preset/config mapping), same as resolve().
+        const auto pick = [](const std::map<std::string, std::string>& m) -> std::optional<std::string> {
+            const auto it = m.find("enabled");
+            return it == m.end() ? std::nullopt : std::optional{it->second};
+        };
+        const auto text = pick(m_paramOverrides).or_else([&] { return pick(m_overrides); });
+        if (!text)
             return true;
-        const auto v = params::parseValue(params::eType::BOOL, it->second);
+        const auto v = params::parseValue(params::eType::BOOL, *text);
         return !v || v->x != 0.0;
     }
 
@@ -64,20 +77,32 @@ namespace hyprtail {
         for (const auto& d : info.params)
             all.emplace_back(d, d.def);
 
-        for (const auto& [name, text] : m_overrides) {
-            const auto it = std::ranges::find_if(all, [&](const auto& e) { return e.first.name == name; });
-            if (it == all.end())
-                continue;
-            auto v = params::parseValue(it->first.type, text);
-            if (v)
-                if (auto r = params::checkRange(it->first, *v); !r)
-                    v = std::unexpected(r.error());
-            if (!v) {
-                problems += std::format("\n  {}: {}; using {}", name, v.error(), params::format(it->second));
-                continue;
+        // m_overrides (preset/config mapping) first, then m_paramOverrides
+        // (the `params` string) on top, so params wins. An unknown name is
+        // silently ignored from m_overrides (it deliberately sets names a
+        // user shader may not declare) but reported from m_paramOverrides,
+        // per SPEC §13.5.
+        const auto applyOverrides = [&](const std::map<std::string, std::string>& overrides, bool warnUnknown) {
+            for (const auto& [name, text] : overrides) {
+                const auto it = std::ranges::find_if(all, [&](const auto& e) { return e.first.name == name; });
+                if (it == all.end()) {
+                    if (warnUnknown)
+                        problems += std::format("\n  {}: not a parameter of this layer; ignoring", name);
+                    continue;
+                }
+                auto v = params::parseValue(it->first.type, text);
+                if (v)
+                    if (auto r = params::checkRange(it->first, *v); !r)
+                        v = std::unexpected(r.error());
+                if (!v) {
+                    problems += std::format("\n  {}: {}; using {}", name, v.error(), params::format(it->second));
+                    continue;
+                }
+                it->second = *v;
             }
-            it->second = *v;
-        }
+        };
+        applyOverrides(m_overrides, false);
+        applyOverrides(m_paramOverrides, true);
 
         const auto lookup = [&all](std::string_view n) -> std::optional<double> {
             const auto it = std::ranges::find_if(all, [&](const auto& e) { return e.first.name == n; });

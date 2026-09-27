@@ -74,6 +74,7 @@ namespace hyprtail::shader {
         const std::regex RE_INCLUDE_ANY{R"re(^\s*#\s*include\b)re"};
         const std::regex RE_CONTRACT{R"re(^\s*#\s*pragma\s+hyprtail\s+contract\s+(\S+)\s*$)re"};
         const std::regex RE_TOPOLOGY{R"re(^\s*#\s*pragma\s+hyprtail\s+topology\s+(\S+)\s*$)re"};
+        const std::regex RE_EXPECTS{R"re(^\s*#\s*pragma\s+hyprtail\s+expects\s+(\S+)\s*$)re"};
         const std::regex RE_PARAM{R"re(^\s*#\s*pragma\s+hyprtail\s+param\s+(.*)$)re"};
         const std::regex RE_PADDING{R"re(^\s*#\s*pragma\s+hyprtail\s+padding\s+(.*)$)re"};
         const std::regex RE_PRAGMA_HT{R"re(^\s*#\s*pragma\s+hyprtail\b)re"};
@@ -132,6 +133,22 @@ namespace hyprtail::shader {
             if (s == "quad")
                 return eTopology::QUAD;
             return std::nullopt;
+        }
+
+        // "a,b,c" -> ["a", "b", "c"]; no whitespace trimming, matching
+        // #pragma hyprtail expects's compact grammar (RE_EXPECTS already
+        // requires the whole argument to be one \S+ token).
+        std::vector<std::string> splitComma(const std::string& s) {
+            std::vector<std::string> out;
+            size_t                   start = 0;
+            while (true) {
+                const auto comma = s.find(',', start);
+                out.push_back(s.substr(start, comma == std::string::npos ? std::string::npos : comma - start));
+                if (comma == std::string::npos)
+                    break;
+                start = comma + 1;
+            }
+            return out;
         }
 
         bool isReserved(std::string_view name) {
@@ -231,6 +248,15 @@ namespace hyprtail::shader {
                     continue;
                 }
 
+                if (std::regex_match(line, m, RE_EXPECTS)) {
+                    // Already read by the pre-scan in preprocess(); only its
+                    // placement is checked here.
+                    if (!isMain)
+                        return std::unexpected(std::format("{}: #pragma hyprtail expects belongs in the main shader file, not an include", where));
+                    st.out.text += '\n';
+                    continue;
+                }
+
                 if (std::regex_match(line, m, RE_PARAM)) {
                     auto decl = params::parseDecl(m[1].str());
                     if (!decl)
@@ -256,7 +282,7 @@ namespace hyprtail::shader {
                 }
 
                 if (htPragma)
-                    return std::unexpected(std::format("{}: unknown #pragma hyprtail directive (contract, topology, param, padding)", where));
+                    return std::unexpected(std::format("{}: unknown #pragma hyprtail directive (contract, topology, expects, param, padding)", where));
 
                 if (std::regex_match(line, m, RE_INCLUDE)) {
                     std::string storage;
@@ -361,16 +387,32 @@ namespace hyprtail::shader {
                 while (std::getline(in, line)) {
                     ++lineNo;
                     std::smatch m;
-                    if (!std::regex_match(line, m, RE_TOPOLOGY))
+                    const auto  where = std::format("{}:{}", displayName, lineNo);
+
+                    if (std::regex_match(line, m, RE_TOPOLOGY)) {
+                        if (stage == eStage::FRAGMENT)
+                            return std::unexpected(std::format("{}: #pragma hyprtail topology belongs in the geometry (vertex) shader", where));
+                        if (st.out.topology)
+                            return std::unexpected(std::format("{}: duplicate #pragma hyprtail topology", where));
+                        st.out.topology = parseTopology(m[1].str());
+                        if (!st.out.topology)
+                            return std::unexpected(std::format("{}: unknown topology \"{}\" (path, quad)", where, m[1].str()));
                         continue;
-                    const auto where = std::format("{}:{}", displayName, lineNo);
-                    if (stage == eStage::FRAGMENT)
-                        return std::unexpected(std::format("{}: #pragma hyprtail topology belongs in the geometry (vertex) shader", where));
-                    if (st.out.topology)
-                        return std::unexpected(std::format("{}: duplicate #pragma hyprtail topology", where));
-                    st.out.topology = parseTopology(m[1].str());
-                    if (!st.out.topology)
-                        return std::unexpected(std::format("{}: unknown topology \"{}\" (path, quad)", where, m[1].str()));
+                    }
+
+                    if (std::regex_match(line, m, RE_EXPECTS)) {
+                        if (stage == eStage::VERTEX)
+                            return std::unexpected(std::format("{}: #pragma hyprtail expects belongs in a fragment (shading) shader", where));
+                        if (!st.out.expectsWhere.empty())
+                            return std::unexpected(std::format("{}: duplicate #pragma hyprtail expects", where));
+                        st.out.expectsWhere = where;
+                        for (const auto& kind : splitComma(m[1].str())) {
+                            const auto t = parseTopology(kind);
+                            if (!t)
+                                return std::unexpected(std::format("{}: unknown topology \"{}\" in #pragma hyprtail expects (path, quad)", where, kind));
+                            st.out.expects.push_back(*t);
+                        }
+                    }
                 }
             }
 

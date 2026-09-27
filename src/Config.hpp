@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -35,6 +36,16 @@ namespace hyprtail::cfg {
         bool        idleWhenHidden     = false;
         std::string idleVertexShader;   // "" = built-in
         std::string idleFragmentShader; // "" = built-in
+
+        // Per-layer shader overrides, static keys indexed by the layer's
+        // position in the preset's layer list (SPEC §13.7): layer1_vertex
+        // .. layer4_fragment. "" = the preset's own shader for that stage.
+        // An index the current preset has no layer for is a plugin warning.
+        std::array<std::string, 4> layerVertex, layerFragment;
+
+        // "<layer>:<name>=<value> ..." parameter overrides (SPEC §13.5),
+        // validated against each layer's shader-declared params.
+        std::string params;
     };
 
     // Register all values. Call in PLUGIN_INIT. Returns false if any failed

@@ -3,6 +3,9 @@
 #include <algorithm>
 #include <array>
 #include <format>
+#include <map>
+#include <regex>
+#include <sstream>
 #include <stdexcept>
 
 #include <render/OpenGL.hpp>
@@ -68,6 +71,52 @@ namespace hyprtail {
             return out;
         }
 
+        // Text-only scan for the pre-link varying check (SPEC §13.6): which
+        // fragment `in` declarations aren't matched by a vertex `out` of the
+        // same name and type. Regex-based, not real GLSL parsing (misses a
+        // multi-name declaration or a layout() qualifier) — deliberately
+        // consulted only after a real link failure (see glslCheck below), so
+        // a false negative here just falls through to the raw driver log,
+        // and there's no false-positive risk of it ever blocking or skipping
+        // an actual compile/link attempt.
+        std::optional<std::string> varyingCheck(const SShaderPair& pair) {
+            static const std::regex RE_OUT{R"re(^\s*(?:flat\s+)?out\s+(\w+)\s+(\w+)\s*;\s*$)re"};
+            static const std::regex RE_IN{R"re(^\s*(?:flat\s+)?in\s+(\w+)\s+(\w+)\s*;\s*$)re"};
+
+            const auto scan = [](const std::string& text, const std::regex& re) {
+                std::map<std::string, std::string> out; // name -> type
+                std::istringstream                 in{text};
+                std::string                         line;
+                std::smatch                          m;
+                while (std::getline(in, line))
+                    if (std::regex_match(line, m, re))
+                        out.emplace(m[2].str(), m[1].str());
+                return out;
+            };
+
+            const auto vertOuts = scan(pair.vert.text, RE_OUT);
+            const auto fragIns  = scan(pair.frag.text, RE_IN);
+
+            static const std::string STANDARD = "ht_vLocal, ht_vAge, ht_vLife, ht_vSpeed, ht_vDist, ht_vSeed";
+            std::vector<std::string> problems;
+            for (const auto& [name, fragType] : fragIns) {
+                const auto it = vertOuts.find(name);
+                if (it == vertOuts.end())
+                    problems.push_back(std::format("fragment shader {} reads `{}`, which geometry shader {} doesn't write (standard varyings: {})",
+                                                   pair.frag.sourceNames.front(), name, pair.vert.sourceNames.front(), STANDARD));
+                else if (it->second != fragType)
+                    problems.push_back(std::format("fragment shader {} declares `{}` as {}; geometry shader {} declares it as {}", pair.frag.sourceNames.front(), name,
+                                                   fragType, pair.vert.sourceNames.front(), it->second));
+            }
+            if (problems.empty())
+                return std::nullopt;
+
+            std::string out = "varying mismatch:";
+            for (const auto& p : problems)
+                out += "\n  " + p;
+            return out;
+        }
+
         // CShader::createProgram logs compile/link errors and discards the
         // text (Shader.cpp logShaderError), so compile and link once ourselves
         // to capture the GLSL log, mapped back to file:line, and to check the
@@ -127,10 +176,16 @@ namespace hyprtail {
                 glLinkProgram(prog);
                 GLint ok = GL_FALSE;
                 glGetProgramiv(prog, GL_LINK_STATUS, &ok);
-                if (ok != GL_TRUE)
-                    result = std::format("shaders {} + {} failed to link (varyings must match):\n{}", pair.vert.sourceNames.front(), pair.frag.sourceNames.front(),
-                                         infoLog(prog, true));
-                else if (auto bad = contractCheck(prog, contract))
+                if (ok != GL_TRUE) {
+                    // The real link attempt always runs first and unconditionally;
+                    // varyingCheck only replaces the message on an actual failure,
+                    // never skips or blocks the attempt itself.
+                    if (auto mismatch = varyingCheck(pair))
+                        result = std::format("shaders {} + {} failed to link: {}", pair.vert.sourceNames.front(), pair.frag.sourceNames.front(), *mismatch);
+                    else
+                        result = std::format("shaders {} + {} failed to link (varyings must match):\n{}", pair.vert.sourceNames.front(), pair.frag.sourceNames.front(),
+                                             infoLog(prog, true));
+                } else if (auto bad = contractCheck(prog, contract))
                     result = std::format("shaders {} + {}: {}", pair.vert.sourceNames.front(), pair.frag.sourceNames.front(), *bad);
                 glDetachShader(prog, vs);
                 glDetachShader(prog, fs);
@@ -150,6 +205,17 @@ namespace hyprtail {
         std::expected<SProgramInfo, std::string> programInfo(const SShaderPair& pair) {
             SProgramInfo info;
             info.topology = pair.vert.topology.value_or(shader::eTopology::PATH);
+
+            // #pragma hyprtail expects (SPEC §13.3): the fragment shader's
+            // declared topology compatibility against what the vertex
+            // shader actually provides.
+            if (!pair.frag.expects.empty() && std::ranges::find(pair.frag.expects, info.topology) == pair.frag.expects.end()) {
+                std::string kinds;
+                for (const auto& k : pair.frag.expects)
+                    kinds += (kinds.empty() ? "" : ",") + std::string{shader::topologyName(k)};
+                return std::unexpected(std::format("{} expects topology {}; {} declares {}", pair.frag.sourceNames.front(), kinds, pair.vert.sourceNames.front(),
+                                                   shader::topologyName(info.topology)));
+            }
 
             for (const auto* src : {&pair.vert, &pair.frag}) {
                 for (const auto& p : src->params) {

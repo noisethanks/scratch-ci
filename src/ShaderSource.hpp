@@ -18,6 +18,11 @@
 //   #pragma hyprtail topology <path|quad>
 //                                geometry (vertex) shaders only, main file,
 //                                exactly once
+//   #pragma hyprtail expects <kind>[,<kind>...]
+//                                shading (fragment) shaders only, main file,
+//                                at most once; no spaces around the commas.
+//                                Refused if the paired vertex shader's
+//                                topology isn't one of the listed kinds.
 //   #pragma hyprtail param <type> <name> <default> [<min> <max>]
 //                                replaced by "uniform <type> <name>;"
 //   #pragma hyprtail padding <expr>
@@ -62,6 +67,8 @@ namespace hyprtail::shader {
         std::vector<std::filesystem::path> files;       // real files read, for watching
 
         std::optional<eTopology>           topology; // vertex stage only
+        std::vector<eTopology>             expects;      // fragment stage only; empty = accepts any
+        std::string                        expectsWhere; // file:line, for messages
         std::vector<SParamWhere>           params;
         std::vector<SPadding>              padding;
     };

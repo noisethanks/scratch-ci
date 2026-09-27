@@ -651,14 +651,21 @@ static void kickRender() {
 
 // ---------------------------------------------------------------- config
 
-// Shader paths of the classic preset's layers from the current config keys
-// (until the v2 config surface, SPEC §13.8).
-static std::pair<std::string, std::string> layerShaderPaths(const std::string& layer) {
+// Shader paths of a classic-preset layer: a `layerN_vertex`/`layerN_fragment`
+// override (SPEC §13.7, N = 1-based position in the preset's layer list)
+// wins per stage if set, else the old per-name config keys (§13.8 not built
+// yet).
+static std::pair<std::string, std::string> layerShaderPaths(size_t index, const std::string& layer) {
+    std::pair<std::string, std::string> def;
     if (layer == "trail")
-        return {s_config.vertexShader, s_config.fragmentShader};
-    if (layer == "idle")
-        return {s_config.idleVertexShader, s_config.idleFragmentShader};
-    return {};
+        def = {s_config.vertexShader, s_config.fragmentShader};
+    else if (layer == "idle")
+        def = {s_config.idleVertexShader, s_config.idleFragmentShader};
+
+    if (index >= s_config.layerVertex.size())
+        return def;
+    return {s_config.layerVertex[index].empty() ? def.first : s_config.layerVertex[index],
+            s_config.layerFragment[index].empty() ? def.second : s_config.layerFragment[index]};
 }
 
 // Parameter values of the classic preset's layers from the current config
@@ -691,8 +698,9 @@ static std::map<std::string, std::string> layerOverrides(const hyprtail::SLayerS
 // Errors keep the active programs.
 static void reloadShaders() {
     std::vector<std::filesystem::path> watch;
-    for (auto& l : s_preset->layers) {
-        const auto [vert, frag] = layerShaderPaths(l->name());
+    for (size_t i = 0; i < s_preset->layers.size(); ++i) {
+        auto&      l            = s_preset->layers[i];
+        const auto [vert, frag] = layerShaderPaths(i, l->name());
         l->slot.reload(vert, frag, watch);
     }
     s_fileWatch.setFiles(watch);
@@ -711,6 +719,54 @@ static void applyConfig() {
     const auto& specs = hyprtail::classicPreset();
     for (size_t i = 0; i < p.layers.size() && i < specs.size(); ++i)
         p.layers[i]->setOverrides(layerOverrides(specs[i]));
+
+    // layer1_vertex .. layer4_fragment (SPEC §13.7): an override for an
+    // index the current preset has no layer for is a plugin warning.
+    {
+        std::string unused;
+        for (size_t i = specs.size(); i < s_config.layerVertex.size(); ++i)
+            if (!s_config.layerVertex[i].empty() || !s_config.layerFragment[i].empty())
+                unused += std::format(" layer{}", i + 1);
+        if (!unused.empty())
+            hyprtail::diag::report(eSeverity::WARN, "config:plugin:hyprtail:layerN",
+                                   std::format("preset \"classic\" has {} layer(s); override(s) for{} ignored", specs.size(), unused));
+        else
+            hyprtail::diag::resetKey("config:plugin:hyprtail:layerN");
+    }
+
+    // `params` string (SPEC §13.5): syntax problems and entries for an
+    // unknown layer are one batched warning; entries for a known layer are
+    // validated per-name/type/range in CLayer::resolve().
+    {
+        auto        parsed = hyprtail::params::parseParamsString(s_config.params);
+        std::string unknownLayers;
+        std::vector<std::map<std::string, std::string>> perLayer(p.layers.size());
+        for (const auto& e : parsed.entries) {
+            const auto it = std::ranges::find_if(p.layers, [&](const auto& l) { return l->name() == e.layer; });
+            if (it == p.layers.end()) {
+                if (unknownLayers.find(std::format(" \"{}\"", e.layer)) == std::string::npos)
+                    unknownLayers += std::format(" \"{}\"", e.layer);
+                continue;
+            }
+            perLayer[std::distance(p.layers.begin(), it)][e.name] = e.value;
+        }
+        for (size_t i = 0; i < p.layers.size(); ++i)
+            p.layers[i]->setParamOverrides(std::move(perLayer[i]));
+
+        if (!unknownLayers.empty()) {
+            std::string names;
+            for (const auto& l : p.layers)
+                names += (names.empty() ? "" : ", ") + l->name();
+            parsed.problems.push_back(std::format("unknown layer(s):{} (this preset has: {})", unknownLayers, names));
+        }
+        if (!parsed.problems.empty()) {
+            std::string msg;
+            for (const auto& prob : parsed.problems)
+                msg += "\n  " + prob;
+            hyprtail::diag::report(eSeverity::WARN, "config:plugin:hyprtail:params", std::format("plugin:hyprtail:params: problems:{}", msg));
+        } else
+            hyprtail::diag::resetKey("config:plugin:hyprtail:params");
+    }
 
     // Keeps the newest points; the VBO is reallocated at the next draw
     // (CNodeBuffer::ensure), where GL is current.

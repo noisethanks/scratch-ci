@@ -60,6 +60,24 @@ namespace hyprtail::params {
     // Scalar view of a value for padding expressions: FLOAT/INT/BOOL only.
     std::optional<double>                 scalar(const SValue& v);
 
+    // One "<layer>:<name>=<value>" entry of a `params` config string
+    // (SPEC §13.5), unparsed: only the layer/name/value are split out here,
+    // not validated against a specific program's declared params.
+    struct SParamEntry {
+        std::string layer, name, value;
+    };
+
+    struct SParsedParams {
+        std::vector<SParamEntry> entries;
+        std::vector<std::string> problems; // malformed tokens, plain text
+    };
+
+    // Splits on whitespace, then each token on the first ':' and first '='.
+    // A malformed token (missing ':' or '=', or an empty layer/name/value)
+    // is added to `problems` instead of `entries`; it never fails the whole
+    // string.
+    SParsedParams                         parseParamsString(std::string_view text);
+
     class CExpr {
       public:
         static std::expected<CExpr, std::string> parse(std::string_view text);

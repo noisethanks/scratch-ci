@@ -47,9 +47,16 @@ namespace hyprtail {
         const std::string& name() const;
 
         // Preset defaults merged with config values (config wins), as value
-        // text by parameter name. Unknown names are ignored: the classic
-        // preset's config mapping sets names a user shader may not declare.
+        // text by parameter name. Unknown names are ignored, silently: the
+        // classic preset's config mapping sets names a user shader may not
+        // declare.
         void               setOverrides(std::map<std::string, std::string> overrides);
+
+        // Entries of the `params` config string (SPEC §13.5) addressed to
+        // this layer, value text by parameter name. Applied on top of
+        // setOverrides(); unlike it, an unknown name here is reported
+        // (params:<layer>), not silently ignored.
+        void               setParamOverrides(std::map<std::string, std::string> overrides);
 
         // Recompute res if the program or the overrides changed. Reports bad
         // values (params:<layer>) and keeps the declared default for them.
@@ -74,6 +81,7 @@ namespace hyprtail {
       private:
         std::string                        m_name;
         std::map<std::string, std::string> m_overrides;
-        uint64_t                           m_overridesVersion = 0;
+        std::map<std::string, std::string> m_paramOverrides;
+        uint64_t                           m_overridesVersion = 0; // bumped on either map changing
     };
 }

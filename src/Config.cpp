@@ -30,6 +30,8 @@ namespace hyprtail::cfg {
             SP<CBoolValue>   idleEnabled, idleWhenHidden;
             SP<CFloatValue>  idleDelay, idleDuration, idleRadius;
             SP<CStringValue> idleVertexShader, idleFragmentShader;
+            std::array<SP<CStringValue>, 4> layerVertex, layerFragment;
+            SP<CStringValue> params;
         };
 
         SRegistered& reg() {
@@ -93,11 +95,29 @@ namespace hyprtail::cfg {
         r.idleVertexShader   = makeShared<CStringValue>("plugin:hyprtail:idle_vertex_shader", "idle effect vertex shader path, empty for the built-in one", "");
         r.idleFragmentShader = makeShared<CStringValue>("plugin:hyprtail:idle_fragment_shader", "idle effect fragment shader path, empty for the built-in one", "");
 
+        // Per-layer shader overrides (SPEC §13.7): static keys indexed by
+        // position in the preset's layer list, capped at 4. Names must be
+        // literals (see the SRegistered comment above), so these are
+        // spelled out rather than built with std::format.
+        static constexpr std::array<const char*, 4> LAYER_VERT_KEYS{"plugin:hyprtail:layer1_vertex", "plugin:hyprtail:layer2_vertex", "plugin:hyprtail:layer3_vertex",
+                                                                     "plugin:hyprtail:layer4_vertex"};
+        static constexpr std::array<const char*, 4> LAYER_FRAG_KEYS{"plugin:hyprtail:layer1_fragment", "plugin:hyprtail:layer2_fragment", "plugin:hyprtail:layer3_fragment",
+                                                                     "plugin:hyprtail:layer4_fragment"};
+        for (size_t i = 0; i < 4; ++i) {
+            r.layerVertex[i]   = makeShared<CStringValue>(LAYER_VERT_KEYS[i], "vertex shader override for this layer of the preset, empty uses the preset's own shader", "");
+            r.layerFragment[i] = makeShared<CStringValue>(LAYER_FRAG_KEYS[i], "fragment shader override for this layer of the preset, empty uses the preset's own shader", "");
+        }
+        r.params = makeShared<CStringValue>("plugin:hyprtail:params", R"(per-layer parameter overrides: "<layer>:<name>=<value> ..." (SPEC section 13.5))", "");
+
         bool ok = true;
         for (const SP<IValue>& v : std::initializer_list<SP<IValue>>{r.fadeMs, r.width, r.capacity, r.minSpacing, r.miterLimit, r.interpolateWarps, r.damagePadding,
                                                                       r.vertexShader, r.fragmentShader, r.colorSlow, r.colorFast, r.idleEnabled, r.idleDelay,
-                                                                      r.idleDuration, r.idleRadius, r.idleWhenHidden, r.idleVertexShader, r.idleFragmentShader})
+                                                                      r.idleDuration, r.idleRadius, r.idleWhenHidden, r.idleVertexShader, r.idleFragmentShader, r.params})
             ok = add(handle, v) && ok;
+        for (size_t i = 0; i < 4; ++i) {
+            ok = add(handle, r.layerVertex[i]) && ok;
+            ok = add(handle, r.layerFragment[i]) && ok;
+        }
         return ok;
     }
 
@@ -146,6 +166,15 @@ namespace hyprtail::cfg {
             v.idleVertexShader = r.idleVertexShader->value();
         if (r.idleFragmentShader)
             v.idleFragmentShader = r.idleFragmentShader->value();
+
+        for (size_t i = 0; i < 4; ++i) {
+            if (r.layerVertex[i])
+                v.layerVertex[i] = r.layerVertex[i]->value();
+            if (r.layerFragment[i])
+                v.layerFragment[i] = r.layerFragment[i]->value();
+        }
+        if (r.params)
+            v.params = r.params->value();
 
         return v;
     }

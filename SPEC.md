@@ -648,9 +648,12 @@ this file states the decision and marks what's still a placeholder.
 
 ## 13. Customization model v2 (DRAFT, partly built)
 
-**Status:** phases 0-2 of §13.16 are built; phase 2 is untested (not yet run
-in any compositor). Built parts are marked **Built (phase N)** below, with
-any difference from the draft; everything else is still proposal.
+**Status:** phases 0-2 of §13.16 are built; phase 3's checks and config
+front end (`params`, `layer1_vertex`..`layer4_fragment`, `expects`, the
+pre-link varying check) are also built. Phases 2 and 3 are untested (not
+yet run in any compositor). Built parts are marked **Built (phase N)**
+below, with any difference from the draft; everything else is still
+proposal.
 Decisions taken so far: no dynamic config keys; parameters go in one
 plugin-validated `params` string, and per-layer shader overrides are static
 keys indexed by layer number (§13.5, §13.8; NOTES "Phase 0 spikes", S2);
@@ -775,9 +778,15 @@ A geometry shader declares exactly one topology:
 **Built (phase 2):** `path` (without `smooth`) and `quad`. Differences: quad
 stillness is the uniform `ht_stillMs`, not a function; path layers still
 draw all `size() - 1` instances (the visible-range re-pointing comes with
-phase 5). Not built: `path smooth N`, `instanced K` (phase 5), `expects`
-(phase 3). A geometry shader without a topology pragma, a second one, an
-unknown kind, or one in a fragment shader or include is refused.
+phase 5). Not built: `path smooth N`, `instanced K` (phase 5). A geometry
+shader without a topology pragma, a second one, an unknown kind, or one in
+a fragment shader or include is refused.
+
+**Built (phase 3):** `expects`, fragment stage, main file, at most once,
+comma-separated kinds with no spaces (`ShaderSource.cpp`'s `RE_EXPECTS` /
+`splitComma`). Checked in `ShaderSlot.cpp`'s `programInfo()` against the
+paired vertex shader's actual topology; a mismatch is refused with the
+plain message this section's example shows.
 
 ### 13.4 Visibility and lifecycle parameters
 
@@ -892,6 +901,16 @@ offset (phase 6).
   classic preset's mapping of the current config keys. The `params` string
   is phase 3.
 
+**Built (phase 3):** the `params` config string (`Params::parseParamsString`,
+`CLayer::setParamOverrides`). Applied on top of the phase-2 config mapping
+(so `params` wins, matching pragma default < preset mapping < `params`).
+Syntax problems and an unknown layer name are one batched warning
+(`config:plugin:hyprtail:params`); an unknown parameter name, a bad value or
+an out-of-range value for a known layer is reported per layer
+(`params:<layer>`, `CLayer::resolve`), the entry ignored, the prior value
+kept. Reserved lifecycle parameters and `enabled` are settable the same way
+(no separate mechanism needed: they're already in `reservedParams()`).
+
 ### 13.6 Standard varyings
 
 - **The fixed set** is declared by the prelude in both stages:
@@ -919,8 +938,18 @@ offset (phase 6).
 
 **Built (phase 2):** the set and `ht_initVaryings()`. `make test-unit`
 links every built-in vertex shader with every built-in fragment shader
-through glslangValidator. Not built: the pre-link check and plain messages
-(phase 3); until then a mismatch shows the driver's link log.
+through glslangValidator.
+
+**Built (phase 3):** the pre-link check (`ShaderSlot.cpp`'s
+`varyingCheck()`), with one deliberate change from the draft above: it is a
+regex-based text scan (misses a multi-name `out vec2 a, b;` declaration or a
+`layout(...)` qualifier), and it never blocks or skips the real
+compile/link attempt — the compiler always runs first, unconditionally.
+It's consulted only after an actual link failure, to turn the raw driver
+log into the plain message; if it finds no mismatch, the raw log is shown
+exactly as before. This removes any risk of a scan false positive (e.g. a
+commented-out declaration matching the pattern) rejecting a shader that
+would have linked fine.
 
 ### 13.7 Presets
 
@@ -952,6 +981,14 @@ through glslangValidator. Not built: the pre-link check and plain messages
     in the preset's `layers` list: `layer1_vertex`, `layer1_fragment`, up to
     `layer4_*` (layers are capped at four). `""` = the preset's shader. An
     override for a layer number the preset doesn't have is a plugin warning.
+
+    **Built (phase 3):** the eight `layer1_vertex` .. `layer4_fragment`
+    keys (`Config.hpp/.cpp`), ahead of the full manifest/`preset.conf` this
+    section otherwise describes (still phase 4): each stage independently
+    falls back to today's per-name config keys (`vertex_shader` etc.) when
+    unset, since those aren't removed until phase 4's config-surface-v2
+    (§13.8). An override for an index beyond the classic preset's two
+    layers is one batched warning (`config:plugin:hyprtail:layerN`).
   - Parameters, including reserved ones: the `params` string (§13.5).
 - **Stacking:** yes, up to 4 layers, one shared source, drawn in order.
 - **Blending:** premultiplied "over" only, as today. A shader outputting
@@ -1152,9 +1189,9 @@ compositor).
    - Today's look ships as the built-in `classic` preset; the current
      config keys map onto it, so behavior should be unchanged.
    - `make test-unit`: unit tests and glslangValidator over the built-ins.
-3. **Checks and the config front end.** The `params` string, the
-   `layer1_vertex` ... `layer4_fragment` keys, `expects`, and the pre-link
-   varying check with plain messages.
+3. **Checks and the config front end (built, untested).** The `params`
+   string, the `layer1_vertex` ... `layer4_fragment` keys, `expects`, and
+   the pre-link varying check with plain messages.
 4. **Presets and config surface v2.** Manifest parser, user preset
    directory, per-layer overrides, `subtle` and `vivid`, migration notes.
 5. **Topologies.** `instanced K` (plus a particle demo preset) and
