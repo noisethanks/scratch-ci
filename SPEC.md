@@ -63,6 +63,24 @@ this file states the decision and marks what's still a placeholder.
   touching anything: one error notification naming the other instance's
   path and how to unload it (`hyprpm disable hyprtail` for hyprpm's copy,
   else `hyprctl plugin unload <path>`).
+- **Crash-loop guard:** a marker file (`$XDG_STATE_HOME/hyprtail/crash-guard.marker`,
+  fallback `~/.local/state/hyprtail/`; `rev`/`hyprland`/`instance`/`pid`
+  fields) is written at init and removed on clean unload, in `teardown()`,
+  and 60s after a startup that got that far (the same event-loop-timer
+  approach as the idle timer, SPEC's idle effect). Checked first thing in
+  `PLUGIN_INIT`, before the duplicate-instance check's cousin runs
+  `diag::init` (which would otherwise rotate away a crashed session's
+  `errors.log`): a marker naming this exact build (`rev`) and this exact
+  running Hyprland (`hyprland`, `__hyprland_api_get_hash()`) whose `pid` is
+  no longer alive means that load never reached `teardown()` -- refused the
+  same way a duplicate instance is (one notification, then throw), and the
+  marker is left in place so the refusal persists until the build or
+  Hyprland changes or the user deletes the file. A live `pid` for the same
+  key means another instance (e.g. a nested one sharing the same state
+  directory) is still in its own run, not a crash: ignored, load proceeds
+  normally. `src/CrashGuard.{hpp,cpp}` (parse/format/key-match/stale-pid
+  logic, Hyprland-free, unit tested); `src/StatePath.hpp` (the shared
+  `$XDG_STATE_HOME/hyprtail` resolution, also used by `Diagnostics.cpp`).
 - **Build revision:** the Makefile writes `out/rev.hpp` (git short hash,
   `-dirty` for uncommitted changes; rewritten only when it changes). It shows
   in the "loaded" notification, the log, the plugin version string and the
@@ -621,8 +639,11 @@ this file states the decision and marks what's still a placeholder.
   `tests/hyprtester/smoke.lua`) in a headless Hyprland from the checkout:
   load, trail and idle effect, duplicate load refused, three rounds of
   adding an output, drawing on it and removing it mid-fade, unload, pointer
-  motion after unload, reload (errors.log.1 kept), final unload. After every
-  step the compositor must still answer IPC and errors.log must have nothing
+  motion after unload, reload (errors.log.1 kept), crash-loop guard (a
+  tampered marker with a dead pid for the current build+Hyprland refuses a
+  load, compositor stays alive, hyprtail absent from `/plugin list`;
+  deleting the marker lets it load again), final unload. After every step
+  the compositor must still answer IPC and errors.log must have nothing
   past its header (warnings count). Also checks `hyprctl hyprtail` in both
   formats. State-only: no pixel readback. Run from a terminal in a Wayland
   session: the test Hyprland has its own short `XDG_RUNTIME_DIR` (so

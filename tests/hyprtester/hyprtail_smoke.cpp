@@ -29,6 +29,9 @@
 #include <string>
 #include <thread>
 
+#include <sys/wait.h>
+#include <unistd.h>
+
 namespace {
     // Output added and removed by the hotplug rounds. Its monitor rule (mode,
     // position far right of everything else) is in smoke.lua: a rule set with
@@ -220,6 +223,69 @@ TEST_CASE(hyprtailLifecycle) {
     sleepMs(FADE_MS + 200);
     HYPRTAIL_ALIVE("trail after reload");
     HYPRTAIL_NO_ERRORS("reload");
+
+    // 7. Crash-loop guard (SPEC §2): a marker for this exact build+Hyprland
+    // pair, naming a dead pid, refuses the next load; deleting the marker
+    // lets it through again. The plugin is still loaded from step 6, so its
+    // own marker already has the right rev/hyprland lines -- read those back
+    // instead of deriving the expected values ourselves, and only tamper
+    // with the pid.
+    {
+        const auto markerPath = std::filesystem::path{env("XDG_STATE_HOME")} / "hyprtail" / "crash-guard.marker";
+        std::string realMarker;
+        {
+            std::ifstream in(markerPath);
+            if (!in)
+                FAIL_TEST("no crash-guard marker at {} while hyprtail is loaded", markerPath.string());
+            std::stringstream ss;
+            ss << in.rdbuf();
+            realMarker = ss.str();
+        }
+
+        // Unload cleanly: teardown() removes the marker, same as a normal
+        // unload. We replant it by hand right after.
+        OK(getFromSocket("/plugin unload " + so));
+        HYPRTAIL_ALIVE("unload before the crash-guard scenario");
+        ASSERT_NOT_CONTAINS(getFromSocket("/plugin list"), LISTED);
+
+        // A pid guaranteed dead: fork, exit immediately, reap it.
+        const pid_t deadChild = fork();
+        if (deadChild == 0)
+            _exit(0);
+        if (deadChild < 0)
+            FAIL_TEST("fork() failed setting up the crash-guard scenario");
+        int status = 0;
+        waitpid(deadChild, &status, 0);
+
+        std::istringstream inLines(realMarker);
+        std::ostringstream tampered;
+        std::string        line;
+        while (std::getline(inLines, line)) {
+            if (line.starts_with("pid="))
+                tampered << "pid=" << deadChild << "\n";
+            else
+                tampered << line << "\n";
+        }
+        {
+            std::ofstream out(markerPath, std::ios::trunc);
+            out << tampered.str();
+        }
+
+        // Load must be refused: compositor stays alive, hyprtail never
+        // appears in the plugin list.
+        const auto refused = getFromSocket("/plugin load " + so);
+        NOK(refused);
+        HYPRTAIL_ALIVE("crash-guard refusal");
+        ASSERT_NOT_CONTAINS(getFromSocket("/plugin list"), LISTED);
+
+        // Deleting the marker lets the next load through.
+        std::filesystem::remove(markerPath);
+        OK(getFromSocket("/plugin load " + so));
+        HYPRTAIL_ALIVE("load after deleting the crash-guard marker");
+        ASSERT_COUNT_STRING(getFromSocket("/plugin list"), LISTED, 1);
+        sleepMs(300);
+        HYPRTAIL_NO_ERRORS("load after deleting the crash-guard marker");
+    }
 
     // Leave Hyprland as we found it.
     OK(getFromSocket("/plugin unload " + so));

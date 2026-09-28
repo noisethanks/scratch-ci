@@ -270,6 +270,73 @@ Not yet reached, environment/fixture work has been the focus so far (see Environ
 - **Refusal:** first thing in `PLUGIN_INIT`, before `diag::init` (which would rotate away the other instance's `errors.log`): throw `std::runtime_error`, which Hyprland catches and ejects the plugin (`PluginSystem.cpp:113-126`). Nothing registered yet, so no teardown.
 - **Exactly one notification:** a config-driven load (Lua `hl.plugin.load`) already gets Hyprland's own "failed to load" notification with our exception text (`PluginSystem.cpp:229-230`); `hyprctl plugin load` only returns the error to the caller (`HyprCtl.cpp:1824-1840`) and hyprpm's `loadUnloadPlugin` ignores the reply entirely. So the plugin notifies itself unless the Lua config's `m_registeredPlugins` (public, `lua/ConfigManager.hpp:131`) contains its path. The legacy manager's list (`m_declaredPlugins`) is private, so under hyprlang a config-driven refusal may show two notifications. Including `config/lua/ConfigManager.hpp` needs Lua headers (`<lua.h>`); Hyprland needs them to build anyway.
 
+## Crash-loop guard (cited at efb5099)
+
+- **Why:** a plugin that crashes Hyprland (or hangs it) during init/render
+  gets reloaded on the next session start with no memory of that -- for a
+  session manager or `hyprpm` autoload, that's a silent crash loop. Nothing
+  in the existing lifecycle (duplicate-instance refusal, the ABI hash
+  check, `errors.log` rotation) catches "the last load of this exact build
+  against this exact Hyprland never made it back to `teardown()`".
+- **Marker, not a counter:** one file
+  (`$XDG_STATE_HOME/hyprtail/crash-guard.marker`, same directory as
+  `errors.log`, `src/StatePath.hpp`), plain `key=value` lines: `rev`
+  (`HYPRTAIL_REV`), `hyprland` (`__hyprland_api_get_hash()` of the *running*
+  compositor, not `__hyprland_api_get_client_hash()` -- the point is "this
+  same running process", which changes on every Hyprland restart even
+  without a version bump), `instance` (`HYPRLAND_INSTANCE_SIGNATURE`, for
+  the refusal notification only, not part of the match), `pid`
+  (`::getpid()`). A counter would need the same dead-pid check to tell
+  "still running, expected to still be there" from "crashed N times"
+  anyway, so a single marker plus a liveness check is the whole mechanism.
+- **Match rule:** `rev` and `hyprland` equal to the current load's, *and*
+  `pid` no longer alive (`kill(pid, 0)` == `ESRCH`, `CrashGuard.cpp`
+  `pidIsDead`). Only `ESRCH` counts as dead; a live pid or "can't tell"
+  (e.g. `EPERM`) is always treated as alive, since a live-or-unknown pid
+  must never be mistaken for a crash. A live pid under a matching key means
+  some other instance of the *same* build+Hyprland is still in its own run
+  right now (the obvious case: a nested dev Hyprland and the host sharing
+  the same `$XDG_STATE_HOME`, since only the smoke-test target isolates
+  that env var, SPEC §2/§10) -- ignored, not refused, and that instance's
+  marker is left alone (see below).
+- **Checked before `diag::init`,** in `PLUGIN_INIT`, the same reasoning as
+  the duplicate-instance check just above it: `diag::init` rotates
+  `errors.log` to `errors.log.1`, which would destroy the crashed session's
+  own log the moment the next (refused) load ran. The refusal notification
+  names the marker path, the `errors.log` path (computed directly via
+  `hyprtail::stateDir()`, not through `diag`'s own state, which is empty
+  before `diag::init` runs this load) and the previous pid/instance.
+- **Ownership, not a blind overwrite:** `pluginInit()` writes a fresh marker
+  unconditionally once the crash-loop check has passed (nothing left to
+  preserve: either there was no marker, or its key/pid didn't indicate a
+  crash), and arms `s_crashGuardTimer` only if that write succeeded.
+  `teardown()` removes the marker only when `s_crashGuardTimer` is
+  non-null -- i.e. only a marker *we* wrote this load, never one left by
+  some other still-running instance that we merely read and decided not to
+  refuse over. This doesn't fully solve the shared-directory race (two
+  processes writing the same file with no lock), but it does stop the one
+  failure mode that actually mattered: our own `teardown()` deleting
+  someone else's live marker.
+- **60s clearing timer:** same `wl_event_loop_add_timer` /
+  `wl_event_source_timer_update` / `wl_event_source_remove` idiom as the
+  idle timer (`s_idleTimer`, "Idle slot implementation" above), one-shot
+  (returns 0, never re-armed). Removed in `teardown()` unconditionally
+  alongside the marker-ownership check above.
+- **Unit tested** (`tests/unit/unit.cpp`, `make test-unit`): `parse`/
+  `format` round-trip and reject malformed/incomplete text; `pidIsDead`
+  against a real reaped child (guaranteed dead) and the test process's own
+  pid (guaranteed alive); `indicatesEarlyDeath` across matching/mismatched
+  rev, hash and live/dead pid; a real `writeMarker`/`readMarker`/
+  `removeMarker` round trip against a scratch dir via `setenv
+  ("XDG_STATE_HOME", ...)`, never the real state directory.
+- **Smoke-tested** (`tests/hyprtester/hyprtail_smoke.cpp`, step 7): rather
+  than deriving the expected `rev`/`hyprland` strings independently, the
+  test reads the *plugin's own* marker (written by the still-loaded plugin
+  from an earlier step), unloads, and rewrites only the `pid` line to a
+  freshly forked-and-reaped (guaranteed dead) pid before attempting a
+  reload -- refused, compositor alive, absent from `/plugin list`; deleting
+  the marker lets the next load through.
+
 ## Monitor hotplug (cited at efb5099)
 
 - **Events** (`EventBus.hpp:158-169`): `monitor.removed` fires from a scope guard in `CMonitor::onDisconnect` (`Monitor.cpp:392-400`), both for a disconnect and for a monitor rule disabling it (`MonitorRuleManager.cpp:187`, the `CMonitor` survives and may `onConnect` again). `monitor.destroyMon` fires in `CMonitorStateTracker::remove` after the monitor left both lists (`MonitorState.cpp:152-156`); after that the `CMonitor` can be freed and its address reused by the next `makeShared<CMonitor>` (`:118` area, `newMon`). `monitor.layoutChanged` fires after `arrange()` (`MonitorLayoutController.cpp:70`), after a mode change (`Monitor.cpp:1399`) and after monitor rules are applied (`MonitorRuleManager.cpp:204`), including config reloads that change nothing.

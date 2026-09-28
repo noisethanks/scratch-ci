@@ -140,7 +140,7 @@ UNIT_FLAGS := $(if $(filter 1,$(SANITIZE)),-O0 -fsanitize=address -fsanitize=und
 
 test-unit:
 	@mkdir -p $(UNIT_OUT)
-	$(CXX) -std=c++26 -Wall -g $(UNIT_FLAGS) tests/unit/unit.cpp src/Params.cpp src/ShaderSource.cpp src/TrailBuffer.cpp -o $(UNIT_OUT)/unit
+	$(CXX) -std=c++26 -Wall -g $(UNIT_FLAGS) tests/unit/unit.cpp src/Params.cpp src/ShaderSource.cpp src/TrailBuffer.cpp src/CrashGuard.cpp -o $(UNIT_OUT)/unit
 	rm -rf $(UNIT_OUT)/glsl
 	OUT_DIR=$(UNIT_OUT)/glsl $(UNIT_OUT)/unit
 	@command -v glslangValidator >/dev/null || { echo "glslangValidator not found, skipping the GLSL check" >&2; exit 0; }; \

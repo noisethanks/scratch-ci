@@ -1,0 +1,326 @@
+name: CI
+
+# No `paths:` filter on this workflow: a required check that a path filter
+# lets skip never reports back, and a skipped required check blocks every
+# merge forever (see docs/CI.md "how to read a red row").
+on:
+  pull_request:
+    branches: [master]
+  schedule:
+    # Every 4 hours, off the top of the hour.
+    - cron: "13 */4 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # ---------------------------------------------------------------- resolve
+  # Computes the matrix dynamically: the latest stable Hyprland release tag,
+  # `main`, and the current release branch head IF it's ahead of the tag
+  # (i.e. carries unreleased backports worth covering). Read-only GitHub API
+  # calls with the default token: no secret needed, safe on fork PRs.
+  resolve:
+    name: resolve-hyprland-refs
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.build-matrix.outputs.matrix }}
+    steps:
+      - name: Resolve stable tag, main, and release branch
+        id: build-matrix
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          stable="$(gh api repos/hyprwm/Hyprland/releases/latest --jq .tag_name)"
+          branch="${stable}-b"
+
+          rows="$(jq -nc --arg stable "$stable" '
+            [{name: "stable", ref: $stable, sanitize: false},
+             {name: "main",   ref: "main",   sanitize: true}]')"
+
+          # Hyprland's release-branch naming: one `vX.Y.Z-b` branch per
+          # patch tag. Only worth a row when it's ahead of the tag itself.
+          ahead="$(gh api "repos/hyprwm/Hyprland/compare/${stable}...${branch}" --jq .ahead_by 2>/dev/null || echo 0)"
+          if [ "${ahead:-0}" -gt 0 ]; then
+            rows="$(echo "$rows" | jq -c --arg branch "$branch" \
+              '. + [{name: "release-branch", ref: $branch, sanitize: false}]')"
+          fi
+
+          echo "matrix=$rows" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Hyprland refs this run"
+            echo '```json'
+            echo "$rows" | jq .
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # -------------------------------------------------------------------- test
+  # Builds hyprtail the way hyprpm does (default pkg-config mode, never
+  # `make DEV=1`) against each row's exact Hyprland closure, then runs the
+  # host-free tests. Job `name:` is set explicitly per row so required-check
+  # names stay stable regardless of whether the optional release-branch row
+  # is present this run (a required check matches by name).
+  test:
+    needs: resolve
+    name: hyprland-${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.resolve.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/nix-setup
+        with:
+          cache-key-suffix: ${{ matrix.name }}
+
+      - name: Build Hyprland (${{ matrix.ref }}) via Nix
+        id: hyprland
+        run: |
+          set -euo pipefail
+          flake_ref="github:hyprwm/Hyprland?ref=${{ matrix.ref }}"
+
+          nix build "${flake_ref}#hyprland-with-tests" -L
+
+          # Resolved commit SHA, without executing the built binary (repo
+          # rule: never run Hyprland in this session/CI).
+          sha="$(nix flake metadata "$flake_ref" --json --refresh | jq -r .locked.rev)"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo -n "$sha" > current-sha.txt
+
+      - name: "Build hyprtail (hyprpm mode: default pkg-config, not DEV=1)"
+        run: |
+          set -euo pipefail
+          export PKG_CONFIG_PATH="$PWD/result-dev/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+          make all
+
+      - name: make test-unit
+        run: make test-unit SANITIZE=${{ matrix.sanitize && '1' || '0' }}
+
+      - name: nm import check
+        run: |
+          chmod +x scripts/ci/check-imports.sh
+          scripts/ci/check-imports.sh out/hyprtail.so result/bin/Hyprland
+
+      # actions/cache keys are immutable: an existing key can be restored
+      # but never overwritten, only ever created fresh. `key:` here
+      # includes github.run_id, so it's unique to this run and the exact
+      # match always misses (deliberately) -- the actual restore happens
+      # via `restore-keys:`, which resolves the shared prefix to the most
+      # recently *created* matching key. The later save step below reuses
+      # this same run-id key, so it always succeeds as a brand new entry.
+      - name: Restore last-good SHA
+        id: last-good
+        uses: actions/cache/restore@v4
+        with:
+          path: last-good-${{ matrix.name }}.txt
+          key: last-good-hyprland-${{ matrix.name }}-${{ github.run_id }}
+          restore-keys: |
+            last-good-hyprland-${{ matrix.name }}-
+
+      - name: Job summary — files changed since last-good SHA
+        run: |
+          set -euo pipefail
+          current="${{ steps.hyprland.outputs.sha }}"
+          good_file="last-good-${{ matrix.name }}.txt"
+
+          {
+            echo "### hyprland-${{ matrix.name }} (${{ matrix.ref }} @ ${current})"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ ! -s "$good_file" ]; then
+            echo "_no last-good SHA on record for this row yet_" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          last="$(cat "$good_file")"
+          if [ "$last" = "$current" ]; then
+            echo "_unchanged since last-good (${last})_" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # A real git diff, not the GitHub compare API: the API silently
+          # truncates its `files` list past 300 changed files, which a
+          # stale/evicted last-good SHA (a large upstream gap) makes easy to
+          # hit. `--filter=blob:none --no-checkout` fetches full commit/tree
+          # history with no blob content; `--name-only --no-renames` only
+          # ever walks trees, so no blob is fetched even lazily.
+          #
+          # This step is informational only: a clone/diff hiccup here must
+          # never fail the row over something the build/test/nm-check steps
+          # above already passed, so every git call below is soft-guarded.
+          if ! git clone --quiet --filter=blob:none --no-checkout \
+                https://github.com/hyprwm/Hyprland hyprland-diff-src 2>/dev/null; then
+            echo "_could not clone hyprwm/Hyprland to diff against last-good; skipping_" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # Belt-and-braces: a commit that fell off every branch/tag (e.g. an
+          # old release-branch head after the next patch superseded it) needs
+          # fetching by SHA directly; GitHub allows this for reachable-enough
+          # objects. No-op (already present) in the common case.
+          git -C hyprland-diff-src fetch --quiet origin "$last" "$current" 2>/dev/null || true
+
+          if ! files="$(git -C hyprland-diff-src diff --no-renames --name-only "$last" "$current" 2>/dev/null)"; then
+            echo "_could not diff ${last}..${current} (one may be unreachable); skipping_" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # Not a hardcoded path list: matched by prefix for src/render and
+          # src/pointer, by basename for Monitor.cpp, and by substring for
+          # the damage-ring source (its exact path wasn't pinned down at
+          # authoring time -- see docs/CI.md).
+          relevant="$(printf '%s\n' "$files" | grep -Ei '^src/(render|pointer)/|(^|/)Monitor\.cpp$|damage' || true)"
+
+          if [ -n "$relevant" ]; then
+            {
+              echo "Changed in render/pointer/damage-ring/Monitor.cpp since ${last}:"
+              echo '```'
+              printf '%s\n' "$relevant"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "_no changes in the watched paths since ${last}_" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Record last-good SHA
+        if: success()
+        run: echo -n "${{ steps.hyprland.outputs.sha }}" > last-good-${{ matrix.name }}.txt
+
+      - name: Save last-good SHA
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: last-good-${{ matrix.name }}.txt
+          key: last-good-hyprland-${{ matrix.name }}-${{ github.run_id }}
+
+      - name: Upload resolved SHA (for the alert job)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sha-${{ matrix.name }}
+          path: current-sha.txt
+          retention-days: 14
+
+  # ------------------------------------------------------------ flake-check
+  # Sanity-checks the packaging story (flake.nix) independently of the test
+  # matrix above, against whatever single Hyprland rev flake.lock pins.
+  flake-check:
+    name: flake-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/nix-setup
+        with:
+          cache-key-suffix: flake-check
+      - run: nix flake check -L
+      - run: nix build .#hyprtail -L
+
+  # ----------------------------------------------------------------- smoke
+  # Reserved slot. Loading hyprtail into Hyprland's own NixOS-VM hyprtester
+  # run (nix/tests/default.nix upstream: pkgs.testers.runNixOSTest running
+  # hyprland_gtests then hyprtester -c test.lua -p hyprtestplugin.so) is its
+  # own unit of work: copy hyprtail.so and tests/hyprtester/hyprtail_smoke.cpp
+  # into that VM's closure the way `make smoke` does locally, append
+  # smoke.lua to test.lua, and extend the assertions to read
+  # `hyprctl hyprtail -j` counters after scripted cursor movement so a
+  # plugin that loads but draws nothing still fails. Not implemented in this
+  # pass — see docs/CI.md. Left disabled (not a required check) with its
+  # job name and matrix already wired so enabling it later is a small diff.
+  smoke:
+    if: false
+    needs: [resolve, test]
+    name: hyprland-smoke-${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include: ${{ fromJson(needs.resolve.outputs.matrix) }}
+    steps:
+      - run: echo "not implemented yet, see docs/CI.md"
+
+  # ----------------------------------------------------------------- alert
+  # Scheduled runs only (never on pull_request, including forks — no
+  # secrets are involved either way, but the event-type check is the actual
+  # guard). Opens or updates a single labeled tracking issue instead of
+  # spamming a new issue per failed schedule.
+  alert:
+    if: always() && github.event_name == 'schedule' && needs.test.result == 'failure'
+    needs: [resolve, test]
+    name: alert-on-schedule-failure
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      actions: read
+    steps:
+      - name: Restore last-good SHA (stable)
+        uses: actions/cache/restore@v4
+        with:
+          path: last-good-stable.txt
+          key: unused-stable
+          restore-keys: last-good-hyprland-stable-
+      - name: Restore last-good SHA (main)
+        uses: actions/cache/restore@v4
+        with:
+          path: last-good-main.txt
+          key: unused-main
+          restore-keys: last-good-hyprland-main-
+      - name: Restore last-good SHA (release-branch)
+        uses: actions/cache/restore@v4
+        with:
+          path: last-good-release-branch.txt
+          key: unused-release-branch
+          restore-keys: last-good-hyprland-release-branch-
+
+      - name: Download resolved SHAs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sha-*
+          path: shas
+
+      - name: Open or update the tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          label="ci-hyprland-regression"
+          gh label create "$label" --color d73a4a \
+            --description "Scheduled Hyprland CI caught a regression" 2>/dev/null || true
+
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          failed_jobs="$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs" --paginate \
+            --jq '.jobs[] | select(.conclusion=="failure") | .name')"
+
+          {
+            echo "Scheduled run failed: ${run_url}"
+            echo
+            echo "Failed jobs:"
+            printf '%s\n' "$failed_jobs" | sed 's/^/- /'
+            echo
+            echo "Hyprland SHAs (compare links, where a prior last-good SHA is on record):"
+            for row in stable main release-branch; do
+              cur_file="shas/sha-${row}/current-sha.txt"
+              good_file="last-good-${row}.txt"
+              [ -f "$cur_file" ] || continue
+              cur="$(cat "$cur_file")"
+              if [ -s "$good_file" ]; then
+                good="$(cat "$good_file")"
+                echo "- ${row}: https://github.com/hyprwm/Hyprland/compare/${good}...${cur}"
+              else
+                echo "- ${row}: no last-good SHA on record, current is ${cur}"
+              fi
+            done
+          } > issue-body.txt
+
+          issue="$(gh issue list --repo "${{ github.repository }}" --label "$label" --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$issue" ]; then
+            gh issue comment "$issue" --repo "${{ github.repository }}" --body-file issue-body.txt
+          else
+            gh issue create --repo "${{ github.repository }}" --title "Scheduled Hyprland CI regression" \
+              --label "$label" --body-file issue-body.txt
+          fi

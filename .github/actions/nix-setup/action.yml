@@ -1,0 +1,45 @@
+name: Nix setup (hyprtail)
+description: >
+  Installs Nix, restores/saves a GitHub Actions cache of the local Nix
+  store, and registers Hyprland's public Cachix cache (hyprland.cachix.org)
+  as a substituter so Hyprland/aquamarine/hyprutils/hyprlang/hyprcursor/
+  hyprgraphics are pulled prebuilt instead of rebuilt from source. Read-only:
+  no token is configured or required, so this step behaves identically on
+  pull_request runs from forks. Modeled on hyprwm/actions/nix-setup (the
+  composite action Hyprland's own nix-ci.yml and hyprland-plugins' nix-ci.yml
+  use), minus the authenticated push side we don't need.
+
+inputs:
+  cache-key-suffix:
+    description: >
+      Extra text mixed into the GitHub Actions cache key, e.g. the matrix
+      row name, so different Hyprland refs don't evict each other's store
+      cache entries.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Install Nix
+      uses: cachix/install-nix-action@v31
+      with:
+        extra_nix_config: |
+          keep-env-derivations = true
+          keep-outputs = true
+
+    # Restore/save this job's own Nix store (hyprtail's build inputs and
+    # anything not already covered by the hyprland Cachix pull below).
+    - name: Restore and save Nix store
+      uses: nix-community/cache-nix-action@v7
+      with:
+        primary-key: nix-${{ runner.os }}-${{ github.job }}-${{ inputs.cache-key-suffix }}
+        restore-prefixes-first-match: nix-${{ runner.os }}-${{ github.job }}
+        gc-max-store-size-linux: 5G
+
+    # Registers hyprland.cachix.org as a substituter (read-only: no
+    # authToken input, so nothing is pushed and no secret is needed).
+    - name: Use hyprland Cachix cache
+      uses: cachix/cachix-action@v17
+      with:
+        name: hyprland

@@ -23,6 +23,7 @@
 #include <wayland-server-core.h>
 
 #include "rev.hpp"
+#include "StatePath.hpp"
 
 namespace hyprtail::diag {
     namespace {
@@ -80,15 +81,8 @@ namespace hyprtail::diag {
 
         // $XDG_STATE_HOME/hyprtail/errors.log, else ~/.local/state/hyprtail/errors.log.
         std::filesystem::path resolveErrorFile() {
-            const char* xdg = std::getenv("XDG_STATE_HOME");
-            if (xdg && xdg[0] == '/')
-                return std::filesystem::path{xdg} / "hyprtail" / "errors.log";
-
-            const char* home = std::getenv("HOME");
-            if (home && home[0] == '/')
-                return std::filesystem::path{home} / ".local" / "state" / "hyprtail" / "errors.log";
-
-            return {};
+            const auto dir = hyprtail::stateDir();
+            return dir.empty() ? std::filesystem::path{} : dir / "errors.log";
         }
 
         std::string utcNow() {

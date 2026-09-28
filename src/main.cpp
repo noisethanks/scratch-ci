@@ -2,12 +2,14 @@
 #include <bit>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <format>
 #include <limits>
 #include <optional>
 #include <random>
 #include <stdexcept>
 #include <string>
+#include <unistd.h>
 #include <unordered_map>
 
 #include <plugins/PluginAPI.hpp>
@@ -33,6 +35,7 @@
 
 #include "Config.hpp"
 #include "rev.hpp"
+#include "CrashGuard.hpp"
 #include "Diagnostics.hpp"
 #include "FileWatch.hpp"
 #include "Layer.hpp"
@@ -40,6 +43,7 @@
 #include "Preset.hpp"
 #include "RenderUtil.hpp"
 #include "Status.hpp"
+#include "StatePath.hpp"
 
 #include <wayland-server-core.h>
 #include <Compositor.hpp>
@@ -84,6 +88,11 @@ static uint64_t                                              s_frames = 0;
 static Time::steady_tp                                       s_epoch;
 static UP<SPreset>                                           s_preset;
 static wl_event_source*                                      s_idleTimer  = nullptr;
+// Crash-loop guard (SPEC §2): armed only after we've written our own marker
+// (pluginInit()), so its existence alone tells teardown() the marker is ours
+// to remove -- never someone else's (e.g. a nested instance sharing the same
+// state directory) that we merely read and decided not to refuse over.
+static wl_event_source*                                      s_crashGuardTimer = nullptr;
 static CFunctionHook*                                        s_cursorHook  = nullptr;
 static CFunctionHook*                                        s_warpHook    = nullptr;
 static CFunctionHook*                                        s_captureHook = nullptr;
@@ -385,6 +394,16 @@ static int onIdleTimer(void*) {
             }
         }
     });
+    return 0;
+}
+
+// 60s after a startup that got this far, the crash-loop window is over:
+// remove our marker so a later crash, or a plain `hyprctl plugin unload`,
+// doesn't leave a stale refusal behind for the next load. One-shot, not
+// re-armed -- unlike the idle timer, this only ever needs to fire once per
+// load.
+static int onCrashGuardTimer(void*) {
+    hyprtail::diag::guard("crash-guard-timer", [] { hyprtail::crashguard::removeMarker(); });
     return 0;
 }
 
@@ -796,6 +815,15 @@ static void teardown() noexcept {
             wl_event_source_remove(s_idleTimer);
             s_idleTimer = nullptr;
         }
+        // Only removes the marker if it's ours (s_crashGuardTimer is only
+        // ever non-null after we wrote it, see pluginInit()) -- never a
+        // marker some other instance (sharing the same state directory) is
+        // still relying on.
+        if (s_crashGuardTimer) {
+            wl_event_source_remove(s_crashGuardTimer);
+            s_crashGuardTimer = nullptr;
+            hyprtail::crashguard::removeMarker();
+        }
         s_workspaceActiveListener.reset();
         s_specialActiveListener.reset();
         s_workspaceMovedListener.reset();
@@ -1139,6 +1167,26 @@ static PLUGIN_DESCRIPTION_INFO pluginInit() {
     if (!s_idleTimer)
         hyprtail::diag::report(eSeverity::WARN, "idle-timer", "could not create the idle timer; the idle effect only starts when something else renders");
 
+    // Crash-loop guard (SPEC §2): a fresh marker for this load. The
+    // duplicate-instance-shaped refusal check in PLUGIN_INIT already ruled
+    // out that a prior marker for this exact build+Hyprland pair names a
+    // dead pid, so it's safe to overwrite whatever was (or wasn't) there.
+    // s_crashGuardTimer is armed only when the write actually succeeded, so
+    // its mere existence is teardown()'s signal that the marker is ours to
+    // remove.
+    {
+        const hyprtail::crashguard::SKey key{HYPRTAIL_REV, __hyprland_api_get_hash()};
+        const char*                      sig = std::getenv("HYPRLAND_INSTANCE_SIGNATURE");
+        if (!hyprtail::crashguard::writeMarker(key, sig ? sig : "unknown", ::getpid()))
+            hyprtail::diag::report(eSeverity::WARN, "crash-guard", "could not write the crash-loop marker; a crash before the next clean unload won't be caught");
+        else if (g_pCompositor && g_pCompositor->m_wlEventLoop) {
+            constexpr int CRASH_GUARD_CLEAR_MS = 60000;
+            s_crashGuardTimer                  = wl_event_loop_add_timer(g_pCompositor->m_wlEventLoop, &onCrashGuardTimer, nullptr);
+            if (s_crashGuardTimer)
+                wl_event_source_timer_update(s_crashGuardTimer, CRASH_GUARD_CLEAR_MS);
+        }
+    }
+
     // Settings (SPEC section 9). Registered values get their configured value
     // on the reload Hyprland schedules right after loading a plugin
     // (PluginSystem.cpp:135); until then they hold the defaults.
@@ -1273,6 +1321,25 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         throw std::runtime_error("[hyprtail] " + msg);
     }
 
+    // Crash-loop guard (SPEC §2), checked here for the same reason as the
+    // duplicate-instance check above: before diag::init, which would
+    // otherwise rotate away the crashed session's errors.log -- the one
+    // file that explains what happened. A marker naming this exact build
+    // and this exact running Hyprland, whose pid is no longer alive, means
+    // the load it belongs to never reached teardown() (a clean unload or a
+    // caught init failure both remove it there). A live pid means some
+    // other instance sharing the same state directory (e.g. a nested one)
+    // is still in its own run, not a crash: ignored, not refused.
+    const std::string compositorHash = __hyprland_api_get_hash();
+    if (const auto marker = hyprtail::crashguard::readMarker();
+        marker && hyprtail::crashguard::indicatesEarlyDeath(*marker, {HYPRTAIL_REV, compositorHash})) {
+        const auto errLog = hyprtail::stateDir() / "errors.log";
+        const auto msg     = std::format("refusing to load: the previous session (pid {}, instance {}) of this build never reached a clean unload. See {}. Delete {} to load anyway.",
+                                          marker->pid, marker->instanceSignature, errLog.string(), hyprtail::crashguard::markerPath().string());
+        HyprlandAPI::addNotification(handle, "[hyprtail] " + msg, CHyprColor{1.0f, 0.2f, 0.2f, 1.0f}, 15000);
+        throw std::runtime_error("[hyprtail] " + msg);
+    }
+
     hyprtail::diag::init(handle);
 
     // Refusing to load is done by throwing. Hyprland only catches
@@ -1281,8 +1348,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     // the deferred path would be cancelled by teardown before it runs.
     try {
         // ABI version check — must match the compositor we were compiled against.
-        const std::string compositorHash = __hyprland_api_get_hash();
-        const std::string clientHash     = __hyprland_api_get_client_hash();
+        const std::string clientHash = __hyprland_api_get_client_hash();
         if (compositorHash != clientHash)
             throw std::runtime_error(std::format("version mismatch, recompile against the running Hyprland (built={} running={})", clientHash, compositorHash));
 

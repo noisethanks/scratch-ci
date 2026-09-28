@@ -14,9 +14,13 @@
 #include <iostream>
 #include <string>
 
+#include "../../src/CrashGuard.hpp"
 #include "../../src/Params.hpp"
 #include "../../src/ShaderSource.hpp"
 #include "../../src/TrailBuffer.hpp"
+
+#include <sys/wait.h>
+#include <unistd.h>
 
 using namespace hyprtail;
 
@@ -141,6 +145,68 @@ static void testShaderSource() {
         CHECK(shader::preprocess(shader::builtin(name), name, {}, eStage::FRAGMENT).has_value());
 }
 
+static void testCrashGuard() {
+    using namespace hyprtail::crashguard;
+
+    // parse: round-trips through format(), and rejects malformed/incomplete
+    // text; unknown extra fields are tolerated.
+    const SKey key{"abc1234", "deadbeef"};
+    const auto text = format(key, "sig-1", 4242);
+    const auto m    = parse(text);
+    CHECK(m && m->revision == key.revision && m->hyprlandHash == key.hyprlandHash && m->instanceSignature == "sig-1" && m->pid == 4242);
+
+    CHECK(!parse(""));
+    CHECK(!parse("rev=a\nhyprland=b\ninstance=c\n"));                 // missing pid
+    CHECK(!parse("rev=a\nhyprland=b\ninstance=c\npid=abc\n"));        // pid not a number
+    CHECK(!parse("rev=a\nhyprland=b\ninstance=c\npid=-1\n"));         // pid not positive
+    CHECK(!parse("rev=a\nhyprland=b\ninstance=c\npid=0\n"));
+    CHECK(parse("rev=a\nhyprland=b\ninstance=c\npid=5\nextra=ignored\n").has_value());
+
+    // Stale pid detection: a reaped child's pid is guaranteed dead; our own
+    // pid is guaranteed alive.
+    const pid_t child = fork();
+    if (child == 0)
+        _exit(0);
+    CHECK(child > 0);
+    int status = 0;
+    if (child > 0)
+        waitpid(child, &status, 0);
+    const long long deadPid = child;
+    const long long livePid = static_cast<long long>(::getpid());
+
+    CHECK(pidIsDead(deadPid));
+    CHECK(!pidIsDead(livePid));
+    CHECK(!pidIsDead(0));
+    CHECK(!pidIsDead(-1));
+
+    // Key match: only revision+hash+dead-pid together indicate an early
+    // death; any single mismatch keeps the load going.
+    const SMarker deadSameKey{key.revision, key.hyprlandHash, "sig-1", deadPid};
+    const SMarker liveSameKey{key.revision, key.hyprlandHash, "sig-1", livePid};
+    const SMarker deadOtherRev{"different", key.hyprlandHash, "sig-1", deadPid};
+    const SMarker deadOtherHash{key.revision, "different", "sig-1", deadPid};
+
+    CHECK(indicatesEarlyDeath(deadSameKey, key));
+    CHECK(!indicatesEarlyDeath(liveSameKey, key));   // live pid: another instance, not a crash
+    CHECK(!indicatesEarlyDeath(deadOtherRev, key));  // different build
+    CHECK(!indicatesEarlyDeath(deadOtherHash, key)); // different running Hyprland
+
+    // Real file round trip, redirected to a scratch dir so this never
+    // touches the real state directory.
+    char tmpl[] = "/tmp/hyprtail-unit-XXXXXX";
+    if (const char* dir = mkdtemp(tmpl)) {
+        setenv("XDG_STATE_HOME", dir, 1);
+        CHECK(!readMarker()); // nothing written yet
+        CHECK(writeMarker(key, "sig-1", livePid));
+        const auto readBack = readMarker();
+        CHECK(readBack && readBack->revision == key.revision && readBack->pid == livePid);
+        removeMarker();
+        CHECK(!readMarker());
+        std::filesystem::remove_all(std::filesystem::path{dir});
+    } else
+        CHECK(false); // mkdtemp failing is an environment problem worth flagging
+}
+
 static void testRing() {
     CTrailRing ring(8, 42);
     ring.insert({0, 0}, 0.0, false);  // first node: segment start
@@ -169,6 +235,7 @@ static void testRing() {
 int main() {
     testParams();
     testShaderSource();
+    testCrashGuard();
     testRing();
 
     // Preprocessed built-ins for the GLSL validator.
