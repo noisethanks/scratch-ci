@@ -52,9 +52,13 @@ namespace hyprtail::status {
         } source;
 
         // Suppress conditions (SPEC §7): session lock, pointer constraint,
-        // and the focused window's hyprtail:no_trail rule.
+        // and the focused window's hyprtail:no_trail rule. focusedClass/
+        // focusedTitle name the window appRule was evaluated against (empty
+        // if none is focused) -- additive JSON fields, keep the bools first
+        // so the JSON schema stays stable.
         struct {
-            bool locked = false, constrained = false, appRule = false;
+            bool        locked = false, constrained = false, appRule = false;
+            std::string focusedClass, focusedTitle;
         } suppress;
 
         std::vector<SLayer>   layers;

@@ -53,6 +53,21 @@ namespace hyprtail::status {
                 return "null";
             return std::format(R"({{"x": {:.1f}, "y": {:.1f}, "w": {:.1f}, "h": {:.1f}}})", box->x, box->y, box->w, box->h);
         }
+
+        // Active suppress conditions in words, comma-separated, empty if none.
+        std::string suppressConditions(const SSnapshot& s) {
+            std::vector<std::string_view> active;
+            if (s.suppress.locked)
+                active.push_back("session lock");
+            if (s.suppress.constrained)
+                active.push_back("pointer constraint");
+            if (s.suppress.appRule)
+                active.push_back("app rule");
+            std::string out;
+            for (size_t i = 0; i < active.size(); ++i)
+                out += std::format("{}{}", i ? ", " : "", active[i]);
+            return out;
+        }
     }
 
     std::string text(const SSnapshot& s) {
@@ -68,8 +83,10 @@ namespace hyprtail::status {
         out += std::format("  source: {}/{} points, generation {}, pending break {}, warp {}, pointer still for {:.0f} ms{}\n", s.source.nodes, s.source.capacity,
                            s.source.generation, s.source.pendingBreak ? "yes" : "no", s.source.warpMode, s.source.stillMs,
                            s.source.gpuFailed ? ", NODE BUFFER FAILED (see errors.log)" : "");
-        out += std::format("  suppress: locked {}, constrained {}, app rule {}\n", s.suppress.locked ? "yes" : "no", s.suppress.constrained ? "yes" : "no",
-                           s.suppress.appRule ? "yes" : "no");
+        const auto conditions = suppressConditions(s);
+        out += conditions.empty() ? "  suppressed: no\n" : std::format("  suppressed: yes ({})\n", conditions);
+        out += std::format("  focused window: {}\n",
+                           s.suppress.focusedClass.empty() ? "none" : std::format("class \"{}\", title \"{}\"", s.suppress.focusedClass, s.suppress.focusedTitle));
 
         for (const auto& l : s.layers) {
             const char* state = l.disabled ? "DISABLED (see errors.log)" : !l.enabled ? "off" : l.resolved ? "on" : "on, not compiled yet";
@@ -113,7 +130,8 @@ namespace hyprtail::status {
         out += std::format(R"("source": {{"nodes": {}, "capacity": {}, "generation": {}, "pendingBreak": {}, "warp": "{}", "gpuFailed": {}, "stillMs": {:.1f}}}, )",
                            s.source.nodes, s.source.capacity, s.source.generation, b(s.source.pendingBreak), esc(s.source.warpMode), b(s.source.gpuFailed),
                            s.source.stillMs);
-        out += std::format(R"("suppress": {{"locked": {}, "constrained": {}, "appRule": {}}}, )", b(s.suppress.locked), b(s.suppress.constrained), b(s.suppress.appRule));
+        out += std::format(R"("suppress": {{"locked": {}, "constrained": {}, "appRule": {}, "focusedClass": "{}", "focusedTitle": "{}"}}, )", b(s.suppress.locked),
+                           b(s.suppress.constrained), b(s.suppress.appRule), esc(s.suppress.focusedClass), esc(s.suppress.focusedTitle));
 
         out += R"("layers": [)";
         for (size_t i = 0; i < s.layers.size(); ++i) {

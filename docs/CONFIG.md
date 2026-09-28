@@ -236,3 +236,9 @@ Not config keys, but relevant to setting things up:
   layer's shader and current parameter values, per-monitor render stats,
   and the errors.log path — useful for checking that a config change
   actually took effect.
+- It also shows why the trail is suppressed, if it is (`suppressed: yes
+  (session lock, pointer constraint, app rule)`, or `suppressed: no`), and
+  the focused window (`class`/`title`) that the `hyprtail:no_trail` rule
+  was evaluated against — useful for confirming a per-app rule matched the
+  window you expected. JSON keeps the plain `locked`/`constrained`/
+  `appRule` booleans under `suppress`, plus `focusedClass`/`focusedTitle`.

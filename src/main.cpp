@@ -1027,6 +1027,10 @@ static hyprtail::status::SSnapshot statusSnapshot() {
     s.suppress.locked      = sessionLocked();
     s.suppress.constrained = pointerConstrained();
     s.suppress.appRule     = appRuleSuppressed();
+    if (const auto w = Desktop::focusState()->window()) {
+        s.suppress.focusedClass = w->m_class;
+        s.suppress.focusedTitle = w->m_title;
+    }
 
     const double nowMs = msSinceEpoch(Time::steadyNow());
 
