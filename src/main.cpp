@@ -22,6 +22,8 @@
 #include <managers/fullscreen/FullscreenController.hpp>
 #include <managers/SessionLockManager.hpp>
 #include <event/EventBus.hpp>
+#include <desktop/view/Window.hpp>
+#include <desktop/state/FocusState.hpp>
 #include <state/MonitorState.hpp>
 #include <output/Monitor.hpp>
 #include <helpers/memory/Memory.hpp>
@@ -85,6 +87,10 @@ static wl_event_source*                                      s_idleTimer  = null
 static CFunctionHook*                                        s_cursorHook  = nullptr;
 static CFunctionHook*                                        s_warpHook    = nullptr;
 static CFunctionHook*                                        s_captureHook = nullptr;
+// hyprtail:no_trail dynamic window-rule effect (SPEC §7). WINDOW_RULE_EFFECT_NONE
+// (0) doubles as "not registered": registerEffect() never returns 0 for a new
+// dynamic name, so this is a safe sentinel for teardown() to guard on.
+static Desktop::Rule::CWindowRuleEffectContainer::storageType s_noTrailEffectIdx = Desktop::Rule::WINDOW_RULE_EFFECT_NONE;
 static CHyprSignalListener                                   s_renderStageListener;
 static CHyprSignalListener                                   s_mouseMoveListener;
 static CHyprSignalListener                                   s_workspaceActiveListener;
@@ -119,6 +125,34 @@ static bool cursorHidden() {
 // games, mostly. No trail while one is active (SPEC §7).
 static bool pointerConstrained() {
     return g_pInputManager && g_pInputManager->isConstrained();
+}
+
+// The focused window's hyprtail:no_trail rule, looked up fresh every call:
+// no listener-driven cache. Desktop::Rule::windowEffects() and
+// CWindowRuleApplicator::m_otherProps.props are the documented plugin-read
+// path (WindowRuleApplicator.hpp:63-72 at the pin, SPEC §2), the same one
+// hyprbars uses for its own dynamic effects (hyprbars barDeco.cpp:641-646).
+static bool appRuleSuppressed() {
+    if (s_noTrailEffectIdx == Desktop::Rule::WINDOW_RULE_EFFECT_NONE)
+        return false;
+    const auto w = Desktop::focusState()->window();
+    if (!w || !w->m_ruleApplicator)
+        return false;
+    const auto& props = w->m_ruleApplicator->m_otherProps.props;
+    const auto  it     = props.find(s_noTrailEffectIdx);
+    if (it == props.end() || !it->second)
+        return false;
+    return hyprtail::params::ruleTruthy(it->second->effect);
+}
+
+// Session lock, pointer constraint, and the focused window's hyprtail:no_trail
+// rule all suppress the source the same way (SPEC §7): no new points, idle-
+// marker effects end, motion tracking pauses. Session lock is the only one of
+// the three that also hard-gates drawing (runLifecycle's `!locked &&` check)
+// -- path points from the other two just stop growing and fade out on their
+// own.
+static bool suppressed() {
+    return sessionLocked() || pointerConstrained() || appRuleSuppressed();
 }
 
 // Screenshare exclude (SPEC §13.12): anything but the literal "include"
@@ -230,12 +264,12 @@ static SVec2f emitPoint(const SPreset& p) {
 // Sample the pointer once per render into the source ring: insert only on
 // real movement (at least min_spacing from the newest node). The trail
 // follows the pointer whether or not the cursor is shown (SPEC §7).
-// Breaks (SPEC §7): lock and workspace events break unconditionally; so
-// does a pointer constraint, during which nothing is inserted. Warps break
-// only when warpMode == BREAK (hkControllerWarpTo).
-static void sampleSource(double nowMs, bool locked) {
+// Breaks (SPEC §7): lock, pointer constraint and the app rule break
+// unconditionally; so do workspace events. Nothing is inserted while
+// suppressed(). Warps break only when warpMode == BREAK (hkControllerWarpTo).
+static void sampleSource(double nowMs) {
     auto& p = *s_preset;
-    if (locked || pointerConstrained()) {
+    if (suppressed()) {
         p.pendingBreak = true;
         return;
     }
@@ -268,13 +302,12 @@ static void runLifecycle(const PHLMONITOR& pMonitor) {
     // vs :2212-2216). This deliberately diverges from core: nothing while
     // locked.
     const bool locked = sessionLocked();
-    sampleSource(nowMs, locked);
+    sampleSource(nowMs);
 
     const Vector2D pos = Pointer::mgr()->position();
     noteMotion(pos, nowMs);
 
     const bool                hidden      = cursorHidden();
-    const bool                constrained = pointerConstrained();
     auto&                     mf          = s_monFrame[pMonitor.get()];
     std::vector<SLayerDraw>   draws;
     bool                      skipped = false;
@@ -290,7 +323,7 @@ static void runLifecycle(const PHLMONITOR& pMonitor) {
                 if (const auto b = p.gpuFailed ? std::nullopt : p.ring.visibleBounds(nowMs, l.res.fadeMs))
                     cur = CBox{b->x1 - extent - pMonitor->m_position.x, b->y1 - extent - pMonitor->m_position.y, (b->x2 - b->x1) + 2.0 * extent,
                                (b->y2 - b->y1) + 2.0 * extent};
-            } else if (!constrained && quadInWindow(l, nowMs))
+            } else if (!suppressed() && quadInWindow(l, nowMs))
                 cur = quadBoxLocal(pos, extent, pMonitor->m_position);
         }
 
@@ -339,7 +372,7 @@ static void runLifecycle(const PHLMONITOR& pMonitor) {
 // CMonitorDamage) so a render happens and the lifecycle draws it.
 static int onIdleTimer(void*) {
     hyprtail::diag::guard("idle-timer", [] {
-        if (!s_preset || sessionLocked() || pointerConstrained())
+        if (!s_preset || suppressed())
             return;
         const bool hidden = cursorHidden();
         for (const auto& l : s_preset->layers) {
@@ -603,7 +636,7 @@ static void onMouseMoveInternal() {
     // damage below makes one happen).
     noteMotion(pos, msSinceEpoch(Time::steadyNow()));
 
-    if (!s_preset || sessionLocked() || pointerConstrained())
+    if (!s_preset || suppressed())
         return;
 
     // Reach of the widest path layer (before any program is compiled, a
@@ -753,6 +786,10 @@ static void teardown() noexcept {
         if (s_statusCommand)
             HyprlandAPI::unregisterHyprCtlCommand(s_handle, s_statusCommand);
         s_statusCommand.reset();
+        if (s_noTrailEffectIdx != Desktop::Rule::WINDOW_RULE_EFFECT_NONE) {
+            Desktop::Rule::windowEffects()->unregisterEffect(s_noTrailEffectIdx);
+            s_noTrailEffectIdx = Desktop::Rule::WINDOW_RULE_EFFECT_NONE;
+        }
         s_configReloadListener.reset();
         s_fileWatch.shutdown();
         if (s_idleTimer) {
@@ -987,6 +1024,10 @@ static hyprtail::status::SSnapshot statusSnapshot() {
     s.preset      = s_preset ? s_preset->activePreset.name : "";
     s.screenshare = s_config.screenshare;
 
+    s.suppress.locked      = sessionLocked();
+    s.suppress.constrained = pointerConstrained();
+    s.suppress.appRule     = appRuleSuppressed();
+
     const double nowMs = msSinceEpoch(Time::steadyNow());
 
     if (s_preset) {
@@ -1067,6 +1108,10 @@ static PLUGIN_DESCRIPTION_INFO pluginInit() {
 
     s_epoch  = Time::steadyNow();
     s_config = {};
+
+    // Per-app suppression (SPEC §7): a dynamic window-rule effect, read back
+    // per render via m_ruleApplicator->m_otherProps (appRuleSuppressed()).
+    s_noTrailEffectIdx = Desktop::Rule::windowEffects()->registerEffect("hyprtail:no_trail");
 
     // Node seeds (SPEC §13.2): per-load random base, hashed with an
     // insertion counter.

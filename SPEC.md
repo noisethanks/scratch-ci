@@ -357,6 +357,25 @@ this file states the decision and marks what's still a placeholder.
   constraint starts a new segment. This also keeps the trail off games that
   hide the cursor. An unconstrained client that hides the cursor still gets a
   trail following the pointer.
+- **Per-app suppression:** a dynamic window-rule effect, `hyprtail:no_trail`
+  (registered via `Desktop::Rule::windowEffects()->registerEffect()`,
+  exported by the host binary and resolved at plugin-load time, same as
+  `saveBufferForMirror`; cited at `efb5099`). Checked against whichever
+  window currently holds focus (`Desktop::focusState()->window()`), read
+  back via `window->m_ruleApplicator->m_otherProps.props`
+  (`WindowRuleApplicator.hpp:63-72`, "Plugins may read this" — the same
+  mechanism hyprbars uses for its own dynamic effects). Looked up fresh on
+  every call, no cache, no event listener. Suppresses exactly like a
+  pointer constraint: nothing inserted, idle-marker effects end, motion
+  tracking pauses; it is **not** a hard draw-gate (see below).
+- **Session lock is the only hard draw-gate.** It's the one suppress
+  condition that also zeroes the path layer's drawn box outright
+  (`runLifecycle`'s `!locked &&` check), so the trail disappears
+  immediately. Pointer constraint and the app rule only stop the *source*:
+  points already in the ring keep aging and fading over `fade_ms` on their
+  own, same as a pointer that simply stopped moving. Idle/quad-style
+  effects, which have no buffered history, end immediately under all three
+  conditions (gated directly on the shared `suppressed()` predicate).
 - **Teleportation/warps: break vs. connect.** **Break the polyline
   connection** (pre-jump points keep aging/fading independently, the next
   point starts a fresh unconnected segment):

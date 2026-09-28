@@ -160,6 +160,49 @@ monitor change, a dispatcher-driven warp, etc.):
 Some warps (a handful of internal call paths, e.g. the pointer-warp
 protocol) always connect regardless of this setting.
 
+## Per-app suppression
+
+Not a config key: a dynamic [window rule](https://wiki.hypr.land/Configuring/Window-Rules/)
+effect, `hyprtail:no_trail`, that suppresses the trail while the rule's
+window holds focus.
+
+```
+# native
+windowrule {
+    name = mpv-no-trail
+    match:class = ^(mpv)$
+    hyprtail:no_trail = true
+}
+```
+
+```lua
+-- Lua
+hl.window_rule({ match = { class = "^(mpv)$" }, ["hyprtail:no_trail"] = true })
+```
+
+Value parsing is its own, permissive rule, not the same as a shader `bool`
+parameter: `true`, `1`, `yes` or `on` (case-insensitive) suppress; anything
+else — `false`, empty, a typo, or the rule simply absent — does not, and
+never reports an error.
+
+- **Focus-based, not pointer-based.** The rule is checked against whichever
+  window currently holds input focus, not whatever's under the pointer.
+  This diverges from expectations under `follow_mouse 2`/`3` (focus follows
+  the pointer, possibly across monitors): a window can be under the cursor
+  without holding focus, or vice versa near an edge.
+- **Fades, doesn't hard-clear.** Like a pointer constraint, this only stops
+  new points from being recorded; a trail remnant already in the buffer can
+  stay visible for up to `fade_ms` after focus moves to a suppressed app.
+  Idle-style effects end immediately (they have no buffered history to
+  decay).
+- **Unloading hyprtail.** The effect is registered while hyprtail is loaded
+  and unregistered when it unloads. If a `hyprtail:no_trail` rule is still
+  configured at that point, the next rule (re)evaluation reports an
+  unknown-effect error (native config: `"unknown effect
+  'hyprtail:no_trail'"`; Lua: `"unknown field 'hyprtail:no_trail'"`) —
+  harmless, but remove the rule (or reload your config) around an unload if
+  you'd rather not see it.
+
 ## Screen sharing / recording
 
 | Key | Type | Default | Values |

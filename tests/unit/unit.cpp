@@ -53,6 +53,13 @@ static void testParams() {
 
     CHECK(parseValue(eType::INT, "3") && !parseValue(eType::INT, "3.5"));
     CHECK(parseValue(eType::BOOL, "true")->x == 1.0 && parseValue(eType::BOOL, "no")->x == 0.0 && !parseValue(eType::BOOL, "maybe"));
+
+    // ruleTruthy: true/1/yes/on (case-insensitive) suppress; everything else,
+    // including false/empty/garbage, doesn't -- and never fails.
+    CHECK(ruleTruthy("true") && ruleTruthy("1") && ruleTruthy("yes") && ruleTruthy("on"));
+    CHECK(ruleTruthy("TRUE") && ruleTruthy("Yes") && ruleTruthy("ON") && ruleTruthy("  true  "));
+    CHECK(!ruleTruthy("false") && !ruleTruthy("0") && !ruleTruthy("no") && !ruleTruthy("off"));
+    CHECK(!ruleTruthy("") && !ruleTruthy("maybe") && !ruleTruthy("truee"));
     auto v = parseValue(eType::VEC2, "1.5,-2");
     CHECK(v && v->x == 1.5 && v->y == -2.0);
     CHECK(!parseValue(eType::VEC2, "1.5"));

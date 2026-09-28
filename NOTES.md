@@ -636,6 +636,57 @@ Built, not yet run in any compositor. SPEC §13.1-13.6 and §13.16 have the what
   `checkEnum`) is CPU-only, host-test-only like phases 3, 4 and the rest
   of this one.
 
+## Per-app suppression (cited at efb5099)
+
+A third suppress condition, alongside session lock and pointer constraint:
+a dynamic window-rule effect, `hyprtail:no_trail`, checked against the
+focused window.
+
+- **Mechanism, confirmed via `nm -D` on the installed host binary and
+  direct source reads:** `Desktop::Rule::windowEffects()->registerEffect()`
+  / `unregisterEffect()` (`external/Hyprland/src/desktop/rule/effect/EffectContainer.hpp:28-49`,
+  wrapped by `WindowRuleEffectContainer.hpp:1-83`) are exported dynamic
+  symbols (`T Desktop::Rule::windowEffects()`, `W …IEffectContainer<eWindowRuleEffect>
+  ::registerEffect/unregisterEffect`), resolved by the plugin `.so` at load
+  time the same way `saveBufferForMirror` is. A window's current value for
+  a registered dynamic effect lives in
+  `window->m_ruleApplicator->m_otherProps.props` (a
+  `storageType -> SCustomPropContainer{idx, propMask, effect}` map);
+  `WindowRuleApplicator.hpp:63-72`'s own comment says "Plugins may read
+  this." `Desktop::focusState()->window()` (also exported) gives the
+  currently focused window.
+- **Precedent:** hyprbars registers three of its own dynamic effects
+  (`hyprbars:no_bar`, `:bar_color`, `:title_color`) exactly this way —
+  `registerEffect()` once in `PLUGIN_INIT` (`hyprland-plugins/hyprbars/main.cpp:204-206`),
+  read via `m_otherProps.props.at(idx)->effect` (`barDeco.cpp:641-646`),
+  `unregisterEffect()` in `PLUGIN_EXIT` (`main.cpp:276-278`). Both native
+  windowrule blocks and the Lua `hl.window_rule({...})`/exec-rule tables
+  resolve an unrecognized key against `windowEffects()->get(key)` before
+  erroring (`LuaBindingsConfigRules.cpp:1242-1258`,
+  `LuaBindingsInternal.cpp:533-545`), so no plugin-side config parsing is
+  needed for either config surface.
+- **Design decision: no cache, no event listener.** The original proposal
+  (research turn) cached a bool, refreshed on `window.active`/
+  `window.updateRules` events (`EventBus.hpp:84,91`). Dropped: the
+  per-render lookup (one `focusState()` call, one hashmap lookup) is cheap
+  enough to just do fresh every render, and `sampleSource`'s existing
+  `pendingBreak = true` (set every call while suppressed, not just on a
+  transition) already produces the right behavior on both edges without
+  any explicit transition tracking.
+- **Design decision: fades like pointer constraint, not hard-clear like
+  lock.** Considered making the app rule hard-gate the path layer's drawn
+  box the way session lock does. Rejected: it would diverge the app rule
+  from pointer constraint's existing (unchanged) behavior for no strong
+  reason, and touches `runLifecycle`'s per-layer draw gate, a wider blast
+  radius than necessary. Session lock stays the only hard draw-gate; SPEC
+  §7 states this explicitly now.
+- **Own value parser** (`params::ruleTruthy`, `Params.cpp`): deliberately
+  not `params::parseValue(eType::BOOL, …)`, which is strict (errors on
+  anything but `true`/`false`/`1`/`0`/`yes`/`no`) and belongs to the
+  shader-param contract, a different surface with different failure
+  semantics (a bad shader param is a config error; a bad/missing rule
+  value should just mean "not suppressed," silently).
+
 ## Open questions
 
 - [x] Hyprland commit to pin: `efb5099` (v0.56.2, host package)
@@ -648,3 +699,15 @@ Built, not yet run in any compositor. SPEC §13.1-13.6 and §13.16 have the what
 - [ ] **Host freezes** (flipped transform; fullscreen game start). Not isolated; see "Freeze analysis". Plugin hardening in, no fix claimed.
 - [ ] Cursor-warp tool for the visual test harness (partly answered: `hl.dsp.cursor.move({ x = X, y = Y })` via `hyprctl dispatch`, field names from `LuaBindingsDispatchers.cpp:77-85`, used by the smoke test): `hyprctl dispatch movecursor` is unreliable under the Lua provider (needs the `eval`/`hl.dsp.movecursor` form, field names unconfirmed), `wlrctl pointer move` didn't work in first attempt (likely wrong `WAYLAND_DISPLAY`), neither fully resolved. Not urgent given manual drag + `cursorpos_trace.sh` already gave a usable result, but will matter once scripting the stage-4/5 validation shaders.
 - [ ] `hyprctl hyprtail` lifecycle line (`Status.cpp:75`) is gated on `topology == "quad"` by hand (path: fade+reach; quad: fade+start+duration+reach), matching which fields `ribbon.vert`/`ring.frag` actually read. Worth revisiting: key the displayed fields off which reserved params (`shader::reservedParams()`, `ShaderSource.cpp:333-341`) a layer's shader pragma actually declares as used, rather than hardcoding per-topology in `Status.cpp`, so the status output stays correct automatically as shader capabilities change (e.g. a future path shader that does read `duration_ms`, or a quad variant that doesn't). Not blocking; `reservedParams()` currently marks all three (`fade_ms`/`start_ms`/`duration_ms`) `uniform=true` unconditionally for both topologies, so there's no existing per-shader "which reserved params does this program use" signal to key off yet — would need one added to `SProgramInfo`/`ShaderSlot` first.
+- [ ] **Backlog: "window under pointer" mode for per-app suppression**, as an
+  alternative or addition to the focus-based `hyprtail:no_trail` rule.
+  Not investigated past a first pass: no `vectorToWindowUnified()`/`windowAt()`-
+  style Compositor helper was found at `efb5099` in the areas checked
+  (`Compositor.hpp`); would need a proper search before committing to an
+  approach, plus a per-render window-under-cursor query (continuous, not
+  event-driven, since the pointer moves independently of any window event).
+  Deprioritized: the trail already follows the pointer regardless of window
+  focus (SPEC §7), so a focus-based rule was judged the better fit for the
+  stated per-app use case (suppress over a specific app you're using), and
+  hover mode would mainly matter for a narrower case (suppress over an
+  unfocused window the pointer happens to be crossing) that hasn't come up.

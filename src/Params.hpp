@@ -54,6 +54,12 @@ namespace hyprtail::params {
     std::expected<void, std::string>      checkRange(const SDecl& decl, const SValue& v);
     std::string                           format(const SValue& v);
 
+    // Window-rule effect value truthiness (SPEC §7): true/1/yes/on
+    // (case-insensitive) suppress; anything else, including false, empty, or
+    // unset, does not. Never fails, unlike parseValue(BOOL) -- a garbled or
+    // missing rule value simply doesn't suppress, no warning.
+    bool                                   ruleTruthy(std::string_view text);
+
     // Arguments of a param pragma: "<type> <name> <default> [<min> <max>]".
     std::expected<SDecl, std::string>     parseDecl(std::string_view args);
 

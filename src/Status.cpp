@@ -68,6 +68,8 @@ namespace hyprtail::status {
         out += std::format("  source: {}/{} points, generation {}, pending break {}, warp {}, pointer still for {:.0f} ms{}\n", s.source.nodes, s.source.capacity,
                            s.source.generation, s.source.pendingBreak ? "yes" : "no", s.source.warpMode, s.source.stillMs,
                            s.source.gpuFailed ? ", NODE BUFFER FAILED (see errors.log)" : "");
+        out += std::format("  suppress: locked {}, constrained {}, app rule {}\n", s.suppress.locked ? "yes" : "no", s.suppress.constrained ? "yes" : "no",
+                           s.suppress.appRule ? "yes" : "no");
 
         for (const auto& l : s.layers) {
             const char* state = l.disabled ? "DISABLED (see errors.log)" : !l.enabled ? "off" : l.resolved ? "on" : "on, not compiled yet";
@@ -111,6 +113,7 @@ namespace hyprtail::status {
         out += std::format(R"("source": {{"nodes": {}, "capacity": {}, "generation": {}, "pendingBreak": {}, "warp": "{}", "gpuFailed": {}, "stillMs": {:.1f}}}, )",
                            s.source.nodes, s.source.capacity, s.source.generation, b(s.source.pendingBreak), esc(s.source.warpMode), b(s.source.gpuFailed),
                            s.source.stillMs);
+        out += std::format(R"("suppress": {{"locked": {}, "constrained": {}, "appRule": {}}}, )", b(s.suppress.locked), b(s.suppress.constrained), b(s.suppress.appRule));
 
         out += R"("layers": [)";
         for (size_t i = 0; i < s.layers.size(); ++i) {

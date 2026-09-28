@@ -51,6 +51,12 @@ namespace hyprtail::status {
             double      stillMs      = 0.0;
         } source;
 
+        // Suppress conditions (SPEC §7): session lock, pointer constraint,
+        // and the focused window's hyprtail:no_trail rule.
+        struct {
+            bool locked = false, constrained = false, appRule = false;
+        } suppress;
+
         std::vector<SLayer>   layers;
         std::vector<SMonitor> monitors;
         diag::SStats          diag;

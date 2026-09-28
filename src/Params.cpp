@@ -152,6 +152,13 @@ namespace hyprtail::params {
         return std::unexpected("unknown type");
     }
 
+    bool ruleTruthy(std::string_view text) {
+        text = trim(text);
+        std::string lower{text};
+        std::ranges::transform(lower, lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return lower == "true" || lower == "1" || lower == "yes" || lower == "on";
+    }
+
     std::expected<void, std::string> checkRange(const SDecl& decl, const SValue& v) {
         if (decl.type != eType::FLOAT && decl.type != eType::INT && decl.type != eType::VEC2)
             return {};
