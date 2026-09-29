@@ -90,6 +90,33 @@
           hyprland = hyprland.packages.${system}.hyprland-with-tests;
           hyprtail = self.packages.${system}.hyprtail;
         };
+
+        # The exact `hyprland` derivation hyprtail is built against (same
+        # pkgsFor), for CI's nm import check: building it here reuses the
+        # plugin's closure instead of building a second Hyprland.
+        inherit (pkgsFor.${system}) hyprland;
       });
+
+      # CI shell (`make test-unit`, `make test-compat`): hyprtail's own build
+      # inputs, which is Hyprland's GCC 16 stdenv (hyprland.stdenv, as in
+      # Hyprland's own devShell), pkg-config resolving hyprland.pc and its
+      # Requires chain, plus glslangValidator for test-unit's GLSL check
+      # (which skips itself if the tool is missing).
+      devShells = eachSystem (
+        system:
+        let
+          pkgs = pkgsFor.${system};
+        in
+        {
+          ci = pkgs.mkShell.override { inherit (pkgs.hyprland) stdenv; } {
+            name = "hyprtail-ci";
+            inputsFrom = [ pkgs.hyprlandPlugins.hyprtail ];
+            packages = [
+              pkgs.pkg-config
+              pkgs.glslang
+            ];
+          };
+        }
+      );
     };
 }

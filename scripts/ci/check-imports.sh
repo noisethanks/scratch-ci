@@ -26,7 +26,8 @@
 # Usage: check-imports.sh <plugin.so> [hyprland-binary]
 #
 # <hyprland-binary> defaults to /usr/bin/Hyprland. CI always passes both
-# args explicitly (the row's own Nix-built result/bin/Hyprland). Run this
+# args explicitly (the row's own Nix-built .Hyprland-wrapped ELF; bin/Hyprland
+# is a wrapper script there). Run this
 # manually with just <plugin.so> after a host Hyprland package upgrade, as
 # a ground-truth check CI can't give you: CI's Hyprland is a Nix build
 # (gcc16Stdenv, no LTO); the host's is Arch's package, built with LTO

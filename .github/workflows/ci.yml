@@ -37,19 +37,46 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Each row carries the `nix ... --override-input` flags that point
+          # our flake's `hyprland` input at that row's ref (same for every
+          # nix build/develop of the test and smoke jobs). `--no-write-lock-file`
+          # because the repo commits no flake.lock.
+          #
+          # Stable pin: v0.56.2's CMakeLists.txt:133 needs `glaze 7...<8`,
+          # but its flake.lock pins a nixpkgs whose glaze is 8.0.0, so the
+          # packaged build falls back to FetchContent, which the Nix sandbox
+          # blocks. Pin nixpkgs to the one v0.56.1's flake.lock uses (glaze
+          # 7.9.0; v0.56.1's nix/default.nix and overlays.nix are identical
+          # to v0.56.2's). Only for this tag: the next stable release gets
+          # its own lock, unpinned. The main and release-branch rows are not
+          # pinned (release-branch: an honest failure there is information).
+          pin_tag="v0.56.2"
+          pin_nixpkgs="github:NixOS/nixpkgs/61b7c44c4073f0b827768aff0049561b5110ea5a"
+
+          row() { # name ref sanitize [nixpkgs]
+            local ov="--override-input hyprland github:hyprwm/Hyprland?ref=$2 --no-write-lock-file"
+            if [ -n "${4:-}" ]; then
+              ov="$ov --override-input hyprland/nixpkgs $4"
+            fi
+            jq -nc --arg name "$1" --arg ref "$2" --argjson sanitize "$3" --arg overrides "$ov" \
+              '{name: $name, ref: $ref, sanitize: $sanitize, overrides: $overrides}'
+          }
+
           stable="$(gh api repos/hyprwm/Hyprland/releases/latest --jq .tag_name)"
           branch="${stable}-b"
 
-          rows="$(jq -nc --arg stable "$stable" '
-            [{name: "stable", ref: $stable, sanitize: false},
-             {name: "main",   ref: "main",   sanitize: true}]')"
+          stable_nixpkgs=""
+          if [ "$stable" = "$pin_tag" ]; then
+            stable_nixpkgs="$pin_nixpkgs"
+          fi
+
+          rows="$(jq -sc . <(row stable "$stable" false "$stable_nixpkgs") <(row main main true))"
 
           # Hyprland's release-branch naming: one `vX.Y.Z-b` branch per
           # patch tag. Only worth a row when it's ahead of the tag itself.
           ahead="$(gh api "repos/hyprwm/Hyprland/compare/${stable}...${branch}" --jq .ahead_by 2>/dev/null || echo 0)"
           if [ "${ahead:-0}" -gt 0 ]; then
-            rows="$(echo "$rows" | jq -c --arg branch "$branch" \
-              '. + [{name: "release-branch", ref: $branch, sanitize: false}]')"
+            rows="$(jq -c --argjson r "$(row release-branch "$branch" false)" '. + [$r]' <<<"$rows")"
           fi
 
           echo "matrix=$rows" >> "$GITHUB_OUTPUT"
@@ -82,39 +109,62 @@ jobs:
         with:
           cache-key-suffix: ${{ matrix.name }}
 
+      # Everything below goes through our flake with the row's overrides
+      # (matrix.overrides, computed in `resolve`), so hyprtail, the dev shell
+      # and the binary the nm check reads all come from one Hyprland closure.
+      # `legacyPackages.hyprland` is the same `hyprland` derivation hyprtail
+      # is built against (flake.nix), so it is built once per row.
       - name: Build Hyprland (${{ matrix.ref }}) via Nix
         id: hyprland
+        env:
+          OVERRIDES: ${{ matrix.overrides }}
         run: |
           set -euo pipefail
-          flake_ref="github:hyprwm/Hyprland?ref=${{ matrix.ref }}"
+          read -ra ov <<<"$OVERRIDES"
 
-          nix build "${flake_ref}#hyprland-with-tests" -L
+          nix build ".#legacyPackages.x86_64-linux.hyprland" -L --out-link hyprland-bin "${ov[@]}"
 
           # Resolved commit SHA, without executing the built binary (repo
           # rule: never run Hyprland in this session/CI).
-          sha="$(nix flake metadata "$flake_ref" --json --refresh | jq -r .locked.rev)"
+          sha="$(nix flake metadata "github:hyprwm/Hyprland?ref=${{ matrix.ref }}" --json --refresh | jq -r .locked.rev)"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo -n "$sha" > current-sha.txt
 
+      # `make all` under hyprlandPlugins.mkHyprlandPlugin (flake.nix): the
+      # default pkg-config mode hyprpm uses, never DEV=1.
       - name: "Build hyprtail (hyprpm mode: default pkg-config, not DEV=1)"
+        env:
+          OVERRIDES: ${{ matrix.overrides }}
         run: |
           set -euo pipefail
-          export PKG_CONFIG_PATH="$PWD/result-dev/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
-          make all
+          read -ra ov <<<"$OVERRIDES"
+          nix build ".#hyprtail" -L --out-link plugin "${ov[@]}"
 
       - name: make test-unit
-        run: make test-unit SANITIZE=${{ matrix.sanitize && '1' || '0' }}
-
-      - name: make test-compat
+        env:
+          OVERRIDES: ${{ matrix.overrides }}
         run: |
           set -euo pipefail
-          export PKG_CONFIG_PATH="$PWD/result-dev/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
-          make test-compat
+          read -ra ov <<<"$OVERRIDES"
+          nix develop ".#ci" "${ov[@]}" -c make test-unit SANITIZE=${{ matrix.sanitize && '1' || '0' }}
 
+      - name: make test-compat
+        env:
+          OVERRIDES: ${{ matrix.overrides }}
+        run: |
+          set -euo pipefail
+          read -ra ov <<<"$OVERRIDES"
+          nix develop ".#ci" "${ov[@]}" -c make test-compat
+
+      # Nix wraps bin/Hyprland (wrapProgram, nix/default.nix wrapRuntimeDeps),
+      # so bin/Hyprland is a shell script; the ELF is bin/.Hyprland-wrapped.
       - name: nm import check
         run: |
+          set -euo pipefail
+          elf="hyprland-bin/bin/.Hyprland-wrapped"
+          [ -f "$elf" ] || elf="hyprland-bin/bin/Hyprland"
           chmod +x scripts/ci/check-imports.sh
-          scripts/ci/check-imports.sh out/hyprtail.so result/bin/Hyprland
+          scripts/ci/check-imports.sh plugin/lib/libhyprtail.so "$elf"
 
       # actions/cache keys are immutable: an existing key can be restored
       # but never overwritten, only ever created fresh. `key:` here
@@ -273,12 +323,14 @@ jobs:
           cache-key-suffix: smoke-${{ matrix.name }}
 
       - name: Build and run the smoke VM (Hyprland ${{ matrix.ref }})
+        env:
+          OVERRIDES: ${{ matrix.overrides }}
         run: |
           set -euo pipefail
+          read -ra ov <<<"$OVERRIDES"
           nix show-config 2>/dev/null | grep -E '^system-features' || true
           nix build ".#legacyPackages.x86_64-linux.smoke" -L \
-            --override-input hyprland "github:hyprwm/Hyprland?ref=${{ matrix.ref }}" \
-            --no-write-lock-file \
+            "${ov[@]}" \
             --extra-substituters "https://hyprland.cachix.org"
 
       # The VM test itself always succeeds once the machine ran, so its logs

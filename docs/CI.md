@@ -6,6 +6,49 @@ backports) the current release branch head — the same way `hyprpm` builds
 it: default pkg-config mode, never `make DEV=1`. It never starts a Hyprland
 instance, nested or otherwise.
 
+## How the test rows build
+
+Every row goes through this repo's flake with the `hyprland` input
+overridden to the row's ref (`overrides` in the matrix, computed once in the
+`resolve` job and reused by the test and smoke jobs):
+
+1. `nix build .#legacyPackages.x86_64-linux.hyprland`: the `hyprland`
+   derivation hyprtail itself is built against, so it is built once per row.
+2. `nix build .#hyprtail`: `make all` under `mkHyprlandPlugin`, the
+   pkg-config mode hyprpm uses.
+3. `nix develop .#ci -c make test-unit` / `make test-compat`: `devShells.ci`
+   is hyprtail's own build inputs (Hyprland's GCC 16 stdenv, pkg-config with
+   `hyprland.pc` and its Requires chain) plus `glslangValidator`.
+4. `scripts/ci/check-imports.sh plugin/lib/libhyprtail.so
+   hyprland-bin/bin/.Hyprland-wrapped`. Nix wraps `bin/Hyprland`
+   (`wrapProgram`, `nix/default.nix`), so `bin/Hyprland` is a shell script and
+   the ELF is `.Hyprland-wrapped`.
+
+`hyprland-with-tests` is only used by the smoke job (`nix/smoke.nix`), which
+needs its compiled-in test binary.
+
+## Stable row: pinned nixpkgs
+
+Hyprland v0.56.2's `CMakeLists.txt:133` requires `glaze 7...<8`, but its
+`flake.lock` pins a nixpkgs where glaze is 8.0.0, so its own Nix build falls
+back to `FetchContent` (a `git clone` of glaze), which the Nix sandbox
+blocks: `error: could not find git for clone of glaze`. Main has no upper
+bound (`CMakeLists.txt:131`), so it is unaffected.
+
+While the latest stable is `v0.56.2`, `resolve` adds
+`--override-input hyprland/nixpkgs github:NixOS/nixpkgs/61b7c44c4073f0b827768aff0049561b5110ea5a`
+to the stable row (`pin_tag`/`pin_nixpkgs` in `ci.yml`). That is the nixpkgs
+v0.56.1's `flake.lock` uses: glaze 7.9.0, and v0.56.1's `nix/default.nix` and
+`nix/overlays.nix` are identical to v0.56.2's. Consequences:
+
+- Nothing upstream built this combination, so the stable row has no Cachix
+  hit and rebuilds Hyprland and its inputs on a cold cache.
+- The pin applies only to that tag. When a newer stable release appears the
+  row is unpinned; delete `pin_tag`/`pin_nixpkgs` once no supported stable
+  needs them. Do not patch the glaze version bound out instead: a build that
+  succeeds against an unsupported glaze is worse than an honest failure.
+- The `release-branch` row is deliberately not pinned.
+
 ## Required check names
 
 Configure these as required status checks on `master` (Settings → Rules →
@@ -39,10 +82,10 @@ it has run cleanly a few times.
 
 | Failure | Usual cause |
 |---|---|
-| `nix build ...#hyprland-with-tests` fails | Upstream Hyprland/its deps don't build at that ref right now — not a hyprtail problem, but worth a comment on the PR either way. |
-| `make all` fails (compile error) | hyprtail's own source references something the pinned headers changed. Update `SPEC.md` §2's pin, fix the break, re-run. |
+| `Build Hyprland` (`nix build ...#legacyPackages...hyprland`) fails | Upstream Hyprland/its deps don't build at that ref right now (or, on the stable row, with the pinned nixpkgs — see "Stable row: pinned nixpkgs") — not a hyprtail problem, but worth a comment on the PR either way. |
+| `Build hyprtail` (`nix build .#hyprtail`) fails (compile error) | hyprtail's own source references something the pinned headers changed. Update `SPEC.md` §2's pin, fix the break, re-run. |
 | `nm import check` fails | The build succeeded but a symbol hyprtail calls into (or hooks by address) is no longer exported the same way by the built Hyprland binary — a silent ABI break that would only otherwise show up when a user runs `hyprpm update` and loads the plugin. The failure output lists the missing (demangled) symbol names. |
-| `make test-unit` fails | A real regression in the Hyprland-free logic (params, shader preprocessing, the node ring) — same as a local `make test-unit` failure. |
+| `make test-unit` fails | A real regression in the Hyprland-free logic (params, shader preprocessing, the node ring) — same as a local `make test-unit` failure. `devShells.ci` provides `glslangValidator`, so the GLSL syntax/link checks run in CI (locally they skip if the tool is missing). |
 | `flake-check` fails | `flake.nix` itself, independent of the matrix — check it still matches `hyprlandPlugins.mkHyprlandPlugin`'s current shape in nixpkgs. |
 
 The job summary on every run (pass or fail) lists files changed in
@@ -63,7 +106,8 @@ upstream). It never runs a Hyprland on the runner itself, only inside the VM.
   (Settings -> Secrets and variables -> Actions -> Variables). Unset or
   anything else and the job is skipped.
 - **What runs:** `nix build .#legacyPackages.x86_64-linux.smoke` with the
-  `hyprland` flake input overridden to the row's ref. `nix/smoke.nix` builds
+  `hyprland` flake input overridden to the row's ref (and the stable row's
+  nixpkgs pin, same `matrix.overrides` as the test job). `nix/smoke.nix` builds
   hyprtester with the smoke test compiled in (only the `hyprtester` target,
   not Hyprland), builds hyprtail against the same Hyprland (`make all`, the
   pkg-config path, so `src/compat.hpp` is exercised per row), and runs
@@ -93,7 +137,7 @@ upstream). It never runs a Hyprland on the runner itself, only inside the VM.
 `scripts/ci/check-imports.sh` accepts an optional second argument
 (`check-imports.sh out/hyprtail.so [hyprland-binary]`, default
 `/usr/bin/Hyprland`). CI always passes both explicitly, pointed at the
-row's own Nix-built `result/bin/Hyprland` (`nix/default.nix`:
+row's own Nix-built `hyprland-bin/bin/.Hyprland-wrapped` (`nix/default.nix`:
 `gcc16Stdenv`, no LTO — `BUILT_WITH_NIX = true` build type
 `RelWithDebInfo`, not the host's build). The host's installed Hyprland
 (CachyOS package) is built with LTO (SPEC §2 pin note).
