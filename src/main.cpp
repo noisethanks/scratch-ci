@@ -24,7 +24,6 @@
 #include <managers/fullscreen/FullscreenController.hpp>
 #include <managers/SessionLockManager.hpp>
 #include <event/EventBus.hpp>
-#include <desktop/view/Window.hpp>
 #include <desktop/state/FocusState.hpp>
 #include <state/MonitorState.hpp>
 #include <output/Monitor.hpp>
@@ -33,6 +32,7 @@
 #include <helpers/Color.hpp>
 #include <debug/log/Logger.hpp>
 
+#include "compat.hpp"
 #include "Config.hpp"
 #include "rev.hpp"
 #include "CrashGuard.hpp"
@@ -110,7 +110,7 @@ static CHyprSignalListener                                   s_monitorRemovedLis
 static CHyprSignalListener                                   s_monitorDestroyListener;
 static CHyprSignalListener                                   s_layoutChangedListener;
 static CHyprSignalListener                                   s_cursorShapeListener;
-static SP<SHyprCtlCommand>                                   s_statusCommand;
+static hyprtail::compat::StatusCommand                        s_statusCommand;
 static hyprtail::cfg::SValues                                s_config;
 static hyprtail::CFileWatch                                  s_fileWatch;
 static std::unordered_map<Monitor::CMonitor*, SMonitorFrame> s_monFrame;
@@ -611,8 +611,7 @@ static void onRenderStageInternal(eRenderStage stage) {
 
     ++s_frames;
     if (s_frames <= 3 || s_frames % 600 == 0)
-        Log::logger->log(Log::INFO, "[hyprtail] render #{} monitor={} via {}", s_frames, pMonitor->m_name,
-                         mf.handledSerial == mf.renderSerial ? "cursor hook" : "last-moment fallback");
+        hyprtail::compat::log(Log::INFO, "render #{} monitor={} via {}", s_frames, pMonitor->m_name, mf.handledSerial == mf.renderSerial ? "cursor hook" : "last-moment fallback");
 
     // Fallback: the cursor hook didn't run for this render, i.e. the cursor is
     // hidden (Renderer.cpp:2212). Nothing is drawn above us then, so order
@@ -768,7 +767,7 @@ static void onLayoutChanged() {
             for (auto& l : s_preset->layers)
                 l->damage.damagePrev(m);
         }
-        Log::logger->log(Log::INFO, "[hyprtail] monitor layout changed, trail cleared");
+        hyprtail::compat::log(Log::INFO, "monitor layout changed, trail cleared");
     });
 }
 
@@ -905,8 +904,9 @@ static void kickRender() {
 
 // Shader paths of a layer at this position in the active preset: a
 // `layerN_vertex`/`layerN_fragment` override (SPEC §13.7, N = 1-based) wins
-// per stage if set, else the active preset's own per-layer shader (a
-// built-in name, or the path it resolved against its own directory).
+// per stage if set, else the active preset's own per-layer shader ("" for
+// a prefab: shader, else the absolute path it resolved to). Both resolve
+// relative paths against the hyprtail config root (cfg::resolveShaderPath).
 static std::pair<std::string, std::string> layerShaderPaths(size_t index) {
     std::pair<std::string, std::string> fromPreset;
     if (index < s_preset->activePreset.layers.size())
@@ -1056,8 +1056,8 @@ static hyprtail::status::SSnapshot statusSnapshot() {
     s.suppress.constrained = pointerConstrained();
     s.suppress.appRule     = appRuleSuppressed();
     if (const auto w = Desktop::focusState()->window()) {
-        s.suppress.focusedClass = w->m_class;
-        s.suppress.focusedTitle = w->m_title;
+        s.suppress.focusedClass = hyprtail::compat::windowClass(*w);
+        s.suppress.focusedTitle = hyprtail::compat::windowTitle(*w);
     }
 
     const double nowMs = msSinceEpoch(Time::steadyNow());
@@ -1117,17 +1117,19 @@ static hyprtail::status::SSnapshot statusSnapshot() {
     return s;
 }
 
-// `hyprctl hyprtail` (-j for JSON). Registered as an exact command: HyprCtl
-// matches exact names first (HyprCtl.cpp:2101-2109) and treats an empty
-// reply as "unknown request" (:2123-2124), so this never returns "".
-static std::string statusCommand(eHyprCtlOutputFormat format, std::string) {
+// `hyprctl hyprtail` (-j for JSON), an exact-match command (compat.hpp). The
+// reply is never empty: the pin treats an empty reply as "unknown request"
+// (HyprCtl.cpp:2123-2124), main only answers that when nothing matched
+// (ipc/s1/S1.cpp:107), and an empty reply would look like a failure to the
+// caller either way.
+static std::string statusCommand(bool json) {
     std::string out;
     const bool  ok = hyprtail::diag::guard("status-command", [&] {
         const auto snap = statusSnapshot();
-        out             = format == eHyprCtlOutputFormat::FORMAT_JSON ? hyprtail::status::json(snap) : hyprtail::status::text(snap);
+        out             = json ? hyprtail::status::json(snap) : hyprtail::status::text(snap);
     });
     if (!ok || out.empty())
-        return format == eHyprCtlOutputFormat::FORMAT_JSON ? R"({"error": "hyprtail status failed, see errors.log"})" : "hyprtail status failed, see errors.log";
+        return json ? R"({"error": "hyprtail status failed, see errors.log"})" : "hyprtail status failed, see errors.log";
     return out;
 }
 
@@ -1151,7 +1153,7 @@ static PLUGIN_DESCRIPTION_INFO pluginInit() {
     const uint64_t     seedBase = (static_cast<uint64_t>(rd()) << 32) ^ rd();
 
     // `layers` starts empty: applyConfig() below queues the configured
-    // preset (default "subtle"), and the first prepareLayers() (the first
+    // preset (default "prefab:subtle"), and the first prepareLayers() (the first
     // render, GL current) builds it -- the same path a later preset switch
     // takes, see applyPendingState().
     s_preset = makeUnique<SPreset>(s_config.capacity, seedBase);
@@ -1247,12 +1249,11 @@ static PLUGIN_DESCRIPTION_INFO pluginInit() {
     s_monitorDestroyListener = Event::bus()->m_events.monitor.destroyMon.listen([](PHLMONITOR m) { onMonitorGone(m); });
     s_layoutChangedListener  = Event::bus()->m_events.monitor.layoutChanged.listen([] { onLayoutChanged(); });
 
-    s_statusCommand = HyprlandAPI::registerHyprCtlCommand(s_handle, SHyprCtlCommand{.name = "hyprtail", .exact = true, .fn = statusCommand});
+    s_statusCommand = hyprtail::compat::registerStatusCommand(s_handle, "hyprtail", statusCommand);
     if (!s_statusCommand)
         hyprtail::diag::report(eSeverity::WARN, "hyprctl", "could not register the `hyprctl hyprtail` status command");
 
-    Log::logger->log(Log::INFO, "[hyprtail] {} loaded, cursor hook {}, warp hook {}", HYPRTAIL_REV, s_cursorHook ? "active" : "unavailable",
-                     s_warpHook ? "active" : "unavailable");
+    hyprtail::compat::log(Log::INFO, "{} loaded, cursor hook {}, warp hook {}", HYPRTAIL_REV, s_cursorHook ? "active" : "unavailable", s_warpHook ? "active" : "unavailable");
     HyprlandAPI::addNotification(s_handle, std::format("[hyprtail] loaded ({})", HYPRTAIL_REV), CHyprColor{0.2f, 1.0f, 0.2f, 1.0f}, 3000);
 
     // Damage the primary monitor to schedule an immediate first frame.
@@ -1365,7 +1366,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
 }
 
 APICALL EXPORT void PLUGIN_EXIT() {
-    hyprtail::diag::guard("exit", [] { Log::logger->log(Log::INFO, "[hyprtail] unloading after {} renders", s_frames); });
+    hyprtail::diag::guard("exit", [] { hyprtail::compat::log(Log::INFO, "unloading after {} renders", s_frames); });
     s_frames = 0;
     teardown();
 }

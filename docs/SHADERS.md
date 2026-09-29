@@ -5,9 +5,19 @@ declare the plugin's attributes or uniforms yourself — a prelude the loader
 injects does that. This document covers everything the prelude and loader
 provide.
 
-A **layer** is one vertex shader (geometry) + one fragment shader (shading)
-+ its own parameter values. A preset stacks up to 4 layers; see CONFIG.md
-for how a preset picks which shaders a layer uses.
+A **layer** is one draw layer of a preset (`trail` and `idle` in the shipped
+presets): one vertex shader (geometry) + one fragment shader (shading) + its
+own parameter values. A preset stacks up to 4 layers; see CONFIG.md for how
+a preset picks which shaders a layer uses. "Layer" means only that. The
+prelude, below, is not made of layers.
+
+**The prelude** is the text the loader puts in place of your
+`#pragma hyprtail contract 2` line. It is assembled from pieces that are
+specific to a **stage** (vertex or fragment) and, for the vertex stage, to a
+**topology** (`path` or `quad`): a common piece (precision, built-in
+uniforms) for both stages, plus the fragment piece for a fragment shader, or
+the vertex piece and then the `path` or `quad` piece for a vertex shader.
+The prelude is internal (`shaders/prelude/`); don't copy or edit it.
 
 Two topologies are currently implemented: `path` (the trail ribbon) and
 `quad` (a fixed square around the pointer, for idle/presence effects).
@@ -238,13 +248,21 @@ correctness across displays matters.
 GLSL ES has no `#include`; the loader resolves it before compiling:
 
 ```glsl
-#include "hyprtail/ribbon.glsl"   // built-in prefab (see below)
-#include "helpers.glsl"          // relative to the including file
+#include "helpers/ribbon.glsl"   // built-in helper (see below), immutable
+#include "common.glsl"           // your own file, relative to the including file
 #include "~/shaders/common.glsl" // absolute / ~-expanded also work
 ```
 
-- A built-in shader (one of hyprtail's own) may only include `hyprtail/`
-  prefabs, not arbitrary paths.
+- `helpers/<name>` is always hyprtail's embedded, immutable helper. Any other
+  path is your own file. This is the same rule as `prefab:` in presets
+  (CONFIG.md): a prefix means embedded, anything else is yours.
+- To edit a helper, copy it from `shaders/helpers/` in the repository and
+  include your copy by a relative path that does **not** start with the bare
+  `helpers/` prefix, e.g. `#include "./helpers/ribbon.glsl"` (or put the copy
+  somewhere else). A plain `"helpers/ribbon.glsl"` is always the built-in,
+  even if a `helpers/` directory exists next to your shader.
+- A built-in shader (one of hyprtail's own) may only include `helpers/`
+  built-ins, not arbitrary paths.
 - Each file is included at most once per compile; a cycle is an error;
   include depth is capped at 16.
 - An included file must not itself contain `#version`, `contract`, or
@@ -255,12 +273,12 @@ GLSL ES has no `#include`; the loader resolves it before compiling:
   already sets precision, so this is automatic once you put your includes
   after the contract pragma.
 
-## Prefab library
+## Helper library
 
 Function-only helpers, `ht_`-prefixed, no uniforms — pass everything as
 arguments. `#include` the ones you want.
 
-**`hyprtail/ribbon.glsl`** (vertex or fragment):
+**`helpers/ribbon.glsl`** (vertex or fragment):
 
 ```glsl
 const float HT_EPS = 1e-3;
@@ -277,14 +295,14 @@ vec2 ht_jointOffset(vec2 dirIn, vec2 dirOut, float hw, float miterLimit);
 // directions, half-width hw, clamped to miterLimit * hw.
 ```
 
-**`hyprtail/fade.glsl`** (vertex or fragment):
+**`helpers/fade.glsl`** (vertex or fragment):
 
 ```glsl
 float ht_life(float age, float fadeMs); // 1 at age 0, linearly to 0 at fadeMs
 bool  ht_faded(float age, float fadeMs);
 ```
 
-**`hyprtail/sdf.glsl`** (fragment only — uses `fwidth`, won't compile in a
+**`helpers/sdf.glsl`** (fragment only — uses `fwidth`, won't compile in a
 vertex shader):
 
 ```glsl
@@ -320,9 +338,9 @@ float ht_coverage(float signedDistance); // ~1px antialiased 0..1 coverage
 
 ## Worked example: a solid-color fragment shader
 
-The simplest useful custom shader: replace `classic`'s speed-tinted
+The simplest useful custom shader: replace `prefab:classic`'s speed-tinted
 fragment shader with a single flat color, keeping the stock ribbon
-geometry (`classic/ribbon.vert`) unchanged.
+geometry (`prefab:ribbon.vert`) unchanged.
 
 ```glsl
 #version 300 es
@@ -371,12 +389,13 @@ Line by line:
 - `ht_fragColor = vec4(color.rgb * a, a)`: premultiplied output, as
   required.
 
-To use it: put this file next to a preset's `preset.conf` (e.g.
-`~/.config/hypr/hyprtail/presets/myPreset/solid.frag`), then in that
-`preset.conf`:
+To use it: save it as `~/.config/hypr/hyprtail/solid.frag`. Then either
+write a preset of your own (CONFIG.md's quickstart: copy `presets/subtle.conf`
+to `~/.config/hypr/hyprtail/presets/mine.conf`, set `preset = "mine"`) and in
+it change:
 
 ```
-trail:fragment = solid.frag
+trail:fragment = solid.frag        # bare = your file, relative to ~/.config/hypr/hyprtail/
 trail:color    = rgba(ff2266ff)
 ```
 

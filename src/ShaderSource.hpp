@@ -28,9 +28,11 @@
 //   #pragma hyprtail padding <expr>
 //                                this program's reach past the node
 //                                positions (quad: past the anchor)
-//   #include "hyprtail/<name>"   built-in prefab library (embedded)
+//   #include "helpers/<name>"    built-in helper library (embedded, immutable)
 //   #include "<path>"            relative to the including file; absolute and
-//                                ~/ paths also work
+//                                ~/ paths also work. Your own copy of a
+//                                helper is "./helpers/<name>": the bare
+//                                "helpers/" prefix is always the built-in.
 //
 // Each file is included at most once; cycles are errors; depth is limited.
 // Included files must not contain #version, contract or topology. Every
@@ -73,12 +75,13 @@ namespace hyprtail::shader {
         std::vector<SPadding>              padding;
     };
 
-    // Built-in shaders (the classic preset), embedded at build time, by name,
-    // e.g. "classic/ribbon.vert". Empty view if unknown.
+    // Built-in shaders (the prefab presets'), embedded at build time, by
+    // name, e.g. "ribbon.vert". Presets address them as "prefab:<name>".
+    // Empty view if unknown.
     std::string_view builtin(std::string_view name);
 
     // Preprocess a main shader. `name` is for messages. `path` empty means a
-    // built-in shader: it may only include hyprtail/ prefabs.
+    // built-in shader: it may only include helpers/ built-ins.
     std::expected<SSource, std::string> preprocess(std::string_view mainText, const std::string& name, const std::filesystem::path& path, eStage stage);
 
     // Read and preprocess a shader file.

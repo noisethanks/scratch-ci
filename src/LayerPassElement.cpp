@@ -7,6 +7,7 @@
 #include <render/OpenGL.hpp>
 #include <output/Monitor.hpp>
 
+#include "compat.hpp"
 #include "Diagnostics.hpp"
 
 using hyprtail::diag::eSeverity;
@@ -43,14 +44,13 @@ bool CNodeBuffer::ensure(size_t ringCapacity, std::string& error) {
     for (int i = 0; i < 16 && glGetError() != GL_NO_ERROR; ++i) {}
 
     glBindVertexArray(m_vao);
-    // Raw bind is fine at efb5099: there is no array-buffer cache, core binds
-    // raw too (OpenGL.cpp:1547, Shader.cpp:236). Later main adds
-    // CHyprOpenGLImpl::bindArrayBuffer(); use that if the pin moves past it.
-    glBindBuffer(GL_ARRAY_BUFFER, m_vbo);
+    // Through compat: main caches the array-buffer binding (OpenGL.cpp:2455),
+    // the pin doesn't and core binds raw there (OpenGL.cpp:1547, Shader.cpp:236).
+    hyprtail::compat::bindArrayBuffer(m_vbo);
     glBufferData(GL_ARRAY_BUFFER, m_vboNodes * NODE_STRIDE, nullptr, GL_DYNAMIC_DRAW);
     if (const GLenum err = glGetError(); err != GL_NO_ERROR) {
         glBindVertexArray(0);
-        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        hyprtail::compat::bindArrayBuffer(0);
         error = std::format("glBufferData for {} bytes failed, GL error 0x{:x}", m_vboNodes * NODE_STRIDE, err);
         destroy();
         return false;
@@ -86,7 +86,7 @@ bool CNodeBuffer::ensure(size_t ringCapacity, std::string& error) {
     bits(13, 3);
 
     glBindVertexArray(0);
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    hyprtail::compat::bindArrayBuffer(0);
 
     m_uploadedGen = UINT64_MAX;
     return true;
@@ -109,15 +109,15 @@ void CNodeBuffer::upload(const CTrailRing& ring) {
 
     const size_t n = std::min(m_ordered.size(), m_vboNodes);
 
-    glBindBuffer(GL_ARRAY_BUFFER, m_vbo);
+    hyprtail::compat::bindArrayBuffer(m_vbo);
     glBufferSubData(GL_ARRAY_BUFFER, 0, n * NODE_STRIDE, m_ordered.data());
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    hyprtail::compat::bindArrayBuffer(0);
 
     m_uploadedGen = ring.generation();
 }
 
 void CNodeBuffer::destroy() {
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    hyprtail::compat::bindArrayBuffer(0);
 
     if (m_vao)
         glDeleteVertexArrays(1, &m_vao);

@@ -11,6 +11,7 @@
 #include <set>
 #include <sstream>
 
+#include "Config.hpp"
 #include "Diagnostics.hpp"
 #include "ShaderSource.hpp"
 
@@ -126,10 +127,10 @@ namespace hyprtail::preset {
 
     namespace {
         constexpr unsigned char SUBTLE_CONF[] = {
-#embed "../presets/subtle/preset.conf"
+#embed "../presets/subtle.conf"
         };
         constexpr unsigned char CLASSIC_CONF[] = {
-#embed "../presets/classic/preset.conf"
+#embed "../presets/classic.conf"
         };
 
         template <size_t N>
@@ -146,28 +147,12 @@ namespace hyprtail::preset {
             return it == m.end() ? std::string_view{} : it->second;
         }
 
-        std::filesystem::path expandHome(const std::string& p) {
-            if (p == "~" || p.starts_with("~/")) {
-                const char* home = std::getenv("HOME");
-                if (home && home[0] == '/')
-                    return std::filesystem::path{home} / p.substr(p.size() > 1 ? 2 : 1);
-            }
-            return p;
-        }
-
-        // $XDG_CONFIG_HOME/hypr/hyprtail/presets, fallback ~/.config/hypr/....
-        std::filesystem::path presetsBaseDir() {
-            const char*           xdg  = std::getenv("XDG_CONFIG_HOME");
-            const char*           home = std::getenv("HOME");
-            std::filesystem::path base;
-            if (xdg && xdg[0] == '/')
-                base = std::filesystem::path{xdg} / "hypr";
-            else if (home && home[0] == '/')
-                base = std::filesystem::path{home} / ".config" / "hypr";
-            else
-                return {};
-            return base / "hyprtail" / "presets";
-        }
+        // Two explicit namespaces, used for preset names and for the shader
+        // stages inside a manifest alike: "prefab:<name>" is the embedded
+        // built-in, never a file; a bare "<name>" is the user's own, never a
+        // built-in. (Shader includes follow the same rule: "helpers/<name>"
+        // is the embedded helper, a path is a file. See ShaderSource.cpp.)
+        constexpr std::string_view PREFAB_PREFIX = "prefab:";
 
         std::expected<std::string, std::string> readFile(const std::filesystem::path& path) {
             std::ifstream in(path, std::ios::binary);
@@ -178,39 +163,48 @@ namespace hyprtail::preset {
             return ss.str();
         }
 
-        // Resolves one shader stage of one layer: a recognized shader::builtin()
-        // name, or (user presets only, presetDir non-empty) a path relative to
-        // the preset's own directory. Always returns a safe built-in identity
-        // (`safeBuiltin`) alongside a path override, so CShaderSlot's
-        // constructor -- which unconditionally looks up the built-in text --
-        // never sees an unresolvable name (a bad built-in reference is instead
-        // caught structurally, right here, before any CLayer/CShaderSlot exists).
+        // Resolves one shader stage of one layer: "prefab:<name>" (a
+        // shader::builtin() name), or -- user presets only (allowPaths) -- a
+        // path, relative ones against the hyprtail config root, same as
+        // layerN_vertex/layerN_fragment (cfg::resolveShaderPath). Always
+        // returns a safe built-in identity (`safeBuiltin`) alongside a path
+        // override, so CShaderSlot's constructor -- which unconditionally
+        // looks up the built-in text -- never sees an unresolvable name (a
+        // bad prefab reference is instead caught structurally, right here,
+        // before any CLayer/CShaderSlot exists).
         std::expected<std::pair<std::string, std::string>, std::string> resolveStage(const std::string& layerName, const std::map<std::string, std::string>& keys,
-                                                                                     const std::filesystem::path& presetDir, const char* stageKey, const char* safeBuiltin) {
+                                                                                     bool allowPaths, const char* stageKey, const char* safeBuiltin) {
             const auto it = keys.find(stageKey);
             if (it == keys.end())
                 return std::unexpected(std::format("layer \"{}\" needs \"{}:{}\"", layerName, layerName, stageKey));
             const std::string& value = it->second;
-            if (!shader::builtin(value).empty())
-                return std::pair<std::string, std::string>{value, ""};
-            if (presetDir.empty())
-                return std::unexpected(std::format("layer \"{}\": \"{}\" isn't a recognized built-in shader", layerName, value));
 
-            std::filesystem::path p = expandHome(value);
-            if (p.is_relative())
-                p = presetDir / p;
+            if (value.starts_with(PREFAB_PREFIX)) {
+                const auto name = value.substr(PREFAB_PREFIX.size());
+                if (shader::builtin(name).empty())
+                    return std::unexpected(std::format("layer \"{}\": \"{}\" isn't a built-in shader", layerName, value));
+                return std::pair<std::string, std::string>{name, ""};
+            }
+
+            if (!allowPaths)
+                return std::unexpected(std::format("layer \"{}\": \"{}\": a prefab preset can only use \"prefab:<name>\" shaders", layerName, value));
+            if (value.empty())
+                return std::unexpected(std::format("layer \"{}:{}\" is empty", layerName, stageKey));
+
+            std::filesystem::path p = cfg::resolveShaderPath(value);
+            if (!p.is_absolute())
+                return std::unexpected(std::format("layer \"{}\": can't resolve \"{}\" (no usable HOME or XDG_CONFIG_HOME)", layerName, value));
             std::error_code ec;
             if (const auto canon = std::filesystem::weakly_canonical(p, ec); !ec)
                 p = canon;
             return std::pair<std::string, std::string>{safeBuiltin, p.string()};
         }
 
-        std::expected<SLayerSpec, std::string> resolveLayer(const std::string& layerName, const std::map<std::string, std::string>& keys,
-                                                             const std::filesystem::path& presetDir) {
-            auto vert = resolveStage(layerName, keys, presetDir, "vertex", "classic/ribbon.vert");
+        std::expected<SLayerSpec, std::string> resolveLayer(const std::string& layerName, const std::map<std::string, std::string>& keys, bool allowPaths) {
+            auto vert = resolveStage(layerName, keys, allowPaths, "vertex", "ribbon.vert");
             if (!vert)
                 return std::unexpected(vert.error());
-            auto frag = resolveStage(layerName, keys, presetDir, "fragment", "classic/ribbon.frag");
+            auto frag = resolveStage(layerName, keys, allowPaths, "fragment", "ribbon.frag");
             if (!frag)
                 return std::unexpected(frag.error());
 
@@ -226,23 +220,32 @@ namespace hyprtail::preset {
             return spec;
         }
 
+        // "prefab:<name>" -> the embedded manifest; "<name>" ->
+        // <hyprtail root>/presets/<name>.conf, no fallback to a built-in.
         std::expected<SResolved, std::string> loadInner(const std::string& name) {
-            const auto            base     = presetsBaseDir();
-            const auto            userFile = base.empty() ? std::filesystem::path{} : base / name / "preset.conf";
-            std::filesystem::path presetDir; // empty = built-in (embedded, no real directory)
-            std::string           text;
+            std::string text;
+            bool        prefab = false;
 
-            if (!userFile.empty() && std::filesystem::exists(userFile)) {
-                auto read = readFile(userFile);
+            if (name.starts_with(PREFAB_PREFIX)) {
+                prefab             = true;
+                const auto builtin = builtinManifest(std::string_view{name}.substr(PREFAB_PREFIX.size()));
+                if (builtin.empty())
+                    return std::unexpected(std::format("unknown prefab preset \"{}\" (built-in: prefab:subtle, prefab:classic)", name));
+                text = std::string{builtin};
+            } else {
+                if (name.empty() || name.contains('/'))
+                    return std::unexpected(std::format("\"{}\" isn't a bare preset name; use \"prefab:<name>\" for a built-in, or a file name without '/' for <hyprtail root>/presets/<name>.conf", name));
+                const auto root = cfg::hyprtailRoot();
+                if (root.empty())
+                    return std::unexpected("can't locate the hyprtail config directory (no usable HOME or XDG_CONFIG_HOME)");
+                const auto file = root / "presets" / (name + ".conf");
+                if (!std::filesystem::exists(file))
+                    return std::unexpected(std::format("no such file: {}{}", file.string(),
+                                                       builtinManifest(name).empty() ? "" : std::format(" (for the built-in, use \"prefab:{}\")", name)));
+                auto read = readFile(file);
                 if (!read)
                     return std::unexpected(read.error());
-                text      = std::move(*read);
-                presetDir = userFile.parent_path();
-            } else {
-                const auto builtin = builtinManifest(name);
-                if (builtin.empty())
-                    return std::unexpected(std::format("unknown preset \"{}\" (built-in: subtle, classic)", name));
-                text = std::string{builtin};
+                text = std::move(*read);
             }
 
             auto manifest = parse(text);
@@ -255,7 +258,7 @@ namespace hyprtail::preset {
             static const std::map<std::string, std::string> empty;
             for (const auto& layerName : manifest->layers) {
                 const auto it   = manifest->layerKeys.find(layerName);
-                auto       spec = resolveLayer(layerName, it == manifest->layerKeys.end() ? empty : it->second, presetDir);
+                auto       spec = resolveLayer(layerName, it == manifest->layerKeys.end() ? empty : it->second, !prefab);
                 if (!spec)
                     return std::unexpected(spec.error());
                 out.layers.push_back(std::move(*spec));
@@ -263,13 +266,15 @@ namespace hyprtail::preset {
             return out;
         }
 
+        constexpr const char* FALLBACK_PRESET = "prefab:subtle";
+
         // Absolute last resort if even the embedded "subtle" manifest somehow
         // fails to parse: a single trail layer on pragma defaults. Never
         // expected to actually run -- it exists so a mistake in this
         // codebase's own built-ins degrades instead of throwing/crashing.
         SResolved hardcodedFallback() {
-            SLayerSpec trail{.name = "trail", .vertBuiltin = "classic/ribbon.vert", .fragBuiltin = "classic/ribbon.frag"};
-            return SResolved{.name = "subtle", .description = "fallback", .layers = {std::move(trail)}};
+            SLayerSpec trail{.name = "trail", .vertBuiltin = "ribbon.vert", .fragBuiltin = "ribbon.frag"};
+            return SResolved{.name = FALLBACK_PRESET, .description = "fallback", .layers = {std::move(trail)}};
         }
     }
 
@@ -279,12 +284,12 @@ namespace hyprtail::preset {
             diag::resetKey(key);
             return std::move(*r);
         } else
-            diag::report(eSeverity::ERR, key, std::format("preset \"{}\": {}\nUsing \"subtle\" instead.", name, r.error()));
+            diag::report(eSeverity::ERR, key, std::format("preset \"{}\": {}\nUsing \"{}\" instead.", name, r.error(), FALLBACK_PRESET));
 
-        if (name == "subtle")
+        if (name == FALLBACK_PRESET)
             return hardcodedFallback();
 
-        if (auto r = loadInner("subtle"))
+        if (auto r = loadInner(FALLBACK_PRESET))
             return std::move(*r);
         return hardcodedFallback();
     }

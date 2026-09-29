@@ -1,7 +1,7 @@
 // hyprtail prefab: signed-distance helpers for drawing shapes in a fragment
 // shader (the idle/presence slot, or anything else quad-based).
 //
-//   #include "hyprtail/sdf.glsl"
+//   #include "helpers/sdf.glsl"
 //
 // FRAGMENT SHADERS ONLY: ht_coverage uses fwidth, which vertex shaders don't
 // have, and the whole file fails to compile there.

@@ -28,7 +28,7 @@ namespace hyprtail::cfg {
     const char* warpModeName(eWarpMode m);
 
     struct SValues {
-        std::string preset          = "subtle"; // SPEC §13.7
+        std::string preset          = "prefab:subtle"; // SPEC §13.7
         size_t      capacity        = 64;
         float       minSpacingPx    = 2.F;
         eWarpMode   warp            = eWarpMode::BREAK;
@@ -68,8 +68,13 @@ namespace hyprtail::cfg {
     // the corresponding field of `previous`.
     SValues read(const SValues& previous);
 
-    // Shader path from the config: "" -> empty (built-in); "~" / "~/..." ->
-    // $HOME; relative -> against the Hyprland config directory
-    // ($XDG_CONFIG_HOME/hypr, else ~/.config/hypr).
+    // hyprtail's config root: $XDG_CONFIG_HOME/hypr/hyprtail, else
+    // ~/.config/hypr/hyprtail. Empty if neither variable is usable.
+    std::filesystem::path hyprtailRoot();
+
+    // Shader path from the config or a preset manifest: "" -> empty
+    // (built-in); "~" / "~/..." -> $HOME; relative -> against hyprtailRoot()
+    // (deliberately not the Hyprland config directory, unlike
+    // decoration:screen_shader: one base for every hyprtail path).
     std::filesystem::path resolveShaderPath(const std::string& configured);
 }

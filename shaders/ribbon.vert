@@ -28,8 +28,8 @@
 //     ht_initVaryings() first.
 //   - Keep files ASCII.
 
-#include "hyprtail/ribbon.glsl"
-#include "hyprtail/fade.glsl"
+#include "helpers/ribbon.glsl"
+#include "helpers/fade.glsl"
 
 #pragma hyprtail param float width 8 0 512
 #pragma hyprtail param float miter_limit 2 1 16

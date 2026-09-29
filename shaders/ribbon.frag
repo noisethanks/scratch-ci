@@ -2,7 +2,7 @@
 #pragma hyprtail contract 2
 // hyprtail "classic" preset, layer "trail": ribbon shading. Also the
 // reference for fragment shaders (see the contract summary in
-// classic/ribbon.vert).
+// ribbon.vert).
 //
 // Reads only standard varyings, so it pairs with any geometry shader that
 // writes them. Output is PREMULTIPLIED alpha. Only color parameters are

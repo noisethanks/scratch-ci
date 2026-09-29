@@ -16,13 +16,16 @@
 //   description = ...                        optional, at most once
 //   layers      = <name>[, <name>...]         required, 1-4, no duplicates
 //
-//   <layer>:vertex   = <built-in name or path>
-//   <layer>:fragment = <built-in name or path>
+//   <layer>:vertex   = prefab:<built-in name> or a path
+//   <layer>:fragment = prefab:<built-in name> or a path
 //   <layer>:<name>   = <value>                a parameter default
 //
-// Built-in presets are embedded; user presets live in
-// $XDG_CONFIG_HOME/hypr/hyprtail/presets/<name>/ (fallback ~/.config/...)
-// and shadow a built-in of the same name.
+// Two namespaces, no shadowing: "prefab:<name>" is an embedded built-in
+// preset; a bare "<name>" is <hyprtail root>/presets/<name>.conf
+// (cfg::hyprtailRoot(): $XDG_CONFIG_HOME/hypr/hyprtail, fallback
+// ~/.config/hypr/hyprtail). Shader stages inside a manifest use the same
+// split: "prefab:<name>" embedded, anything else a path (user presets only),
+// relative ones against the hyprtail root.
 namespace hyprtail::preset {
     // Manifest grammar version, unrelated to shader::CONTRACT_VERSION (§5):
     // this one just lets a future breaking change to preset.conf's own
@@ -56,11 +59,12 @@ namespace hyprtail::preset {
         bool operator==(const SResolved&) const = default;
     };
 
-    // Resolves `name`: a user preset directory shadows a built-in of the
-    // same name. Any failure (not found, parse error, an unrecognized
-    // built-in shader name in a built-in preset, an unresolvable path in a
-    // user preset) is reported (diag, "preset:<name>") and falls back to
-    // the embedded "subtle" manifest, which is guaranteed to parse -- it
-    // ships with the plugin.
+    // Resolves `name` ("prefab:<name>" or a bare "<name>", see above). A
+    // bare name that has no file is an error, never a built-in. Any failure
+    // (not found, parse error, an unrecognized prefab shader, a path in a
+    // prefab preset, an unresolvable path in a user preset) is reported
+    // (diag, "preset:<name>") and falls back to the embedded
+    // "prefab:subtle" manifest, which is guaranteed to parse -- it ships
+    // with the plugin.
     SResolved load(const std::string& name);
 }

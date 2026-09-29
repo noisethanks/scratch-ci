@@ -5,45 +5,92 @@ All keys live under `plugin:hyprtail:` in hyprlang, or under
 
 ```
 # hyprlang
-plugin:hyprtail:preset = classic
+plugin:hyprtail:preset = prefab:classic
 plugin:hyprtail:capacity = 128
 
 # Lua
-hl.config({ plugin = { hyprtail = { preset = "classic", capacity = 128 } } })
+hl.config({ plugin = { hyprtail = { preset = "prefab:classic", capacity = 128 } } })
 ```
 
 Bad values (out of range, not one of the allowed strings, malformed
 `params`/`emit_from` text) are reported as a warning and the previous value
 is kept — they never break your config.
 
+## Terms
+
+- A **layer** is one draw layer of a preset: `trail` and `idle` in the
+  shipped presets. A preset stacks up to 4. Nothing else in hyprtail is
+  called a layer (the shader prelude, for example, is described by stage
+  and topology instead; see SHADERS.md).
+- The **hyprtail config root** is `$XDG_CONFIG_HOME/hypr/hyprtail/`
+  (`~/.config/hypr/hyprtail/` if `XDG_CONFIG_HOME` is unset). Every
+  relative path hyprtail reads from your config resolves against it.
+
 ## Presets
 
-A **preset** is a named look: an ordered stack of up to 4 **layers**, each
-with its own shader pair and default parameter values. Pick one with:
+A **preset** is a named look: an ordered stack of up to 4 layers, each with
+its own shader pair and default parameter values. Pick one with:
 
 | Key | Type | Default | Values |
 |---|---|---|---|
-| `preset` | string | `subtle` | `subtle`, `classic`, or the name of a directory under `~/.config/hypr/hyprtail/presets/<name>/` |
+| `preset` | string | `prefab:subtle` | `prefab:<name>` (built-in) or a bare `<name>` (your own file) |
+
+A preset name is addressed in one of two namespaces, and they never overlap:
+
+- **`prefab:<name>`** is always the built-in preset embedded in the plugin,
+  regardless of any local file with the same name. Built-ins: `prefab:subtle`
+  and `prefab:classic`.
+- **`<name>`** (no prefix) is always your own file,
+  `~/.config/hypr/hyprtail/presets/<name>.conf`. If that file doesn't exist,
+  loading fails with an error naming the path it looked for; it never falls
+  back to a built-in of the same name.
+
+A fresh install has no `presets/` directory, so the default is
+`prefab:subtle`.
 
 Shipped presets:
 
-- **`subtle`** (default): one thin trail layer, short fade, low-alpha
-  neutral color, no idle effect.
-- **`classic`**: a wider, speed-tinted trail (slow motion tints one color,
-  fast motion tints another) plus an optional idle ring around a stationary
-  cursor (off by default).
+- **`prefab:subtle`** (default): one thin trail layer, short fade,
+  low-alpha neutral color, no idle effect.
+- **`prefab:classic`**: a wider, speed-tinted trail (slow motion tints one
+  color, fast motion tints another) plus an optional idle ring around a
+  stationary cursor (off by default).
 
-A user preset is a directory `~/.config/hypr/hyprtail/presets/<name>/`
-containing a `preset.conf`:
+### Quickstart: make your own copy
+
+1. Copy `presets/subtle.conf` from the repository root to
+   `~/.config/hypr/hyprtail/presets/subtle.conf`. Unchanged, it behaves
+   exactly like `prefab:subtle`: its shaders are still the embedded ones.
+2. Set `preset = "subtle"` (no prefix).
+3. Edit the file freely. Presets are re-read on every Hyprland config reload,
+   not when the preset file itself changes.
+4. To change a shader too, copy `shaders/ribbon.vert` and
+   `shaders/ribbon.frag` from the repository root into
+   `~/.config/hypr/hyprtail/`, change the preset's
+   `trail:vertex`/`trail:fragment` from `prefab:ribbon.vert` /
+   `prefab:ribbon.frag` to `ribbon.vert` / `ribbon.frag`, and edit the
+   shaders. See SHADERS.md.
+
+The prefix rule is the same everywhere in hyprtail: **`prefab:` /
+`helpers/` means embedded and immutable, anything else is your own file.**
+It is applied to preset names (`prefab:subtle` vs `subtle`), to a preset's
+shader stages (`prefab:ribbon.vert` vs `ribbon.vert`), and to shader
+includes (`#include "helpers/ribbon.glsl"` vs a relative path; see
+SHADERS.md). Editing means swapping the prefixed form for a bare one that
+points at your copy.
+
+### Preset file format
+
+A preset is a file `~/.config/hypr/hyprtail/presets/<name>.conf`:
 
 ```
 contract    = 2
 description = Thin neutral trail
 layers      = core
 
-core:vertex   = hyprtail/ribbon.vert   # built-in, or a path relative to this directory
-core:fragment = solid.frag             # a file next to this preset.conf
-core:fade_ms  = 350                    # any other key sets a layer parameter
+core:vertex   = prefab:ribbon.vert   # embedded shader, or a path (see below)
+core:fragment = solid.frag           # your file, ~/.config/hypr/hyprtail/solid.frag
+core:fade_ms  = 350                  # any other key sets a layer parameter
 core:width    = 4
 core:color    = rgba(ffffffa0)
 ```
@@ -53,15 +100,17 @@ core:color    = rgba(ffffffa0)
   bottom. No duplicates.
 - Every other line is `<layer>:<key> = <value>`, where `<layer>` must be one
   of the names in `layers`.
-  - `<layer>:vertex` / `<layer>:fragment` pick that layer's shader: either a
-    built-in name (e.g. `hyprtail/ribbon.vert`) or a path relative to the
-    preset's own directory (`~` and absolute paths also work).
+  - `<layer>:vertex` / `<layer>:fragment` pick that layer's shader:
+    `prefab:<name>` for an embedded one (`prefab:ribbon.vert`,
+    `prefab:ribbon.frag`, `prefab:ring.vert`, `prefab:ring.frag`), or
+    anything else as a path to your own file. A relative path resolves
+    against the hyprtail config root; `~` and absolute paths also work.
+    Built-in presets may only use `prefab:` shaders.
   - Any other `<key>` sets a default value for a parameter that layer's
     shader declares (see SHADERS.md for how shaders declare parameters).
 - `#` starts a comment to end of line; blank lines are ignored.
-- A user preset directory shadows a built-in preset of the same name.
-- If the selected preset fails to load (missing, parse error), hyprtail
-  reports it and falls back to the built-in `subtle` preset.
+- If the selected preset fails to load (missing file, parse error, bad
+  shader reference), hyprtail reports it and uses `prefab:subtle` instead.
 
 ## Overriding a preset's shaders
 
@@ -74,9 +123,17 @@ These pick a shader by the layer's **position** in the active preset's
 `layers` list (1 = bottom layer), not by name. `""` means "use whatever the
 preset itself specifies for that layer." Setting an index the active preset
 doesn't have (e.g. `layer3_vertex` on a 1-layer preset) is a warning and is
-ignored. Path resolution is the same as in a preset manifest: `~`/`~/`
-expand to your home directory, a relative path resolves against your
-Hyprland config directory, an absolute path is used as-is.
+ignored. They take file paths only (no `prefab:` form). Path resolution is
+the same as for a preset's own shader paths: `~`/`~/` expand to your home
+directory, an absolute path is used as-is, and a relative path resolves
+against the hyprtail config root (`~/.config/hypr/hyprtail/`).
+
+That last rule is a deliberate choice: one base directory for everything
+hyprtail reads, so `solid.frag` means the same file in a preset and in
+`layer1_fragment`. Hyprland's own `decoration:screen_shader` resolves
+relative paths against the main Hyprland config directory instead, and
+hyprtail diverges from that on purpose, trading familiarity with that one
+setting for consistency inside hyprtail.
 
 ## Overriding layer parameters
 

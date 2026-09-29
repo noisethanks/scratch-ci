@@ -37,16 +37,19 @@ namespace hyprtail {
 
         const CBox px = outwardPixelBox(*clipped, pMonitor->m_scale);
 
-        // Current frame: beginRender already read and rotated the damage ring
-        // (Renderer.cpp:1782-1783), so this frame only sees damage added to
-        // the render region directly.
+        // Current frame: beginRender has already taken this frame's ring
+        // damage (the pin reads and rotates it at once, Renderer.cpp:1782-1783;
+        // main takes a transaction, Renderer.cpp:1786-1789), so this frame only
+        // sees damage added to the render region directly.
         g_pHyprRenderer->m_renderData.damage.add(px);
 
-        // Damage ring: lands in m_current, read by the next frame's
-        // beginRender and rotated into history, so older swapchain buffers
-        // (age > 1) also repaint this box. Also schedules that next frame
-        // (Monitor.cpp:1157-1158; m_pendingFrame during a render,
-        // :1132-1133), which keeps an animation going with the pointer still.
+        // Damage ring: lands in the ring's current region, which the next
+        // frame's beginRender takes and rotates into history (on main the
+        // transaction starts from an emptied region, DamageRing.cpp:83-87), so
+        // older swapchain buffers (age > 1) also repaint this box. Also
+        // schedules that next frame (Monitor::addDamage; m_pendingFrame during
+        // a render, pin Monitor.cpp:1132-1133, main :1104), which keeps an
+        // animation going with the pointer still.
         pMonitor->addDamage(px);
     }
 

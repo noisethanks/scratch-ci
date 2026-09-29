@@ -11,6 +11,7 @@
 #include <render/OpenGL.hpp>
 #include <debug/log/Logger.hpp>
 
+#include "compat.hpp"
 #include "Config.hpp"
 #include "Diagnostics.hpp"
 
@@ -326,8 +327,7 @@ namespace hyprtail {
         m_activeFragOrigin  = pair.fragOrigin;
         m_locs.clear();
 
-        Log::logger->log(Log::INFO, "[hyprtail] {} shader active ({} + {}), program id={}", m_name, pair.vert.sourceNames.front(), pair.frag.sourceNames.front(),
-                         shader->program());
+        hyprtail::compat::log(Log::INFO, "{} shader active ({} + {}), program id={}", m_name, pair.vert.sourceNames.front(), pair.frag.sourceNames.front(), shader->program());
         return std::nullopt;
     }
 

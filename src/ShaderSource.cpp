@@ -17,16 +17,16 @@ namespace hyprtail::shader {
         // Makefile lists them as dependencies). Keep them ASCII: GLSL ES
         // drivers aren't reliable with UTF-8, even in comments.
         constexpr unsigned char CLASSIC_RIBBON_VERT[] = {
-#embed "../shaders/classic/ribbon.vert"
+#embed "../shaders/ribbon.vert"
         };
         constexpr unsigned char CLASSIC_RIBBON_FRAG[] = {
-#embed "../shaders/classic/ribbon.frag"
+#embed "../shaders/ribbon.frag"
         };
         constexpr unsigned char CLASSIC_RING_VERT[] = {
-#embed "../shaders/classic/ring.vert"
+#embed "../shaders/ring.vert"
         };
         constexpr unsigned char CLASSIC_RING_FRAG[] = {
-#embed "../shaders/classic/ring.frag"
+#embed "../shaders/ring.frag"
         };
         constexpr unsigned char PRELUDE_COMMON[] = {
 #embed "../shaders/prelude/common.glsl"
@@ -44,13 +44,13 @@ namespace hyprtail::shader {
 #embed "../shaders/prelude/fragment.glsl"
         };
         constexpr unsigned char PREFAB_RIBBON[] = {
-#embed "../shaders/hyprtail/ribbon.glsl"
+#embed "../shaders/helpers/ribbon.glsl"
         };
         constexpr unsigned char PREFAB_FADE[] = {
-#embed "../shaders/hyprtail/fade.glsl"
+#embed "../shaders/helpers/fade.glsl"
         };
         constexpr unsigned char PREFAB_SDF[] = {
-#embed "../shaders/hyprtail/sdf.glsl"
+#embed "../shaders/helpers/sdf.glsl"
         };
 
         template <size_t N>
@@ -60,9 +60,9 @@ namespace hyprtail::shader {
 
         const std::map<std::string, std::string_view, std::less<>>& prefabs() {
             static const std::map<std::string, std::string_view, std::less<>> m{
-                {"hyprtail/ribbon.glsl", view(PREFAB_RIBBON)},
-                {"hyprtail/fade.glsl", view(PREFAB_FADE)},
-                {"hyprtail/sdf.glsl", view(PREFAB_SDF)},
+                {"helpers/ribbon.glsl", view(PREFAB_RIBBON)},
+                {"helpers/fade.glsl", view(PREFAB_FADE)},
+                {"helpers/sdf.glsl", view(PREFAB_SDF)},
             };
             return m;
         }
@@ -166,7 +166,7 @@ namespace hyprtail::shader {
         std::expected<void, std::string> process(SState& st, const SUnit& unit, int sourceId, int depth, bool isMain);
 
         std::expected<SUnit, std::string> resolveInclude(const std::string& target, const SUnit& parent, std::string& storage) {
-            if (target.starts_with("hyprtail/")) {
+            if (target.starts_with("helpers/")) {
                 const auto it = prefabs().find(target);
                 if (it == prefabs().end())
                     return std::unexpected(std::format("unknown built-in prefab \"{}\"", target));
@@ -174,7 +174,7 @@ namespace hyprtail::shader {
             }
 
             if (parent.path.empty())
-                return std::unexpected(std::format("\"{}\": built-in shaders can only include hyprtail/ prefabs", target));
+                return std::unexpected(std::format("\"{}\": built-in shaders can only include helpers/ prefabs", target));
 
             std::filesystem::path p = expandHome(target);
             if (p.is_relative())
@@ -328,10 +328,10 @@ namespace hyprtail::shader {
 
     std::string_view builtin(std::string_view name) {
         static const std::map<std::string, std::string_view, std::less<>> m{
-            {"classic/ribbon.vert", view(CLASSIC_RIBBON_VERT)},
-            {"classic/ribbon.frag", view(CLASSIC_RIBBON_FRAG)},
-            {"classic/ring.vert", view(CLASSIC_RING_VERT)},
-            {"classic/ring.frag", view(CLASSIC_RING_FRAG)},
+            {"ribbon.vert", view(CLASSIC_RIBBON_VERT)},
+            {"ribbon.frag", view(CLASSIC_RIBBON_FRAG)},
+            {"ring.vert", view(CLASSIC_RING_VERT)},
+            {"ring.frag", view(CLASSIC_RING_FRAG)},
         };
         const auto it = m.find(name);
         return it == m.end() ? std::string_view{} : it->second;

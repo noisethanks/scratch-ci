@@ -4,7 +4,7 @@
 // the pointer and fades out, once the pointer has been still for start_ms.
 // Output is PREMULTIPLIED alpha; only color parameters are color-managed.
 
-#include "hyprtail/sdf.glsl"
+#include "helpers/sdf.glsl"
 
 #pragma hyprtail param float radius 24 1 1024
 #pragma hyprtail param color color rgba(1a66ffff)

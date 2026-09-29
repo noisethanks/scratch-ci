@@ -112,7 +112,7 @@ namespace hyprtail::cfg {
                                           warpModeName(DEFAULTS.warp));
         r.damagePadding = makeShared<CFloatValue>("plugin:hyprtail:damage_padding", "extra damage padding on top of the stock extent and shader-declared padding, px",
                                                   DEFAULTS.damagePaddingPx, SFloatValueOptions{.min = 0.F, .max = 4096.F});
-        r.preset        = makeShared<CStringValue>("plugin:hyprtail:preset", "which preset to use (SPEC section 13.7); built-in: subtle, classic", DEFAULTS.preset.c_str());
+        r.preset        = makeShared<CStringValue>("plugin:hyprtail:preset", "which preset to use (SPEC section 13.7): \"prefab:<name>\" (built-in: subtle, classic) or a bare \"<name>\" for <hyprtail root>/presets/<name>.conf", DEFAULTS.preset.c_str());
         r.emitFrom      = makeShared<CStringValue>("plugin:hyprtail:emit_from",
                                                     "where on the cursor image trail points are emitted from: \"hotspot\" (default), or a normalized \"x y\" position in "
                                                     "the cursor image box (0 0 = top-left, 0.5 0.5 = center) (SPEC section 13.9)",
@@ -224,24 +224,16 @@ namespace hyprtail::cfg {
         std::filesystem::path p{configured};
         if (p.is_absolute())
             return p;
+        return hyprtailRoot() / p;
+    }
 
-        // Directory of the config file actually in use (covers -c), else
-        // $XDG_CONFIG_HOME/hypr, else ~/.config/hypr.
-        std::filesystem::path base;
-        if (Config::mgr()) {
-            const std::filesystem::path main = Config::mgr()->getMainConfigPath();
-            if (main.is_absolute())
-                base = main.parent_path();
-        }
-        if (base.empty()) {
-            const char* xdg  = std::getenv("XDG_CONFIG_HOME");
-            const char* home = std::getenv("HOME");
-            if (xdg && xdg[0] == '/')
-                base = std::filesystem::path{xdg} / "hypr";
-            else if (home && home[0] == '/')
-                base = std::filesystem::path{home} / ".config" / "hypr";
-        }
-
-        return base / p;
+    std::filesystem::path hyprtailRoot() {
+        const char* xdg  = std::getenv("XDG_CONFIG_HOME");
+        const char* home = std::getenv("HOME");
+        if (xdg && xdg[0] == '/')
+            return std::filesystem::path{xdg} / "hypr" / "hyprtail";
+        if (home && home[0] == '/')
+            return std::filesystem::path{home} / ".config" / "hypr" / "hyprtail";
+        return {};
     }
 }

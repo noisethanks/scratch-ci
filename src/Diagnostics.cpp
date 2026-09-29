@@ -22,6 +22,7 @@
 #include <unistd.h>
 #include <wayland-server-core.h>
 
+#include "compat.hpp"
 #include "rev.hpp"
 #include "StatePath.hpp"
 
@@ -252,7 +253,7 @@ namespace hyprtail::diag {
             std::error_code ec;
             std::filesystem::create_directories(path.parent_path(), ec);
             if (ec) {
-                Log::logger->log(Log::ERR, "[hyprtail] can't create {}: {}", path.parent_path().string(), ec.message());
+                hyprtail::compat::log(Log::ERR, "can't create {}: {}", path.parent_path().string(), ec.message());
                 return;
             }
 
@@ -266,7 +267,7 @@ namespace hyprtail::diag {
                 rotated += ".1";
                 std::filesystem::rename(path, rotated, ec);
                 if (ec)
-                    Log::logger->log(Log::ERR, "[hyprtail] can't rotate {} to {}: {}", path.string(), rotated.string(), ec.message());
+                    hyprtail::compat::log(Log::ERR, "can't rotate {} to {}: {}", path.string(), rotated.string(), ec.message());
                 else
                     syncDir(path.parent_path());
             }
@@ -274,7 +275,7 @@ namespace hyprtail::diag {
             const char* sig    = std::getenv("HYPRLAND_INSTANCE_SIGNATURE");
             const auto  header = std::format("hyprtail {} error log, session started {} (instance {})\n", HYPRTAIL_REV, utcNow(), sig ? sig : "unknown");
             if (!writeDurable(path.string(), header, true)) {
-                Log::logger->log(Log::ERR, "[hyprtail] can't write error file {}", path.string());
+                hyprtail::compat::log(Log::ERR, "can't write error file {}", path.string());
                 return;
             }
 
@@ -310,7 +311,7 @@ namespace hyprtail::diag {
         try {
             auto& st = state();
 
-            Log::logger->log(severity == eSeverity::ERR ? Log::ERR : Log::WARN, "[hyprtail] {} [{}]: {}", severityName(severity), key, message);
+            hyprtail::compat::log(severity == eSeverity::ERR ? Log::ERR : Log::WARN, "{} [{}]: {}", severityName(severity), key, message);
 
             if (!st.seen.emplace(key).second)
                 return;
