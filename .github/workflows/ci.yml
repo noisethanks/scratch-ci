@@ -132,7 +132,7 @@ jobs:
           restore-keys: |
             last-good-hyprland-${{ matrix.name }}-
 
-      - name: Job summary — files changed since last-good SHA
+      - name: Job summary - files changed since last-good SHA
         run: |
           set -euo pipefail
           current="${{ steps.hyprland.outputs.sha }}"
@@ -300,7 +300,7 @@ jobs:
           retention-days: 14
 
   # ----------------------------------------------------------------- alert
-  # Scheduled runs only (never on pull_request, including forks — no
+  # Scheduled runs only (never on pull_request, including forks - no
   # secrets are involved either way, but the event-type check is the actual
   # guard). Opens or updates a single labeled tracking issue instead of
   # spamming a new issue per failed schedule.
