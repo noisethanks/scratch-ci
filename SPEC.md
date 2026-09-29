@@ -45,6 +45,16 @@ this file states the decision and marks what's still a placeholder.
     `efb5099` the checkout's headers are byte-identical to the installed
     ones for everything the plugin uses, so one `.so` serves both the nested
     (debug) build and the host.
+    `make DEV=1 HYPRLAND_DIR=<checkout>` builds against another built
+    checkout (e.g. `external/Hyprland-main`) as a compatibility build: the
+    pin check is replaced by a note naming the commit, and products go to
+    `out/<checkout name>/` so they coexist with the pin's `out/`.
+  - Differences between Hyprland checkouts live in `src/compat.hpp`, detected
+    by `requires` expressions on what the headers offer (`__has_include`
+    where a header or type moved), never by version. `make test-compat`
+    compiles it against the selected headers; `make check-log` rejects raw
+    `Log::logger->log()` calls elsewhere. NOTES "Compatibility with Hyprland
+    main".
   - Both append to `CXXFLAGS` (hyprpm passes extra flags through the
     environment) and add `--no-gnu-unique` whenever the compiler is GCC.
   - Needs a C++26 compiler with `#embed` (GCC 15+; built and tested with
@@ -231,10 +241,10 @@ this file states the decision and marks what's still a placeholder.
 ## 5. Shader extensibility contract
 
 > **Superseded in part by contract 2 (§13.2-13.6, built in phase 2).** No
-> longer true below: the stock pair is now `shaders/classic/` (ribbon.* for
-> the trail layer, ring.* for the idle layer), there are no raw attributes
+> longer true below: the stock pairs are now `shaders/ribbon.*` (the trail
+> layer) and `shaders/ring.*` (the idle layer), there are no raw attributes
 > or fixed uniforms (the prelude declares them), padding is an expression
-> and no longer adds to a stock extent, and `hyprtail/ribbon.glsl` no longer
+> and no longer adds to a stock extent, and `helpers/ribbon.glsl` no longer
 > has `ht_startsSegment` (nodes carry `segmentStart`). Still true: separate
 > `.vert`/`.frag` paths, the contract check (now against the prelude and the
 > program's own params), the fallback policy, the include preprocessor and
@@ -271,21 +281,25 @@ this file states the decision and marks what's still a placeholder.
   that no longer matches the config, possibly nothing at all.
 - **Includes (loader-side preprocessor, `src/ShaderSource.*`):** GLSL ES has
   no `#include`, so the plugin resolves it before compiling.
-  `#include "hyprtail/<name>"` pulls in a built-in prefab (embedded);
-  any other path is relative to the including file (absolute and `~/` also
-  work). Each file is included at most once, cycles are errors, depth is
-  limited to 16, included files must not contain `#version`. Built-in shaders
-  may only include `hyprtail/` prefabs. Every inclusion is wrapped in
+  `#include "helpers/<name>"` pulls in a built-in helper (embedded,
+  immutable); any other path is relative to the including file (absolute and
+  `~/` also work). The bare `helpers/` prefix is reserved for the embedded
+  library: a user's own copy of a helper is included as
+  `"./helpers/<name>"`. (Same rule as `prefab:` in §13.7: prefixed =
+  embedded, otherwise your own file.) Each file is included at most once,
+  cycles are errors, depth is limited to 16, included files must not
+  contain `#version`. Built-in shaders may only include `helpers/` built-ins.
+  Every inclusion is wrapped in
   `#line <n> <source-id>`, so GLSL errors are reported as `file:line`.
   Include prefabs after the `precision` statement (fragment shaders have no
   default float precision).
-- **Prefab library:** `hyprtail/ribbon.glsl` (`ht_startsSegment`,
+- **Helper library:** `helpers/ribbon.glsl` (`ht_startsSegment`,
   `ht_collapsedPosition`, `ht_dirBetween`, `ht_jointOffset`, `HT_EPS`) and
-  `hyprtail/fade.glsl` (`ht_life`, `ht_faded`), and for fragment shaders
-  only `hyprtail/sdf.glsl` (`ht_sdCircle`, `ht_sdRing`, `ht_coverage`; uses
+  `helpers/fade.glsl` (`ht_life`, `ht_faded`), and for fragment shaders
+  only `helpers/sdf.glsl` (`ht_sdCircle`, `ht_sdRing`, `ht_coverage`; uses
   `fwidth`, so it doesn't compile in a vertex shader). Functions only, `ht_`
   prefixed, parameters instead of uniforms. The stock trail and idle shaders
-  are built on them. Source in `shaders/hyprtail/`.
+  are built on them. Source in `shaders/helpers/`.
 - Plugin-provided per-instance data (vertex contract, `shaders/trail.vert`):
   `a_prevPos/Flags`, `a_p0Pos/BirthMs/Vel/Flags`, `a_p1Pos/BirthMs/Vel/Flags`,
   `a_nextPos/Flags` at fixed locations 0-11. Uniforms: `proj`, `nowMs`,
@@ -524,8 +538,8 @@ this file states the decision and marks what's still a placeholder.
 > `idle_*` keys are removed outright (§13.8), with no compatibility shim --
 > Hyprland's own "unknown config key" error, not a plugin one. What
 > replaces each is in §13.7/§13.8: shader identity and per-layer parameter
-> defaults move into `preset.conf` (built-in `subtle`, `classic`, or a user
-> preset directory); `preset = "<name>"` selects one; `layer1_vertex` ..
+> defaults move into a preset file (`prefab:subtle`, `prefab:classic`, or a
+> user's own `presets/<name>.conf`); `preset = "<name>"` selects one; `layer1_vertex` ..
 > `layer4_fragment` still override a layer's shader by config; the `params`
 > string still overrides a layer's parameters by config. **Also removed, now
 > that phase 6 is built:** `interpolate_warps`, replaced by `warp =
@@ -651,6 +665,10 @@ this file states the decision and marks what's still a placeholder.
   connects to the session's Wayland socket as a client for its GPU
   allocator (NOTES "Smoke test environment"). Uses the same GPU. Workspace
   changes are not covered.
+  - **In CI** (off unless the repository variable `SMOKE_ENABLED` is
+    `true`): the same test in a NixOS VM with a DRM backend, one per Hyprland
+    row, `nix/smoke.nix` (adapted from Hyprland's `nix/tests/default.nix`);
+    docs/CI.md "Smoke job", NOTES "Smoke test in CI".
 - **Unit tests: `make test-unit`** (`tests/unit/unit.cpp`, `SANITIZE=1` for
   AddressSanitizer and UBSan). No compositor, no GL: parameter pragmas and
   values, padding expressions, shader preprocessing (contract 2 rules), the
@@ -1017,10 +1035,18 @@ would have linked fine.
 
 ### 13.7 Presets
 
-- **Where:** built-in presets are embedded. User presets live in
-  `$XDG_CONFIG_HOME/hypr/hyprtail/presets/<name>/` (fallback
-  `~/.config/hypr/...`) and shadow built-ins of the same name.
-- **Manifest:** `preset.conf`, plain `key = value` lines, `#` comments,
+- **Where, two explicit namespaces (no shadowing):** `prefab:<name>` is
+  always the embedded built-in, ignoring any local file of that name. A
+  bare `<name>` is always
+  `$XDG_CONFIG_HOME/hypr/hyprtail/presets/<name>.conf` (fallback
+  `~/.config/hypr/hyprtail/presets/`; the "hyprtail config root" below),
+  and fails with a clear error naming the path if the file is missing; it
+  never falls back to a built-in. The default is `prefab:subtle`, since a
+  fresh install has no `presets/` directory. `presets/subtle.conf` is both
+  the embedded prefab and a copy-and-edit starting point: dropped
+  unchanged into the user's `presets/` as `subtle.conf`, it behaves
+  identically.
+- **Manifest:** a `<name>.conf` file, plain `key = value` lines, `#` comments,
   reading like hyprlang. Layer keys are prefixed `<layer>:` as in
   `plugin:hyprtail:...`. `layers` gives the draw order (first = bottom).
 
@@ -1030,8 +1056,8 @@ would have linked fine.
   description = Thin neutral trail
   layers      = core
 
-  core:vertex   = hyprtail/ribbon.vert   # built-in, or relative to the preset dir
-  core:fragment = solid.frag
+  core:vertex   = prefab:ribbon.vert     # embedded, or a path (bare = your file)
+  core:fragment = solid.frag             # relative to the hyprtail config root
   core:fade_ms  = 350                    # any other key = a parameter of the layer
   core:width    = 4
   core:color    = rgba(ffffffa0)
@@ -1042,24 +1068,38 @@ would have linked fine.
 
   **Built (phase 4)** (`src/Preset.*`): `contract`/`description`/`layers`
   plus `<layer>:vertex`/`fragment`/`<name>`, `#` comments anywhere on a
-  line, blank lines ignored. Difference: no `hyprtail/<name>.vert`-style
-  built-in main-shader library exists yet (only `#include "hyprtail/<name>"`
-  prefab *snippets* do, §5); a built-in preset's `vertex`/`fragment` values
-  are checked against `shader::builtin()`'s existing names
-  (`classic/ribbon.vert` etc.) instead, and a user preset's non-built-in
-  value is a path relative to its own directory, exactly like today's
-  `layer1_vertex` override. Structural mistakes (unknown top-level key, a
-  `<layer>:` key for a layer not in `layers`, a bad/missing `contract`,
-  `layers` empty/duplicated/over 4, an unrecognized built-in name in a
-  *built-in* preset) are parse-time errors; an unknown *parameter* name
-  needs the compiled program's declared params, so it's deferred to
-  `CLayer::resolve()` (`params:<layer>`, entry ignored) same as always. Any
-  failure loading the *selected* preset (not found, parse error) is
-  reported (`preset:<name>`) and falls back to the embedded `subtle`
-  manifest, guaranteed to parse since it ships with the plugin.
+  line, blank lines ignored. Shader stages use the same two namespaces as
+  preset names: `vertex`/`fragment` = `prefab:<name>` is an embedded main
+  shader, checked against `shader::builtin()`'s names (`ribbon.vert`,
+  `ribbon.frag`, `ring.vert`, `ring.frag`); anything else is a path to the
+  user's own file, resolved by `cfg::resolveShaderPath()`: `~` and absolute
+  as given, relative against the hyprtail config root. Prefab presets may
+  only use `prefab:` shaders. (Prefab presets and `helpers/` includes, §5,
+  are the same pattern applied to presets, main shaders and include files:
+  prefixed = embedded and immutable, otherwise the user's own copy.)
+  Structural mistakes (unknown top-level key, a `<layer>:` key for a layer
+  not in `layers`, a bad/missing `contract`, `layers` empty/duplicated/over
+  4, an unrecognized `prefab:` shader name, a path in a prefab preset) are
+  load-time errors; an unknown *parameter* name needs the compiled
+  program's declared params, so it's deferred to `CLayer::resolve()`
+  (`params:<layer>`, entry ignored) same as always. Any failure loading
+  the *selected* preset (file not found, parse error, bad shader reference)
+  is reported (`preset:<name>`, naming the path looked up) and falls back
+  to the embedded `prefab:subtle` manifest, guaranteed to parse since it
+  ships with the plugin. That fallback is degradation after a clear error,
+  not resolution: a bare name never resolves to a built-in.
 - **Selection and overrides:**
   - `preset = "<name>"` selects a preset. **Built (phase 4)**
-    (`plugin:hyprtail:preset`, `Config.*`): default `subtle`.
+    (`plugin:hyprtail:preset`, `Config.*`): default `prefab:subtle`.
+  - **Hyprtail config root:** `$XDG_CONFIG_HOME/hypr/hyprtail/`, fallback
+    `~/.config/hypr/hyprtail/` (`cfg::hyprtailRoot()`). Every relative
+    path hyprtail reads from the user's config resolves against it: a
+    preset's shader stages and `layerN_vertex`/`layerN_fragment` alike.
+    Deliberate, and a divergence from `decoration:screen_shader`, which
+    resolves relative paths against the main Hyprland config directory
+    (and previously this plugin's `layerN_*` did too): one base inside
+    hyprtail, at the cost of that one setting's familiarity. `-c` no
+    longer redirects it. `layerN_*` take paths only (no `prefab:` form).
   - Per-stage shader overrides, static keys indexed by the layer's position
     in the preset's `layers` list: `layer1_vertex`, `layer1_fragment`, up to
     `layer4_*` (layers are capped at four). `""` = the preset's shader. An
@@ -1079,16 +1119,16 @@ would have linked fine.
   alpha 0 with nonzero rgb gets additive light (glow) through the same blend
   function, so layers never change GL blend state.
 - **Shipped:**
-  - `subtle` (default): one narrow `path` layer, short fade, neutral low
-    alpha, no idle layer. **Built (phase 4)** (`presets/subtle/`): reuses
-    `classic/ribbon.*` rather than a new shader -- see NOTES "Phase 4" for
+  - `prefab:subtle` (default): one narrow `path` layer, short fade, neutral
+    low alpha, no idle layer. **Built (phase 4)** (`presets/subtle.conf`):
+    reuses `prefab:ribbon.*` rather than a new shader -- see NOTES "Phase 4" for
     why pinning `color_slow`/`color_fast` equal is presented here as an
     interim stand-in for a genuine single-color mode, not a hidden detail.
   - `vivid`: `path` core plus a wide soft glow layer, speed-based palette,
     `quad` idle pulse. **Not built**: needs a real glow shader and a
     speed-based palette, out of scope for a config-surface phase.
   - Optional `classic` (today's stock look), which makes migration easy.
-    **Built (phase 4)** (`presets/classic/`): reproduces today's hardcoded
+    **Built (phase 4)** (`presets/classic.conf`, `prefab:classic`): reproduces today's hardcoded
     defaults exactly, proving the manifest system is behavior-preserving.
 
 ### 13.8 Config surface v2
@@ -1378,7 +1418,7 @@ compositor).
    string, the `layer1_vertex` ... `layer4_fragment` keys, `expects`, and
    the pre-link varying check with plain messages.
 4. **Presets and config surface v2 (built, untested).** Manifest parser,
-   user preset directory, `subtle` and `classic`. Not built: `vivid`
+   user preset files, `prefab:subtle` and `prefab:classic`. Not built: `vivid`
    (needs a real glow shader, out of scope for this phase), migration
    notes in the README (the SPEC §9 note above covers it for now).
 5. **Topologies.** `instanced K` (plus a particle demo preset) and

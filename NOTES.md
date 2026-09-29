@@ -158,12 +158,26 @@ Not yet reached, environment/fixture work has been the focus so far (see Environ
 - **Damage ring, different mechanism, same effect:** no `CTransaction`. `beginRender` reads `getBufferDamage(age)` then `rotate()`s immediately (`Renderer.cpp:1782-1783`, `DamageRing.cpp:37-63`). Mid-render `addDamage` still lands in the next frame's damage and in history. >8 rects collapse to extents (`DamageRing.cpp:59-60`), efficiency only.
 - **Blend:** still premultiplied, `GL_ONE, GL_ONE_MINUS_SRC_ALPHA`, but `glBlendFunc` is called raw, no blend-func cache (`OpenGL.cpp:981-989`).
 - **Code changes forced by the move:**
-  - No `LOG` macro; `Log::logger->log(level, fmt, args...)` (`Logger.hpp:22`). `Log::INFO` is still debug level (`:53`).
-  - No `bindArrayBuffer` and no array-buffer cache; core binds raw (`OpenGL.cpp:1547`, `Shader.cpp:236`). Plugin binds raw too. If the pin moves past the main commit that added the cache, switch back to `bindArrayBuffer`.
+  - No `LOG` macro; `Log::logger->log(level, fmt, args...)` (`Logger.hpp:22`), reached through `compat::log` ("Compatibility with Hyprland main"). `Log::INFO` is still debug level (`:53`).
+  - No `bindArrayBuffer` and no array-buffer cache; core binds raw (`OpenGL.cpp:1547`, `Shader.cpp:236`). Plugin binds raw too (superseded: see "Compatibility with Hyprland main", it goes through `compat::bindArrayBuffer`).
   - `projectBoxToTarget` uses `pMonitor->getScaleMatrix()` = `outputProjection(m_pixelSize, NORMAL)` (`Renderer.cpp:1842-1846`, `Monitor.cpp:1757`), and `getBoxProjection` defaults the box transform to the inverted monitor transform (`Renderer.cpp:1836-1840`). Plugin now passes `HYPRUTILS_TRANSFORM_NORMAL` explicitly so the pseudo-box isn't rotated; monitor rotation comes from `targetProjection` (`Renderer.cpp:1828`). Identical on transform-0 outputs; rotated outputs untested (SPEC §8).
   - `PluginAPI.hpp` no longer includes `<format>`; `main.cpp` includes it directly.
 - **Color management gap** citations at this pin: `getConvertedColor` in `OpenGL.cpp:1086`, `:2371`.
 - **Build:** plugin compiles against the `external/Hyprland` checkout at the pin (after `make clear && make debug` generates `version.h`/protocols). Debug build only adds `HYPRLAND_DEBUG`/`ISDEBUG` (macros, not layout); the only layout-affecting `#if`s in installed headers are `NO_XWAYLAND`, in xwayland headers the plugin doesn't use. ABI hash strips patch versions, so system aquamarine 0.15.1 vs the package's 0.15.0 still matches (`_aq_0.15`).
+
+## Compatibility with Hyprland main (cited at main 4bb6844b, v0.56.0-209, 2026-09-27; pin efb5099)
+
+- **Setup:** second checkout `external/Hyprland-main` (built with `make clear && make debug`), the pin untouched. `make DEV=1 HYPRLAND_DIR=external/Hyprland-main` builds into `out/Hyprland-main/`; the pin stays in `out/`. `make test-compat` is a compile-only check of `src/compat.hpp` against the selected headers. Main is not a newer pin: v0.56.2 is a release branch, main is 209 commits past v0.56.0.
+- **Compile breaks (all now behind `src/compat.hpp`):** `desktop/view/Window.hpp` moved to `desktop/view/window/Window.hpp`; `SHyprCtlCommand`/`eHyprCtlOutputFormat` replaced by `IPC::Socket1::SCommand{name, match, handler(const SRequest&)}` (`ipc/s1/S1.hpp:51-55`, `PluginAPI.cpp:351`); `CWindow::m_class`/`m_title` became `metadata().appID()`/`title()` (`WindowMetadata.hpp:16-17`); `CLogger::log` takes a location (`Logger.hpp:41,45`, `LOG` at `:10`).
+- **Silent one:** `log(level, "fmt {}", runtimeString)` and `log(level, "fmt {}", "literal")` compile against main's `(level, string_view loc, string_view str)` overload and print the format string as the `[loc]`. Found at `Diagnostics.cpp` (error file write) and `main.cpp` (loaded line). `make check-log` fails the build on any `logger->log(` outside `compat.hpp`.
+- **GL caches:** main shadows array buffer, active texture, blend func and framebuffers (`OpenGL.hpp:228-229`, `OpenGL.cpp:2438-2461`; `blend(true)` -> `blendFunc`, `:1078-1085`). `useShader` (`:2399`) and `scissor` (`:1094`) are unchanged. The plugin's raw `glBindBuffer(GL_ARRAY_BUFFER)` would desync the cache; it now goes through `compat::bindArrayBuffer`, which uses the cache where it exists. No raw `glBlendFunc`/`glActiveTexture`/`glBindFramebuffer` in the plugin.
+- **Damage ring:** transactions again (`Renderer.cpp:1786-1789`, `DamageRing.cpp:83-87`; pin reads and rotates at once, `Renderer.cpp:1782-1783`). Mid-render `addDamage` lands in the emptied current region and is taken by the next frame's transaction: same effect as at the pin, so no code change.
+- **Render order, hooks, pass elements, event bus: unchanged for the plugin.** `RENDER_LAST_MOMENT` emitted once, after the cursor and DPMS overlay (`Renderer.cpp:2292`), pass rendered in `endRender` (`GLRenderer.cpp:106-110`); `renderSoftwareCursorsFor` callers (`Renderer.cpp:2281`, `ScreenshareFrame.cpp:316,359`) and hook signatures (`PointerManager.hpp:61`, `PointerController.hpp:9`, `OpenGL.hpp:243`) identical; `IPassElement` gained `requiresFullDamage()` (default false, `PassElement.hpp:39`) and `EK_BACKDROP_SCOPE`, `drawCustom` unchanged (`ElementRenderer.cpp:839-844`); event bus only gained events. The hook detours are `reinterpret_cast`, so the compiler does not check their signatures.
+- **`projectBoxToTarget` differs:** pin uses `outputProjection(m_pixelSize)` (`Renderer.cpp:1842-1846`, `Monitor.cpp:1757`); main uses `m_transformedSize` for the monitor projection type (`Renderer.cpp:1851-1857`, `RPT_MIRROR` renamed `RPT_OUTPUT`). Same unless the monitor is rotated 90/270. The plugin goes through the core function; **untested on a rotated monitor**.
+- **hyprctl:** main answers "unknown request" only when nothing matched (`S1.cpp:107`), not for an empty reply; a duplicate registration returns nullptr (`S1.cpp:224-228`, handled).
+- **Smaller:** `Pointer::mgr()->position()` returns the transformed position when a plugin registered a pointer transformer (`PointerManager.hpp:68-71`); `damageBox(box, skipFrameSchedule)` skips the damage when the flag is set (`Renderer.cpp:2870-2877`), the plugin doesn't call it.
+- **Not read:** the `Monitor.cpp` diff beyond `addDamage`/`scheduleFrame` (`Monitor.cpp:1096-1107`, same logic as the pin), Lua config provider behavior, workspace event semantics.
+- **Symbol check:** `scripts/ci/check-imports.sh` passes for the pin build against `external/Hyprland/build/Hyprland`, the main build against `external/Hyprland-main/build/Hyprland`, and a pkg-config build against the host's `/usr/bin/Hyprland` (LTO). The script needed its exec bit (`git` had mode 100644; CI ran it after a `chmod`).
 
 ## Draw order and hardware cursors (cited at efb5099)
 
@@ -431,6 +445,16 @@ Source analysis only: nothing was loaded or run. libwayland 1.26.0 (the host's `
 - **Command:** `registerHyprCtlCommand` with `exact = true` (`PluginAPI.cpp:422-431`); exact names are matched first (`HyprCtl.cpp:2101-2109`), `-j` arrives as `FORMAT_JSON`, an empty reply would become "unknown request" (`:2123-2124`), so failures return a message. Unregistered in `teardown` (Hyprland also removes it on unload, `PluginSystem.cpp:172-176`). Snapshot built on the main thread (`src/Status.*` formats it); per-monitor counters live in `SMonitorFrame`, erased with the monitor on hotplug.
 - **Smoke test:** checks both formats after load and "unknown request" after unload.
 
+## Smoke test in CI (precedent read at main 4bb6844b; pin efb5099 identical)
+
+- **Upstream precedent:** `.github/workflows/nix-test.yml` runs `nix build …#checks.x86_64-linux.tests -L` on plain `ubuntu-latest` and then reads `result/exit_status`; `nix/tests/default.nix` is a `pkgs.testers.runNixOSTest` machine with `programs.hyprland` (package `hyprland-with-tests`), alice autologin, `-vga none -device virtio-gpu-pci`, 4 cores/8 GB, `XDG_RUNTIME_DIR=/tmp`, running `hyprtester -b …/Hyprland -c /etc/test.lua -p …/hyprtestplugin.so` as alice. The script always copies the logs and `exit_status` out and lets the workflow decide, so a failing test still yields artifacts. `hyprwm/actions/nix-setup` (checked at its `main`) does no KVM/udev/disk setup.
+- **Why not `make smoke` as is:** it needs a parent Wayland session for a GPU allocator (Smoke test environment below); the VM has virtio-gpu, so the DRM backend works.
+- **hyprtester needs the test compiled in:** it globs `hyprtester/src/**/*.cpp` and is a subdirectory of the top-level CMake project (`CMakeLists.txt:707-711`), so `nix/smoke.nix` overrides `hyprland-with-tests` (`overrideAttrs`), copies `hyprtail_smoke.cpp` in, and builds only `generate-protocol-headers hyprtester` (the POST_BUILD step builds `hyprtestplugin.so`, `hyprtester/CMakeLists.txt:20-24`, `plugin/Makefile`). Rebuilding all of `hyprland-with-tests` would bust upstream's cache. Checked outside Nix in a fresh copy of main: configure with the Nix flags (`WITH_TESTS=ON`, no Xwayland/systemd) and that two-target build exit 0, producing `build/hyprtester/hyprtester` and `hyprtester/plugin/hyprtestplugin.so`. The Nix derivation itself is unevaluated (no `nix` here).
+- **Lua config location:** `test.lua` does `require(config_dir() .. "/lua-require/absolute.lua")` (`hyprtester/test.lua:14-16`, `ConfigManager.cpp:547-548`), so the concatenated `test.lua` + `smoke.lua` is installed next to `lua-require/` and passed to `-c` by its store path. (Upstream's `/etc/test.lua` is a symlink into `$out/share/hypr`.)
+- **Which Hyprland:** the flake's `hyprland` input, overridden per CI row (`--override-input hyprland github:hyprwm/Hyprland?ref=<row>`). The plugin under test is the flake's `hyprtail`, built against the non-tests `hyprland` of the same rev; the ABI hash is the commit plus dependency versions (`PluginAPI.hpp` `__hyprland_api_get_hash`/`_client_hash`), identical for both. `legacyPackages.<system>.smoke`, not `checks`, because `nix flake check` builds every check.
+- **KVM:** a udev rule (`MODE=0666`) before Nix starts, and a hard failure if `/dev/kvm` is absent; a missing KVM would otherwise only show up as a VM too slow for the job timeout.
+- **Unknowns until it has run:** the derivation on real Nix; KVM and RAM on the scratch repo's runner (VM defaults 4 GB/2 cores, `memorySize`/`cores` in `nix/smoke.nix`); the `stable` row (test compiled only against the pin and main); the loader change on main (`loadPlugin(path, pidType, requesterPid)`, `PluginSystem.cpp`) with `/plugin load` over IPC; the test's fixed sleeps under a VM.
+
 ## Smoke test environment (cited at efb5099; aquamarine 0.15.1, libwayland 1.26.0)
 
 Two `make smoke` failures reported by the user, both caused by the first recipe's isolation. Diagnosed from source only; the fixed recipe hasn't been run by the assistant.
@@ -580,6 +604,52 @@ Built, not yet run in any compositor. SPEC §13.1-13.6 and §13.16 have the what
   CLAUDE.md). Its first real compile happens on the host build
   (`hyprpm update`). Read it carefully before trusting it blindly on a
   first failure.
+
+## Phase 4b: shader and preset layout, two namespaces (built, untested; cited at efb5099)
+
+Supersedes the paths and names in the Phase 2 and Phase 4 notes above
+(`shaders/classic/`, `shaders/hyprtail/`, `presets/<name>/preset.conf`,
+`classic/ribbon.vert`, `hyprtail/...` includes). Nothing had been published,
+so no compatibility shim.
+
+- **Layout:** `shaders/{ribbon,ring}.{vert,frag}` (stock main shaders),
+  `shaders/helpers/` (include library, was `hyprtail/`), `shaders/prelude/`
+  unchanged and internal (not for editing). `presets/<name>.conf`, flat.
+  `shader::builtin()` keys lost the `classic/` prefix (`ribbon.vert`).
+- **One rule, applied three times:** a prefix means embedded and
+  immutable, anything else is the user's own file.
+  - preset name: `prefab:<name>` vs `<name>`;
+  - a preset's shader stage: `prefab:ribbon.vert` vs `ribbon.vert`;
+  - include: `"helpers/<name>"` vs a path.
+  Why not shadow-with-fallback (what a same-named user directory did
+  before): a user who copies `subtle.conf` and edits their shader copy would
+  get the built-in silently if a bare name still meant "built-in first". The
+  shipped presets therefore say `prefab:ribbon.vert`, and "edit it" is
+  "swap the prefixed form for a bare one pointing at your copy". A bare
+  preset name never resolves to a built-in; when the file is missing the
+  error says which path was tried (and hints `prefab:<name>` if a built-in
+  of that name exists). The failure still degrades to `prefab:subtle`,
+  after the error, because the plugin must keep drawing.
+- **Gotcha:** a user's own copy of a helper must be included as
+  `"./helpers/<name>"`, since the bare `helpers/` prefix is always the
+  embedded one (same as `hyprtail/` was).
+- **Relative shader paths resolve against the hyprtail config root**
+  (`cfg::hyprtailRoot()`, `$XDG_CONFIG_HOME/hypr/hyprtail`), both for a
+  preset's `vertex`/`fragment` and for `layerN_vertex`/`layerN_fragment`.
+  Previously a preset's paths were relative to its own directory, and the
+  `layerN_*` ones to the directory of the main config file
+  (`Config::mgr()->getMainConfigPath()`, Config.cpp before this change).
+  Hyprland's own `decoration:screen_shader` still resolves against the main
+  config path (`OpenGL.cpp:919`, `absolutePath(path,
+  Config::mgr()->getMainConfigPath())` at efb5099): a deliberate divergence
+  for one base inside hyprtail. Side effect: `hyprland -c <file>` no longer
+  moves hyprtail's directory; `run_dev.sh` sets `XDG_CONFIG_HOME`, so the
+  dev instance is unaffected.
+- **Prefab presets can only use `prefab:` shaders** (no path), so an
+  embedded manifest can never pick up a file from the user's directory.
+- **Not covered by `make test-unit`:** `Preset.cpp` links Hyprland headers
+  (`Diagnostics`, `Config`), so the unit build doesn't include it. The
+  resolution logic is checked by building and by the host test.
 
 ## Phase 6: pointer features (built, untested)
 
