@@ -139,9 +139,9 @@ static void testShaderSource() {
     CHECK(!pp("#version 300 es\n#pragma hyprtail contract 2\n#pragma hyprtail glow 1\nvoid main() {}\n", eStage::FRAGMENT));
 
     // Built-ins preprocess.
-    for (const auto* name : {"classic/ribbon.vert", "classic/ring.vert"})
+    for (const auto* name : {"ribbon.vert", "ring.vert"})
         CHECK(shader::preprocess(shader::builtin(name), name, {}, eStage::VERTEX).has_value());
-    for (const auto* name : {"classic/ribbon.frag", "classic/ring.frag"})
+    for (const auto* name : {"ribbon.frag", "ring.frag"})
         CHECK(shader::preprocess(shader::builtin(name), name, {}, eStage::FRAGMENT).has_value());
 }
 
@@ -242,10 +242,10 @@ int main() {
     if (const char* dir = std::getenv("OUT_DIR")) {
         std::filesystem::create_directories(dir);
         const std::pair<const char*, shader::eStage> builtins[] = {
-            {"classic/ribbon.vert", shader::eStage::VERTEX},
-            {"classic/ribbon.frag", shader::eStage::FRAGMENT},
-            {"classic/ring.vert", shader::eStage::VERTEX},
-            {"classic/ring.frag", shader::eStage::FRAGMENT},
+            {"ribbon.vert", shader::eStage::VERTEX},
+            {"ribbon.frag", shader::eStage::FRAGMENT},
+            {"ring.vert", shader::eStage::VERTEX},
+            {"ring.frag", shader::eStage::FRAGMENT},
         };
         for (const auto& [name, stage] : builtins) {
             auto src = shader::preprocess(shader::builtin(name), name, {}, stage);

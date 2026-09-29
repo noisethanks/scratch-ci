@@ -105,6 +105,12 @@ jobs:
       - name: make test-unit
         run: make test-unit SANITIZE=${{ matrix.sanitize && '1' || '0' }}
 
+      - name: make test-compat
+        run: |
+          set -euo pipefail
+          export PKG_CONFIG_PATH="$PWD/result-dev/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+          make test-compat
+
       - name: nm import check
         run: |
           chmod +x scripts/ci/check-imports.sh
@@ -223,26 +229,75 @@ jobs:
       - run: nix build .#hyprtail -L
 
   # ----------------------------------------------------------------- smoke
-  # Reserved slot. Loading hyprtail into Hyprland's own NixOS-VM hyprtester
-  # run (nix/tests/default.nix upstream: pkgs.testers.runNixOSTest running
-  # hyprland_gtests then hyprtester -c test.lua -p hyprtestplugin.so) is its
-  # own unit of work: copy hyprtail.so and tests/hyprtester/hyprtail_smoke.cpp
-  # into that VM's closure the way `make smoke` does locally, append
-  # smoke.lua to test.lua, and extend the assertions to read
-  # `hyprctl hyprtail -j` counters after scripted cursor movement so a
-  # plugin that loads but draws nothing still fails. Not implemented in this
-  # pass — see docs/CI.md. Left disabled (not a required check) with its
-  # job name and matrix already wired so enabling it later is a small diff.
+  # hyprtail's lifecycle smoke test (tests/hyprtester/hyprtail_smoke.cpp)
+  # inside Hyprland's own kind of NixOS VM test, one VM per matrix row. Same
+  # approach as Hyprland's nix-test.yml (`nix build` a runNixOSTest, then read
+  # the exit status it copies out); the VM is nix/smoke.nix. Gated on the
+  # repository variable SMOKE_ENABLED == 'true' (Settings -> Secrets and
+  # variables -> Actions -> Variables), off by default, and not a required
+  # check until it has run cleanly a few times (docs/CI.md, "Smoke job").
+  # Rows are independent of the `test` job so a red row there doesn't hide
+  # the others.
   smoke:
-    if: false
-    needs: [resolve, test]
+    if: ${{ !cancelled() && vars.SMOKE_ENABLED == 'true' }}
+    needs: resolve
     name: hyprland-smoke-${{ matrix.name }}
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     strategy:
+      fail-fast: false
       matrix:
         include: ${{ fromJson(needs.resolve.outputs.matrix) }}
     steps:
-      - run: echo "not implemented yet, see docs/CI.md"
+      - uses: actions/checkout@v4
+
+      # The VM is a QEMU guest. Without a usable /dev/kvm it would still boot,
+      # under software emulation, slowly enough to hit the timeout with no
+      # error saying why. Make /dev/kvm world-usable before Nix starts (the
+      # build runs as an unprivileged nixbld user) and fail here if it's not
+      # there at all.
+      - name: Enable KVM
+        run: |
+          set -euo pipefail
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          if [ ! -e /dev/kvm ]; then
+            echo "::error::/dev/kvm is missing on this runner; the VM would run under software emulation"
+            exit 1
+          fi
+          ls -l /dev/kvm
+
+      - uses: ./.github/actions/nix-setup
+        with:
+          cache-key-suffix: smoke-${{ matrix.name }}
+
+      - name: Build and run the smoke VM (Hyprland ${{ matrix.ref }})
+        run: |
+          set -euo pipefail
+          nix show-config 2>/dev/null | grep -E '^system-features' || true
+          nix build ".#legacyPackages.x86_64-linux.smoke" -L \
+            --override-input hyprland "github:hyprwm/Hyprland?ref=${{ matrix.ref }}" \
+            --no-write-lock-file \
+            --extra-substituters "https://hyprland.cachix.org"
+
+      # The VM test itself always succeeds once the machine ran, so its logs
+      # come out either way (nix/smoke.nix); hyprtester's status is in a file.
+      - name: Check exit status
+        run: |
+          set -euo pipefail
+          status="$(cat result/exit_status)"
+          echo "hyprtester exit status: ${status}"
+          [ "${status}" = 0 ]
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-logs-${{ matrix.name }}
+          path: result
+          if-no-files-found: ignore
+          retention-days: 14
 
   # ----------------------------------------------------------------- alert
   # Scheduled runs only (never on pull_request, including forks — no

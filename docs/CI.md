@@ -22,8 +22,9 @@ runs blocks every merge — see "how to read a red row" below for what
 "required but skipped" looks like and why the workflow has no `paths:`
 filter for exactly this reason.
 
-`hyprland-smoke-*` is wired into the workflow (`if: false`) but not
-implemented yet; don't require it.
+`hyprland-smoke-*` runs only while the repository variable
+`SMOKE_ENABLED` is `'true'` (see "Smoke job" below); don't require it until
+it has run cleanly a few times.
 
 ## Ruleset settings for `master`
 
@@ -48,6 +49,44 @@ The job summary on every run (pass or fail) lists files changed in
 `src/render/`, `src/pointer/`, `Monitor.cpp`, or anything matching `damage`
 between that row's last recorded green SHA and the current one — a quick
 "what actually moved upstream" view before diving into a failure.
+
+## Smoke job
+
+`hyprland-smoke-<row>` runs hyprtail's lifecycle smoke test
+(`tests/hyprtester/hyprtail_smoke.cpp`: load, duplicate refusal, hotplug,
+unload/reload, crash-loop guard, with `errors.log` checked after each step)
+in a NixOS VM, one per matrix row, the way Hyprland runs its own hyprtester
+suite (`nix/tests/default.nix` and `.github/workflows/nix-test.yml`
+upstream). It never runs a Hyprland on the runner itself, only inside the VM.
+
+- **Enable:** set the repository variable `SMOKE_ENABLED` to `true`
+  (Settings -> Secrets and variables -> Actions -> Variables). Unset or
+  anything else and the job is skipped.
+- **What runs:** `nix build .#legacyPackages.x86_64-linux.smoke` with the
+  `hyprland` flake input overridden to the row's ref. `nix/smoke.nix` builds
+  hyprtester with the smoke test compiled in (only the `hyprtester` target,
+  not Hyprland), builds hyprtail against the same Hyprland (`make all`, the
+  pkg-config path, so `src/compat.hpp` is exercised per row), and runs
+  `hyprtester ... hyprtailLifecycle` in the VM. The output is deliberately not
+  under `checks`/`packages`, so `flake-check` doesn't build a VM.
+- **KVM:** the first step makes `/dev/kvm` usable (udev rule) and fails the
+  job if it's missing. Without KVM the VM would still boot, in software
+  emulation, and just be very slow.
+- **Reading a red row:** the `Check exit status` step is hyprtester's own
+  status (test failure: read `smoke-logs-<row>/testerlog`, `hyprlog` and
+  `errors.log`); a failure in the `nix build` step is the VM or the
+  derivation (no `result`, read the `-L` output; a Hyprland row whose
+  hyprtester no longer builds with the test looks like this). Timeouts are
+  60 minutes.
+- **Promoting it to a required check:** let it run several times on the
+  scratch repo first, across pushes and at least one scheduled run, and
+  watch for flakiness (the test uses fixed sleeps), the `stable` row (the
+  test has only been compiled against the pin and main) and run time. Then
+  add `hyprland-smoke-stable` and `hyprland-smoke-main` to the required
+  checks. `hyprland-smoke-release-branch` exists only when that row does, so
+  it can't be required (same reason as `hyprland-release-branch`).
+- **Not covered yet:** the test does not check that anything was drawn; a
+  plugin that loads and draws nothing passes.
 
 ## Manual ground-truth check: the LTO gap
 

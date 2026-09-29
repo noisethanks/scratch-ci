@@ -79,5 +79,17 @@
       });
 
       checks = eachSystem (system: self.packages.${system});
+
+      # The NixOS-VM smoke test (nix/smoke.nix), kept out of `checks` and
+      # `packages` on purpose: `nix flake check` (the flake-check CI job)
+      # would build it, and it needs KVM and takes minutes. CI builds it per
+      # Hyprland row by overriding the `hyprland` input, see the smoke job.
+      legacyPackages = eachSystem (system: {
+        smoke = import ./nix/smoke.nix {
+          pkgs = pkgsFor.${system};
+          hyprland = hyprland.packages.${system}.hyprland-with-tests;
+          hyprtail = self.packages.${system}.hyprtail;
+        };
+      });
     };
 }
