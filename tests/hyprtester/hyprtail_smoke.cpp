@@ -41,7 +41,7 @@ namespace {
     constexpr int         OUT_X       = 20000;
     constexpr int         OUT_Y       = 0;
 
-    // Matches plugin.hyprtail.fade_ms in smoke.lua.
+    // Matches trail:fade_ms in the plugin.hyprtail.params string in smoke.lua.
     constexpr int FADE_MS = 500;
 
     // Marker of our entry in `/plugin list` (HyprCtl.cpp dispatchPlugin).

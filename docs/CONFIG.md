@@ -168,7 +168,7 @@ other parameter:
 | Name | Type | Default | Meaning |
 |---|---|---|---|
 | `enabled` | bool | `true` | `false` turns this layer off entirely (not even compiled). |
-| `draw_when_cursor_hidden` | bool | `true` | Whether the layer keeps drawing while the OS cursor is hidden. |
+| `draw_when_cursor_hidden` | bool | `true` for `path` layers, `false` for `quad` layers | Whether the layer keeps drawing while the OS cursor is hidden. |
 | `fade_ms` | float, ms | `500` | Trail/particle layers: how long a point stays visible after it's created. |
 | `start_ms` | float, ms | `500` | Idle-style layers: how long the pointer must sit still before the layer starts showing. |
 | `duration_ms` | float, ms | `1500` | Idle-style layers: how long it stays visible once started (`0` = forever, until the pointer moves). |

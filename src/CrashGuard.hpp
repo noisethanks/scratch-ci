@@ -1,6 +1,6 @@
 #pragma once
 
-// Crash-loop guard (SPEC §7/§10, NOTES "Duplicate instance detection"'s
+// Crash-loop guard (SPEC §2/§10, NOTES "Duplicate instance detection"'s
 // cousin): a marker left at init, whose pid is no longer alive by the next
 // load of the same build against the same running Hyprland, means the
 // previous load died before reaching teardown() -- refuse to load rather

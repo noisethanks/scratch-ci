@@ -4,15 +4,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "$SCRIPT_DIR"
 echo "📦 Setting up dev environment..."
-# mkdir -p "$SCRIPT_DIR/dev_env/hypr/shaders"
-# cp "$SCRIPT_DIR/shaders/trail.frag" "$SCRIPT_DIR/dev_env/hypr/shaders/"
-# cp "$SCRIPT_DIR/shaders/trail.vert" "$SCRIPT_DIR/dev_env/hypr/shaders/"
 
-# echo "🔧 Generating config with correct paths..."
-# sed "s|/home/abhi/hyprtail|$SCRIPT_DIR|g" "$SCRIPT_DIR/dev_env/hypr/hyprland.conf.template" > "$SCRIPT_DIR/dev_env/hypr/hyprland.conf"
-
-echo "🔨 Building plugin..."
-"$SCRIPT_DIR/plugin_rebuild.sh"
+echo "🔨 Building plugin (DEV=1, against external/Hyprland)..."
+make -C "$SCRIPT_DIR" DEV=1 all || { echo "❌ Plugin build failed"; exit 1; }
 
 echo "🚀 Launching Hyprland nested instance..."
 HYPRLAND_BIN="$SCRIPT_DIR/external/Hyprland/build/Hyprland"

@@ -13,11 +13,12 @@ hl.monitor({ output = "HYPRTAIL-TEST", mode = "1280x720@60", position = "20000x0
 hl.config({
     plugin = {
         hyprtail = {
-            fade_ms           = 500, -- FADE_MS in hyprtail_smoke.cpp
-            warp              = "line", -- the test moves by warps; connect them into a ribbon
-            idle_enabled      = true,
-            idle_delay_ms     = 50,
-            idle_duration_ms  = 200,
+            -- classic has the idle ring layer, off in the preset itself; the
+            -- params string turns it on with a short delay and duration.
+            -- trail:fade_ms is FADE_MS in hyprtail_smoke.cpp.
+            preset = "prefab:classic",
+            params = "idle:enabled=true idle:start_ms=50 idle:duration_ms=200 trail:fade_ms=500",
+            warp   = "line", -- the test moves by warps; connect them into a ribbon
         },
     },
 })

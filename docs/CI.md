@@ -51,28 +51,75 @@ v0.56.1's `flake.lock` uses: glaze 7.9.0, and v0.56.1's `nix/default.nix` and
 
 ## Required check names
 
-Configure these as required status checks on `master` (Settings → Rules →
+Currently required status checks on `master` (Settings → Rules →
 Rulesets, or the legacy branch protection UI):
 
 - `hyprland-stable`
-- `hyprland-main`
 - `flake-check`
 
-Do **not** require `hyprland-release-branch`: it only exists in the matrix
-(and therefore only reports a check) on runs where the release branch is
-actually ahead of the latest tag. A required check that sometimes never
-runs blocks every merge — see "how to read a red row" below for what
-"required but skipped" looks like and why the workflow has no `paths:`
-filter for exactly this reason.
+Run on every PR but **not required yet**, each on purpose:
+
+| Check | Why not required | Promotion criteria |
+|---|---|---|
+| `hyprland-main` | `main` moves under us: an upstream break would turn a required check red and block every unrelated PR. | See "Promoting `hyprland-main`" below. |
+| `hyprland-smoke-stable` | Not enough clean runs yet (`SMOKE_ENABLED` is on; the count starts at zero, see "Promoting the smoke rows"). | See "Promoting the smoke rows" below. |
+| `hyprland-smoke-main` | Same, plus the `main` problem above. | See "Promoting the smoke rows" below. |
+
+Never require `hyprland-release-branch` or `hyprland-smoke-release-branch`:
+they only exist in the matrix (and therefore only report a check) on runs
+where the release branch is actually ahead of the latest tag. A required
+check that sometimes never runs blocks every merge — see "how to read a red
+row" below for what "required but skipped" looks like and why the workflow
+has no `paths:` filter for exactly this reason.
 
 `hyprland-smoke-*` runs only while the repository variable
-`SMOKE_ENABLED` is `'true'` (see "Smoke job" below); don't require it until
-it has run cleanly a few times.
+`SMOKE_ENABLED` is `'true'` (see "Smoke job" below).
+
+### Promoting `hyprland-main`
+
+Promote only when all of these hold:
+
+- At least 14 consecutive days and at least 20 consecutive runs of the row
+  (PR and scheduled runs both count; the schedule alone gives about six a
+  day), every one green, or red only for a cause in hyprtail that was fixed
+  on the PR that caused it.
+- Not one of those runs went red from an upstream change. If an upstream
+  break lands inside the window, the clock restarts once it's fixed.
+- A way to unblock PRs during an upstream break is written down and
+  agreed first (repin per `SPEC.md` §2, or a ruleset bypass), because the
+  first upstream break after promotion will block merges.
+
+If upstream breaks keep restarting the clock, `hyprland-main` staying
+advisory is the intended outcome: the `alert` job already opens a tracking
+issue on a red scheduled run, which is the signal this check exists for.
+
+### Promoting the smoke rows
+
+Promote `hyprland-smoke-stable` and `hyprland-smoke-main` independently,
+each when all of these hold for that row:
+
+- At least 10 consecutive clean runs over at least 7 days, including at
+  least 2 scheduled runs and at least 1 PR run.
+- No run needed a re-run to go green. A pass after a re-run counts as a
+  failure and restarts the count: the test uses fixed sleeps, so a flake
+  must be fixed, not retried.
+- Run time stays well under the 60-minute job timeout, with no run above
+  45 minutes.
+- For `hyprland-smoke-stable`, the clean runs are on the current pinned
+  stable (see "Stable row: pinned nixpkgs"); when the pin changes or drops
+  out, count again from zero.
+- For `hyprland-smoke-main`, the "Promoting `hyprland-main`" criteria also
+  apply, since a red `main` would block PRs the same way.
+
+The count starts at zero. The two smoke runs that existed before the stable
+nixpkgs pin and the `nix develop .#ci` restructure don't count: they weren't
+testing what will actually ship.
 
 ## Ruleset settings for `master`
 
 - Require a pull request before merging.
-- Require status checks to pass: the three above.
+- Require status checks to pass: `hyprland-stable` and `flake-check` (see
+  "Required check names" for what is deliberately left out).
 - Require branches to be up to date before merging. Trade-off: every PR
   re-runs CI after a rebase onto a moved `master`, which is what you want
   for a required check, but means a stack of PRs re-verifies at each merge.
@@ -122,13 +169,12 @@ upstream). It never runs a Hyprland on the runner itself, only inside the VM.
   derivation (no `result`, read the `-L` output; a Hyprland row whose
   hyprtester no longer builds with the test looks like this). Timeouts are
   60 minutes.
-- **Promoting it to a required check:** let it run several times on the
-  scratch repo first, across pushes and at least one scheduled run, and
-  watch for flakiness (the test uses fixed sleeps), the `stable` row (the
-  test has only been compiled against the pin and main) and run time. Then
-  add `hyprland-smoke-stable` and `hyprland-smoke-main` to the required
-  checks. `hyprland-smoke-release-branch` exists only when that row does, so
-  it can't be required (same reason as `hyprland-release-branch`).
+- **Promoting it to a required check:** not yet; the criteria are under
+  "Promoting the smoke rows" in "Required check names". Watch for flakiness
+  (the test uses fixed sleeps), the `stable` row (the test has only been
+  compiled against the pin and main) and run time.
+  `hyprland-smoke-release-branch` exists only when that row does, so it can't
+  be required (same reason as `hyprland-release-branch`).
 - **Not covered yet:** the test does not check that anything was drawn; a
   plugin that loads and draws nothing passes.
 

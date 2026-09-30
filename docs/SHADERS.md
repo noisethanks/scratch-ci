@@ -90,9 +90,9 @@ long as it only reads the standard varyings — see below).
 - Types: `float`, `int`, `bool`, `vec2`, `color`. `min`/`max` apply to
   `float`, `int`, `vec2` (both components); `bool` and `color` take no
   range.
-- Names: lowercase letter or `_` first, then letters/digits/`_`. Names
-  starting with `ht_` or `gl_` are reserved and refused, as are the
-  reserved lifecycle names below.
+- Names: lowercase letter or `_` first, then letters/digits/`_`, at most 64
+  characters, no `__`. Names starting with `ht_` or `gl_` are reserved and
+  refused, as are the reserved lifecycle names below.
 - A parameter declared in both stages must match exactly (type, default,
   range) — not just have the same type.
 - `color` values use `0xAARRGGBB`, `rgba(RRGGBBAA)`, or `rgb(RRGGBB)` (not
@@ -151,7 +151,7 @@ being arbitrary shader knobs:
 | Name | Type | Default | Meaning |
 |---|---|---|---|
 | `enabled` | bool | `true` | `false` disables the whole layer (not compiled). |
-| `draw_when_cursor_hidden` | bool | `true` | Whether the layer keeps drawing while the OS cursor is hidden. |
+| `draw_when_cursor_hidden` | bool | `true` for `path`, `false` for `quad` | Whether the layer keeps drawing while the OS cursor is hidden. |
 | `fade_ms` | float, ms, 1–60000 | `500` | `path` topology: a node stops being visible once its age passes this. |
 | `start_ms` | float, ms, 0–60000 | `500` | `quad` topology: the layer becomes visible once the pointer has been still this long. |
 | `duration_ms` | float, ms, 0–600000 | `1500` | `quad` topology: how long it then stays visible (`0` = forever, until the pointer moves). |
@@ -408,3 +408,15 @@ plugin:hyprtail:params = trail:color=rgba(ff2266ff)
 
 (`trail` here assumes layer 1 of the active preset is named `trail`, true
 for both shipped presets.)
+
+**Expect one warning with either setup.** Swapping a layer's shader doesn't
+touch its parameter defaults: the preset's own `trail:` values stay in place.
+Both shipped presets set `trail:color_slow` and `trail:color_fast`, which
+`solid.frag` doesn't declare (it declares `color`). Those two values then name
+parameters that aren't in the new program, so each load and config reload
+reports a `params:trail` warning (`color_slow: not a parameter of this layer;
+ignoring`, and the same for `color_fast`). The layer still draws with
+`solid.frag` and `trail:color`; the warning is the only effect. With your own
+preset file (the first setup) you can avoid it by deleting the
+`trail:color_slow` and `trail:color_fast` lines; with `layer1_fragment` (the
+second setup) the preset's values can't be removed, so the warning stays.

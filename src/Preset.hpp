@@ -8,8 +8,8 @@
 
 #include "Layer.hpp"
 
-// Preset manifests (SPEC §13.7): preset.conf, plain "key = value" lines, '#'
-// to end-of-line comments, blank lines ignored. Layer keys are prefixed
+// Preset manifests (SPEC §13.7): the preset file format, plain "key = value"
+// lines, '#' to end-of-line comments, blank lines ignored. Layer keys are prefixed
 // "<layer>:", as in "plugin:hyprtail:...".
 //
 //   contract    = 2                          required, exactly once
@@ -28,7 +28,7 @@
 // relative ones against the hyprtail root.
 namespace hyprtail::preset {
     // Manifest grammar version, unrelated to shader::CONTRACT_VERSION (§5):
-    // this one just lets a future breaking change to preset.conf's own
+    // this one just lets a future breaking change to the preset file format's own
     // syntax name itself, the same way shader contracts do.
     constexpr int CONTRACT_VERSION = 2;
 

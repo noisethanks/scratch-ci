@@ -77,8 +77,8 @@ this file states the decision and marks what's still a placeholder.
   fallback `~/.local/state/hyprtail/`; `rev`/`hyprland`/`instance`/`pid`
   fields) is written at init and removed on clean unload, in `teardown()`,
   and 60s after a startup that got that far (the same event-loop-timer
-  approach as the idle timer, SPEC's idle effect). Checked first thing in
-  `PLUGIN_INIT`, before the duplicate-instance check's cousin runs
+  approach as the idle timer, SPEC's idle effect). Checked in
+  `PLUGIN_INIT` right after the duplicate-instance check and before
   `diag::init` (which would otherwise rotate away a crashed session's
   `errors.log`): a marker naming this exact build (`rev`) and this exact
   running Hyprland (`hyprland`, `__hyprland_api_get_hash()`) whose `pid` is
@@ -99,35 +99,48 @@ this file states the decision and marks what's still a placeholder.
   `cmake` flags, not bare `rm -rf build`, both miss things the project's own
   Makefile handles: `-DTESTS=true` for hyprtester, generated protocol headers
   outside `build/`).
-- Dev config: `hyprlandd.lua` (debug-binary convention), nested launch via
-  `external/Hyprland/build/Hyprland -c hyprlandd.lua`, no separate launch
-  script, adds failure surface without adding value.
+- Dev config: `dev_env/hypr/hyprlandd.lua` (debug-binary convention; it also
+  sets the hyprtail keys for nested testing). Nested launch: `run_dev.sh`
+  builds the plugin (`make DEV=1 all`), starts
+  `external/Hyprland/build/Hyprland -c dev_env/hypr/hyprlandd.lua` with
+  `XDG_CONFIG_HOME=dev_env` (so the hyprtail config root is
+  `dev_env/hypr/hyprtail`, not the host's) and links the instance log to
+  `dev_env/hyprtail-latest.log`. It doesn't load the plugin: use
+  `make load` from a terminal inside the nested instance.
+  `hyprland_rebuild.sh` rebuilds the checkout (`make clear && make debug`,
+  no `git pull`).
 
 ## 3. Data model
 
-- CPU-side circular buffer, single source of truth:
+- CPU-side circular buffer (`CTrailRing`, `src/TrailBuffer.*`), single source
+  of truth:
   ```
   struct SCursorNode {            // CPU layout
-      SVec2f posPx;               // global layout pixel space, NOT per-monitor normalized
-      double birthTimeMs;         // ms since plugin load
-      SVec2f velocity;            // px/ms, precomputed once per node on write, not per-pixel in shader
-      bool   segmentStart;        // not connected to the previous node (§7)
+      SVec2f   posPx;             // global layout pixel space, NOT per-monitor normalized
+      double   birthTimeMs;       // ms since plugin load
+      SVec2f   velocity;          // px/ms from the previous node, zero at a segment start; computed once on insert, not per-pixel in shader
+      double   distPx;            // path distance from the start of this node's segment
+      uint32_t seed;              // 31 random bits, stable for the node's life
+      bool     segmentStart;      // not connected to the previous node (§7)
   };
-  struct SGpuNode {               // GPU (VBO) layout, 24 bytes, static_assert'd
-      SVec2f posPx;
-      float  birthMs;             // relative to a reference chosen at upload
-      SVec2f velocity;
-      float  flags;               // bit 0: segment start
+  struct SGpuNode {               // GPU (VBO) layout, 28 bytes, static_assert'd
+      SVec2f   posPx;             // offset 0
+      float    birthMs;           // offset 8, relative to a reference chosen at upload
+      SVec2f   velocity;          // offset 12
+      float    distPx;            // offset 20
+      uint32_t bits;              // offset 24, integer attribute: bit 0 segment start, bits 1-31 seed
   };
   ```
-  (`SVec2f` is a plain two-float struct; glm isn't a dependency.)
+  (`SVec2f` is a plain two-float struct; glm isn't a dependency.) `distPx`
+  restarts at every segment start (§13.2).
 - **Timestamp precision:** CPU birth times are double. A float of ms since
   load stops resolving 1ms after ~4.6h (2^24 ms). The ordered copy (below) is
   where CPU layout converts to GPU layout: birth times are rebased on a
   reference (the newest node's birth time at upload) and narrowed to float, so
-  uploaded values stay small. The shader gets `nowMs` relative to the same
-  reference; only `age = nowMs - birthMs` is meaningful. Upload is gated on
-  the buffer changing, not every frame; `nowMs` is a per-frame uniform.
+  uploaded values stay small. The shader gets `ht_nowMs` relative to the same
+  reference; only `age = ht_nowMs - birthMs` is meaningful. Upload is gated on
+  the ring's generation (bumped on every insert, resize and clear), not every
+  frame; `ht_nowMs` is a per-frame uniform.
 - **Coordinate space: global layout pixels** (`CPointerManager::position()`,
   confirmed monitor-independent). Converted to each monitor's local space only
   at render time, inside that monitor's own pass element. Storing
@@ -138,14 +151,19 @@ this file states the decision and marks what's still a placeholder.
   once per buffer write, not recomputed per-pixel in the fragment shader.
   Never existed as a Hyprland uniform at any point in its history, confirmed
   via full git log search, so this is necessary regardless of era.
-- **Buffer size: TBD**, not yet chosen. Reasoning in NOTES.md assumes
-  "tens of points, maybe up to ~100" when evaluating costs below; revisit
-  those if the real number lands far outside that range.
-- **Wrap handling:** rebuild a temporally-ordered copy from the ring each
-  frame before GPU upload. The ring buffer itself is never shifted, O(1)
-  writes at the cursor position always. The reordered copy is a stateless
-  per-frame projection, not a second source of truth, nothing to
-  desynchronize since it's fully rebuilt every frame. (Rejected alternative:
+- **Buffer size:** the `capacity` setting (§9), default 64 points, range
+  2..4096. Changing it resizes the ring keeping the newest points
+  (`CTrailRing::resize`); the VBO holds `capacity + 2` nodes (the two pads,
+  §4). The default is an untuned placeholder (§12); NOTES.md's cost reasoning
+  assumes "tens of points, maybe up to ~100", so revisit it if the real
+  number lands far outside that range.
+- **Wrap handling:** rebuild a temporally-ordered copy from the ring
+  (`CTrailRing::orderedCopy`) whenever the ring's generation changed since
+  the last upload, not on every frame. The ring buffer itself is never
+  shifted, O(1) writes at the cursor position always. The reordered copy is
+  a stateless projection, not a second source of truth, nothing to
+  desynchronize since it's fully rebuilt from the ring each time it is made.
+  (Rejected alternative:
   read the raw ring directly and exclude the wrap-boundary segment via the
   index buffer, cheaper per-vertex but only pays off at buffer sizes in the
   thousands, and moves the bookkeeping into draw-call state instead of
@@ -153,8 +171,10 @@ this file states the decision and marks what's still a placeholder.
 
 ## 4. Rendering pipeline
 
-- Own `CShader` program(s), own render-pass element, registered per monitor
-  (matches how `hypr-dynamic-cursors` and core's own pass elements work).
+- One `CShader` program per layer (`CShaderSlot`), drawn by one render-pass
+  element per monitor render (`CLayerPassElement`, which draws every visible
+  layer in order, §13.1), added to the render pass (matches how
+  `hypr-dynamic-cursors` and core's own pass elements work).
 - **Per-frame driver, exactly once per render of each monitor:**
   - **Primary: hook on `CPointerManager::renderSoftwareCursorsFor`**, running
     the trail lifecycle (sample/insert, damage, add element) *before* calling
@@ -174,7 +194,8 @@ this file states the decision and marks what's still a placeholder.
   touches, so a render happens even when moving the hardware cursor plane
   doesn't schedule one (Aquamarine's Wayland backend, i.e. nested). The render
   then runs the normal lifecycle. `cursor:no_hardware_cursors` is **not**
-  required. Skipped while locked or while the pointer is constrained.
+  required. Skipped while suppressed (session lock, pointer constraint, or the
+  focused window's `hyprtail:no_trail` rule, §7).
   **VRR gate:** with the cursor shown, monitors where core's
   `shouldSkipScheduleFrameOnMouseEvent()` holds are skipped (fullscreen
   no-break case). With the cursor hidden, core's check would skip every
@@ -190,20 +211,25 @@ this file states the decision and marks what's still a placeholder.
   hardware cursors. **Derived from source, not yet observed** (verification
   blocked, see §12).
 - **GL state goes through Hyprland's caches** (`useShader`, `scissor`,
-  `blend`; `bindArrayBuffer` where the pinned version has it), never raw `glUseProgram`/`glEnable`/`glBindBuffer`
-  on cached state. Draw only inside the element's damage rects.
+  `blend`; `bindArrayBuffer` where the headers have it: main does, the pin
+  doesn't, so it goes through `compat::bindArrayBuffer`), never raw
+  `glUseProgram`/`glEnable`/`glBindBuffer` on cached state. Draw only inside
+  the element's damage rects.
 - **Blending is premultiplied alpha** (`GL_ONE, GL_ONE_MINUS_SRC_ALPHA`); the
   fragment shader outputs `vec4(rgb * a, a)`.
 - **VBO attribute layout:** VBO = `[front pad, n0 .. n(count-1), back pad]`
   (front pad = n0 flagged as a segment start, back pad = copy of the newest).
-  The same VBO is bound four times, divisor 1, at consecutive node offsets:
-  `prev` = n(i-1) (pos, flags), `p0` = n(i) and `p1` = n(i+1) (pos, birth,
-  velocity, flags), `next` = n(i+2) (pos, flags): 12 attribute locations of
-  the 16 GLES3 guarantees. Instance i is the segment p0 -> p1, `count - 1`
-  instances, `gl_VertexID` picks the corner. prev/next exist for joins.
+  The same VBO is bound four times, divisor 1, at consecutive node offsets
+  (`CNodeBuffer::ensure`, `src/LayerPassElement.cpp`): `prev` = n(i-1)
+  (locations 0-1: pos, bits), `p0` = n(i) (2-6: pos, birth, velocity, dist,
+  bits), `p1` = n(i+1) (7-11, same fields), `next` = n(i+2) (12-13: pos,
+  bits): 14 attribute locations of the 16 GLES3 guarantees. The `bits` word
+  is an integer attribute (`glVertexAttribIPointer`). Instance i is the
+  segment p0 -> p1, `count - 1` instances (`size() - 1`), `gl_VertexID`
+  picks the corner. prev/next exist for joins.
 - **Ribbon geometry (stock shader):** miter joins computed from the incoming
   and outgoing directions at each node, miter length clamped to
-  `miterLimit` half-widths. Both segments meeting at a node compute its
+  `miter_limit` half-widths. Both segments meeting at a node compute its
   corners from the same inputs through the same functions, so joints are
   watertight with no double blending of translucent pixels. Half-width tapers
   with age like the alpha (tail pinches to a point as it fades).
@@ -211,7 +237,7 @@ this file states the decision and marks what's still a placeholder.
   coincident nodes) falls back to the segment's own direction; a zero-length
   segment, an unconnected segment (p1 starts a segment) or a segment with
   both ends fully faded is collapsed outside clip space.
-- **Minimum insert spacing** (placeholder 2 logical px): segments much
+- **Minimum insert spacing** (`min_spacing`, default 2 logical px): segments much
   shorter than the ribbon width make inner miters fold over neighbors
   (double blending). The newest node can lag the pointer by less than that,
   hidden under the cursor.
@@ -229,14 +255,16 @@ this file states the decision and marks what's still a placeholder.
   entirely) without plugin changes. Plugin C++'s job is raw point
   maintenance and upload only, same role as the JS side in the OGL
   reference this pattern is based on.
-- Fragment shader handles color/alpha/fade. **Fade should be time-based**
-  (`now - birthTimeMs`, using the buffer's stored timestamp), not
-  position-along-ribbon (`uv.x`). Position-based fade makes fade duration
-  vary with cursor speed (a fast flick compresses more history into less
-  visible length and fades faster in wall-clock time than a slow drift),
-  which doesn't match the stated "fade time" requirement. Built in stage 4
-  (placeholders: 500ms, linear), pending confirmation on the validation
-  ladder.
+- Color, alpha and fade: **fade is time-based** (a node's age, `ht_nowMs -
+  birthMs`, from the buffer's stored timestamp), not position-along-ribbon
+  (`uv.x`). Position-based fade makes fade duration vary with cursor speed
+  (a fast flick compresses more history into less visible length and fades
+  faster in wall-clock time than a slow drift), which doesn't match the
+  stated "fade time" requirement. Built: the stock vertex shader computes
+  `ht_life(age, fade_ms)` (`helpers/fade.glsl`, linear) per node and passes
+  it as the `ht_vLife` varying; the fragment shader applies it to alpha. The
+  duration is the reserved `fade_ms` layer parameter (§13.4), 300 ms in
+  `prefab:subtle`, 500 ms in `prefab:classic`.
 
 ## 5. Shader extensibility contract
 
@@ -374,6 +402,18 @@ this file states the decision and marks what's still a placeholder.
 
 ## 7. Edge cases: teleportation, hide, idle
 
+> **Superseded in part by §13.4 and §13.7 (built, phases 2-4 and 6).** The
+> idle/presence effect is no longer a separate slot with its own config keys:
+> it is the `idle` quad layer of the `classic` preset (§13.4, §13.7), and its
+> settings are layer parameters (`idle:enabled`, `idle:start_ms`,
+> `idle:duration_ms`, `idle:radius`, `idle:draw_when_cursor_hidden`), set in a
+> preset file or the `params` string (§13.5), not config keys. Warps are
+> controlled by `warp = "break"|"line"|"curve"` (§13.10), not
+> `interpolateWarps`. Still true below: the decoupling from cursor
+> visibility, pointer constraints, per-app suppression, session lock,
+> teleport breaks, draw order, and the idle effect's design and lifecycle
+> rules.
+
 - **Trail is decoupled from cursor visibility.** It follows pointer motion
   whether the cursor is shown, hidden (inactivity timeout, key press,
   touch/tablet hide) or `cursor:invisible`. `shouldRenderCursor()` no longer
@@ -416,14 +456,16 @@ this file states the decision and marks what's still a placeholder.
     `.moveToMonitor`, and on session lock;
   - after a pointer constraint (above);
   - on a warp through `CPointerController::warpTo` (hooked; dispatchers,
-    layouts, focus changes) when **`interpolateWarps`** is false (placeholder
-    setting, default false). When true, such warps connect.
+    layouts, focus changes) when `warp` is `"break"` (the default).
+    `"line"` and `"curve"` connect such warps (§13.10). (Historical: before
+    phase 6 this was the boolean `interpolateWarps` / `interpolate_warps`,
+    default false.)
 
   **Every other jump connects**, drawing the straight "interpolated" sweep
   from the old to the new position. **Coverage gap:** warps through the four
   sites that call `CPointerManager::warpTo` directly (pointer-warp protocol,
-  input capture, two internal ones) always connect, whatever
-  `interpolateWarps` says. No distance/velocity heuristic.
+  input capture, two internal ones) always connect, whatever `warp` says. No
+  distance/velocity heuristic.
   - Corrected: `onMouseWarp` is **not** a teleport signal. It handles
     absolute-motion devices (tablets, VM pointers), i.e. continuous motion.
     `CPointerManager::warpTo` carries no reason and is also called by
@@ -444,9 +486,12 @@ this file states the decision and marks what's still a placeholder.
   overlay, so it can show above a DPMS fade, rare and harmless.
 - **Idle/presence effects (stationary but visible cursor):** out of reach
   of the ribbon pipeline (it needs motion to produce points; a stationary
-  cursor's trail correctly fades to nothing). Handled by **a second,
-  independent pass element and shader slot**, keyed on current pointer
-  position and time since last movement, not point history.
+  cursor's trail correctly fades to nothing). Handled by **a `quad` layer**
+  (§13.3, §13.4) with its own shader program and damage lifecycle, keyed on
+  current pointer position and time since last movement, not point history.
+  (Historical: before phase 2 this was "a second, independent pass element
+  and shader slot" with `idle_*` config keys, `shaders/idle.{vert,frag}` and
+  `src/IdlePassElement.*`; none of those exist any more.)
   - **Design: a quad around the pointer, drawn by the fragment shader**
     (decided; replaces the earlier synthetic-point idea). One instance, a
     quad covering `center +- (radius + padding)`; the fragment shader draws
@@ -456,47 +501,54 @@ this file states the decision and marks what's still a placeholder.
     couldn't change it), the stock trail shader fades by age so it couldn't
     be reused anyway, and it needs more plumbing for less freedom. With no
     points there is no second buffer to keep separate.
-  - **Trigger and lifecycle:** starts after `idle_delay_ms` without pointer
-    motion; stops immediately on motion (its box is cleared once); ends after
-    `idle_duration_ms` (finite by default: an endless animation would render
-    every frame for as long as the pointer is idle, against "an idle trail
-    must not keep the compositor rendering"; `0` = forever is an explicit
-    opt-in). Suppressed while locked, while the pointer is constrained, and
-    when the instance is disabled, like the trail.
-  - **Cursor visibility:** `idle_when_hidden` defaults to **false**. The idle
-    effect marks where the cursor is; if the cursor was hidden (inactivity
-    timeout, key press, `cursor:invisible`), drawing around it defeats the
-    hide. This deliberately differs from the trail, which follows motion
-    regardless of visibility.
-  - **Settings** (§9): `idle_enabled` (false), `idle_delay_ms` (500),
-    `idle_duration_ms` (1500; 0 = until the pointer moves), `idle_radius`
-    (24 px), `idle_when_hidden` (false), `idle_vertex_shader` /
-    `idle_fragment_shader` (`""` = built-in). Shared with the trail:
-    `damage_padding`, `color_slow`/`color_fast`, `#pragma hyprtail padding`.
-  - **Shader contract** (`shaders/idle.vert` header): no vertex attributes;
-    `gl_VertexID` 0-3 picks the corner of the square `center +- extentPx`.
-    The built-in vertex shader outputs `v_local` (px offset from the center)
-    and `v_uv` (0..1), so most users only replace the fragment shader.
-    Uniforms: `proj`, `center` (global px), `extentPx` (radius + declared +
-    configured padding), `radiusPx`, `idleMs` (time since the effect
-    started), `durationMs`, `colorSlow`/`colorFast` (color-managed palette).
-    Premultiplied output. Stock look (`shaders/idle.frag`): a single ring in
-    `color_slow`, expanding from a quarter of the radius to the edge and
-    fading out over the duration (looping with a 1.2 s period when the
-    duration is 0).
+  - **Trigger and lifecycle:** starts after `start_ms` without pointer
+    motion (reserved layer parameter, §13.4); stops immediately on motion
+    (its box is cleared once); ends after `duration_ms` (finite by default,
+    1500: an endless animation would render every frame for as long as the
+    pointer is idle, against "an idle trail must not keep the compositor
+    rendering"; `0` = forever is an explicit opt-in). Suppressed while
+    locked, while the pointer is constrained, under the app rule, and when
+    the layer is disabled, like the trail.
+  - **Cursor visibility:** `draw_when_cursor_hidden` defaults to **false**
+    for a `quad` layer (true for `path`; §13.4). The idle effect marks where
+    the cursor is; if the cursor was hidden (inactivity timeout, key press,
+    `cursor:invisible`), drawing around it defeats the hide. This
+    deliberately differs from the trail, which follows motion regardless of
+    visibility.
+  - **Settings:** the `idle` layer of `prefab:classic` (`presets/classic.conf`):
+    `idle:enabled` (false), `idle:start_ms` (500), `idle:duration_ms` (1500),
+    `idle:radius` (24 px), `idle:draw_when_cursor_hidden` (false),
+    `idle:color`. Shared with every layer: `damage_padding` (§9) and
+    `#pragma hyprtail padding` (§5, §13.5). `prefab:subtle` has no idle
+    layer.
+  - **Shader contract** (contract 2, quad topology; §13.2-13.3, prelude
+    `shaders/prelude/quad.glsl`): no vertex attributes; `ht_corner()`
+    returns the corner (-1..1) from `gl_VertexID`, and the geometry shader
+    places it at `ht_anchor + corner * ht_extentPx` (`ht_anchor` = pointer,
+    global px; `ht_extentPx` = the layer's padding expression plus
+    `damage_padding`, exactly what is damaged). The stock `ring.vert` sets the
+    standard `ht_vLocal` (corner coordinates) and `ht_vAge` (= `ht_stillMs`),
+    so most users only replace the fragment shader. Other uniforms:
+    `ht_proj`, `ht_stillMs` (time since the pointer last moved), the reserved
+    `start_ms` / `duration_ms`, and the layer's own color-managed params.
+    Premultiplied output. Stock look (`shaders/ring.frag`): a single ring in
+    `color`, expanding from a quarter of the radius to the edge and fading
+    out over the duration (looping with a 1.2 s period when the duration is
+    0).
   - **Timing:** motion (pointer events, hooked warps, or a position change
     seen during any render) restarts a timer on Hyprland's event loop
-    (`wl_event_loop_add_timer`) set to `idle_delay_ms`; when it fires, the
-    square is damaged so a render happens and the lifecycle starts the
-    effect. While shown it damages every frame; motion, a hide (unless
-    `idle_when_hidden`), lock, a constraint or the end of the duration clears
-    it once.
-  - **Implementation:** `SIdleInstance` / `CIdlePassElement`
-    (`src/IdlePassElement.*`), drawn after the trail (so above it, both
-    beneath the cursor), with the shared per-monitor damage helper (§6) and
-    the shared shader-slot helper (`hyprtail::CShaderSlot`,
-    `src/ShaderSlot.*`: built-in and user stages, include preprocessing,
-    deferred compile, keep previous program; reports under `shader:idle`).
+    (`wl_event_loop_add_timer`) set to the earliest `start_ms` across enabled
+    quad layers; when it fires, the square is damaged so a render happens and
+    the lifecycle starts the effect. While shown it damages every frame;
+    motion, a hide (unless `draw_when_cursor_hidden`), lock, a constraint or
+    the end of the duration clears it once.
+  - **Implementation:** a quad layer (`CLayer` in `SPreset`, `src/Layer.*`),
+    drawn by the same `CLayerPassElement` as the path layers, after the
+    layers below it (so above the trail, both beneath the cursor), with the
+    shared per-monitor damage helper (§6, one `CMonitorDamage` per layer) and
+    the shared shader-slot helper (`hyprtail::CShaderSlot`, `src/ShaderSlot.*`:
+    built-in and user stages, include preprocessing, deferred compile, keep
+    previous program; reports under `shader:<layer>`).
 
 ## 8. Multi-monitor
 
@@ -569,10 +621,10 @@ this file states the decision and marks what's still a placeholder.
   slot only counts while its effect can run), or after 2 s. Reports at
   other times notify one by one, as before.
 - **Status:** `hyprctl hyprtail` (`-j` for JSON; built, phase 1 of §13):
-  build and Hyprland hashes, hooks, trail and idle state with their shader
-  files and last compile outcome, per-monitor render counts (lifecycle via
-  hook vs. fallback, draws, renders without damage) and last drawn boxes,
-  report counts, errors.log path.
+  build and Hyprland hashes, hooks, the preset and each layer with its shader
+  files, last compile outcome and parameters (§13.13), per-monitor render
+  counts (lifecycle via hook vs. fallback, draws, renders without damage) and
+  last drawn boxes, report counts, errors.log path.
 - **Failure policy:** a user shader that fails to load, preprocess, compile
   or link is reported (GLSL errors mapped to `file:line`) and the previous
   working program stays (the built-in one if there never was one); only a
@@ -620,15 +672,14 @@ this file states the decision and marks what's still a placeholder.
   `color_slow` (`color`) and the idle shader paths to its `idle` layer.
   Shader files set here must follow contract 2 (§13.2-13.6).
 
-  Lua: `hl.config({ plugin = { hyprtail = { fade_ms = 400 } } })`;
-  hyprlang: `plugin:hyprtail:fade_ms = 400`. Colors in Lua must be strings
-  in Hyprland's color syntax, e.g. `color_slow = "rgba(1a66ffff)"`; numbers
-  are rejected (`LuaConfigColor.cpp:25-40` at `efb5099`). Shader paths: `~` and `~/`
-  expand to `$HOME`; relative paths resolve against the directory of the
-  config file in use (covers `-c`), falling back to `$XDG_CONFIG_HOME/hypr`
-  or `~/.config/hypr`. Out-of-range values are rejected by Hyprland's parser
-  and re-checked by the plugin (report under `config:<key>`, previous value
-  kept).
+  Lua: `hl.config({ plugin = { hyprtail = { capacity = 128 } } })`;
+  hyprlang: `plugin:hyprtail:capacity = 128`. hyprtail registers no
+  color-typed keys (colors are shader parameters, set as text in a preset
+  file or `params`, §13.5). Shader paths: `~` and `~/` expand to `$HOME`;
+  relative paths resolve against the hyprtail config root (§13.7), not the
+  Hyprland config directory. Out-of-range values are rejected by Hyprland's
+  parser and re-checked by the plugin (report under `config:<key>`, previous
+  value kept).
 - **Hot reload:** values are re-read on every `config.reloaded`. Scalars
   apply immediately. A capacity change resizes the ring keeping the newest
   points; the VBO is reallocated at the next draw. Shaders are re-read and
@@ -672,7 +723,9 @@ this file states the decision and marks what's still a placeholder.
 - **Unit tests: `make test-unit`** (`tests/unit/unit.cpp`, `SANITIZE=1` for
   AddressSanitizer and UBSan). No compositor, no GL: parameter pragmas and
   values, padding expressions, shader preprocessing (contract 2 rules), the
-  node ring (distance restarts, seeds, birth-time rebasing). Then the
+  crash-guard marker logic (parse/format, dead-pid check, key match, a real
+  marker round trip in a scratch directory), the node ring (distance
+  restarts, seeds, birth-time rebasing). Then the
   preprocessed built-in shaders through glslangValidator, each file and
   every vertex/fragment pairing linked. A reference compiler: drivers can
   still differ.
@@ -703,8 +756,9 @@ this file states the decision and marks what's still a placeholder.
 ## 12. Open items carried into implementation (non-blocking)
 
 - Hyprland pin chosen (`efb5099`, v0.56.2, §2); re-pin on every host package upgrade
-- Default tuning of the settings (§9): capacity, fade duration, width,
-  spacing; current defaults are the original placeholders
+- Default tuning (§9, §13.7): `capacity` (64) and `min_spacing` (2) are
+  still the original placeholders; fade and width now live in the shipped
+  presets (`subtle`: 300 ms, 3 px; `classic`: 500 ms, 8 px)
 - **Blocked: direct scanout verification (§4).** mpv fullscreen with
   `render:direct_scanout = 1` fails with a Wayland protocol error
   (`wl_surface.attach` invalid arguments) with or without the plugin loaded,
@@ -712,8 +766,13 @@ this file states the decision and marks what's still a placeholder.
   (not opaque, subsurfaces). "No trail over scanned-out windows" remains
   unverified until some client actually gets direct-scanned.
 - Fade curve (§4): linear in the stock shader (`ht_life`); duration is the
-  `fade_ms` setting. Other curves are a shader/prefab matter, not a setting
-- Rotated outputs untested (§8)
+  reserved `fade_ms` layer parameter (§13.4). Other curves are a
+  shader/prefab matter, not a setting
+- Rotated outputs (§8): transform 1 (90°) is confirmed on the host. Still
+  unverified: transform 4 (flipped; the host froze when it was applied, cause
+  not isolated, NOTES "Freeze analysis"), and the other transforms and rotated
+  outputs on main (whose `projectBoxToTarget` differs, NOTES "Compatibility
+  with Hyprland main") have no recorded test
 - Color management built (§5): palette converted like core's colors;
   verify on an HDR / color-managed output
 - Performance: measure before optimizing damage (NOTES "Performance")
@@ -730,7 +789,7 @@ this file states the decision and marks what's still a placeholder.
 **Status:** phases 0-2 of §13.16 are built; phase 3's checks and config
 front end (`params`, `layer1_vertex`..`layer4_fragment`, `expects`, the
 pre-link varying check), phase 4's presets/config-surface-v2
-(`preset.conf`, `preset =`, the old-key removal), phase 6's pointer
+(the preset file format, `preset =`, the old-key removal), phase 6's pointer
 features (`emit_from`, `emit_offset`, `warp`), and phase 7's screenshare
 exclude (moved up ahead of phase 5) are also built. Phases 2-4, 6 and 7
 are untested (not yet run in any compositor). Built parts are
@@ -742,13 +801,12 @@ keys indexed by layer number (§13.5, §13.8; NOTES "Phase 0 spikes", S2);
 screenshare late drawing accepted with its
 tradeoffs; the quad layer anchors to the pointer, not the newest node; no
 compatibility with the current contract; `subtle` default, `classic`
-optional; `preset.conf` is plain `key = value` lines; padding expressions are
-numbers, parameter names, `+ - * /` and parentheses only. Where it
-contradicts §5, §7 or §9, those sections still describe the code as it is;
-this section describes the intended replacement. Citations at `efb5099`
-unless noted. "Unverified" marks what needs a spike (§13.16, phase 0).
-Where a built part contradicts §5, §7 or §9, this section wins (§5 carries a
-pointer).
+optional; the preset file format is plain `key = value` lines; padding
+expressions are numbers, parameter names, `+ - * /` and parentheses only.
+Where a **built** part contradicts §5, §7 or §9, this section wins (each
+carries a pointer); where a part is still proposal, those sections describe
+the code as it is. Citations at `efb5099` unless noted. "Unverified" marks
+what needs a spike (§13.16, phase 0).
 
 ### 13.1 Model
 
@@ -775,9 +833,9 @@ second ring, a second upload or a second damage lifecycle.
 
 **Built (phase 2), difference:** each layer keeps its own per-monitor damage
 lifecycle (`CLayer::damage`) inside the one pass element, so damage stays
-exact per layer instead of one union box. The only preset is the hardcoded
-`classic` (`src/Layer.cpp`), mapped from the current config keys (§13.8
-not built yet).
+exact per layer instead of one union box. Presets are manifest files since
+phase 4 (§13.7): the shipped `prefab:subtle` and `prefab:classic` are
+`presets/*.conf`, embedded by `src/Preset.cpp`.
 
 ### 13.2 Nodes and the shader-side contract
 
@@ -903,7 +961,7 @@ per layer (`CLayer::resolve`). A layer with `enabled = false` isn't
 compiled. The idle effect is the classic preset's `idle` quad layer,
 anchored at the pointer; the stillness timer arms for the earliest
 `start_ms` across enabled quad layers. Not built: the quad layer's own
-offset (phase 6).
+offset (`offset_from`/`offset`; not part of phase 6, see §13.9).
 
 ### 13.5 Shader-declared parameters, padding, contract version
 
@@ -919,7 +977,7 @@ offset (phase 6).
     (`getConvertedColor`), as `vec4` with alpha passed separately.
 - **Setting parameters: one `params` string, validated by the plugin.**
   - **Syntax:** `params = "<layer>:<name>=<value> ..."`, whitespace-separated,
-    the same `<layer>:` prefix as `preset.conf` (§13.7), e.g.
+    the same `<layer>:` prefix as a preset file (§13.7), e.g.
     `params = "core:width=4 glow:radius=18 core:color=rgba(ffffffa0)"`.
     Values: numbers for `float`/`int`, `true`/`false` for `bool`, `x,y` for
     `vec2`, Hyprland color syntax without spaces for `color`.
@@ -928,7 +986,7 @@ offset (phase 6).
     bad values and out-of-range values are **plugin warnings** in the
     batched summary (§13.11); the entry is ignored and the preset or pragma
     default stays. Never a Hyprland config error.
-  - **Precedence:** pragma default < `preset.conf` < `params`.
+  - **Precedence:** pragma default < preset file < `params`.
   - Reserved lifecycle parameters (§13.4) and the quad offset
     (`offset_from`, `offset`) are set the same way, e.g.
     `params = "idle:start_ms=800 idle:offset=0,-12"`.
@@ -1063,8 +1121,11 @@ would have linked fine.
   core:color    = rgba(ffffffa0)
   ```
 
-  An unknown parameter name is an error that lists the declared ones. So is
-  a layer key for a layer not listed in `layers`.
+  An unknown parameter name is ignored with a warning that names it
+  (`params:<layer>`, raised when the layer's program is resolved, since only
+  then are its declared parameters known; the warning doesn't list the valid
+  names). A layer key for a layer not listed in `layers` is a load-time
+  error.
 
   **Built (phase 4)** (`src/Preset.*`): `contract`/`description`/`layers`
   plus `<layer>:vertex`/`fragment`/`<name>`, `#` comments anywhere on a
@@ -1235,9 +1296,10 @@ compiled" condition becomes every layer's slot.
 - **Closing:** it closes once every layer's pending program has been
   compiled (that happens in the next render), or after 2 s if nothing
   renders (e.g. all outputs off).
-- **Summary:** closing shows one notification, "hyprtail: N errors, M
-  warnings: <headline of the first error>. Details: <errors.log path>", or
-  nothing if clean.
+- **Summary:** closing shows one notification: "hyprtail: N errors and M
+  warnings after <reason>:", then up to 3 headlines (errors first), "... and K
+  more" if there are more, and "Details: <errors.log path>"; nothing if
+  clean (`summarize()`, `BATCH_MAX_LISTED`, `Diagnostics.cpp`).
 - **errors.log** gets each full entry immediately (fsynced, §9).
 - **Outside a batch** (e.g. a GL failure mid-session) reports notify
   immediately, as today, deduplicated per key.
@@ -1349,16 +1411,25 @@ screenshare fields arrive with their phases.
   `registerHyprCtlCommand` (`PluginAPI.cpp:422-431`), `SHyprCtlCommand`
   (`SharedDefs.hpp:46-50`, receives the output format). It runs on the main
   thread.
-- **Plugin:** build revision and pin check, hook availability (cursor,
-  warp, screenshare).
-- **Preset and layers:** the preset; per layer, the topology, shader
-  origins (built-in or path), contract version, program state (active,
-  kept last good, built-in fallback, failed) and current parameter values.
-- **Source:** node count / capacity, generation, `pendingBreak`, emit mode,
-  warp mode.
+- **Plugin:** build revision, the running and built-against Hyprland hashes
+  (flagged MISMATCH when they differ; no separate pin check), hook
+  availability (cursor, warp, capture).
+- **Preset and layers:** the preset; per layer, on / off / disabled / not
+  compiled yet, the topology, shader origins (built-in or path), the last
+  compile outcome and any reload pending (active, kept last good, built-in
+  fallback, failed), lifecycle values, reach and current parameter values.
+  Not built: contract version.
+- **Source:** node count / capacity, generation, `pendingBreak`, warp mode,
+  node-buffer failure flag, time the pointer has been still. Not built: emit
+  mode.
+- **Suppression** (added with §7's per-app rule): whether session lock,
+  pointer constraint or the app rule is active, and the focused window's
+  class and title the rule was evaluated against.
 - **Per monitor:** renders, lifecycle run via the hook vs. the fallback,
-  frames drawn, empty-damage skips, last damage box, state (drawing,
-  clearing, idle), whether it's captured.
+  frames drawn, empty-damage skips, per layer the last drawn box (text:
+  never drawn / idle / drawing), whether it needs a copy (mirrored or
+  captured) and the capture fallback (§13.12). Not built: a separate
+  per-monitor state field.
 - **Diagnostics:** the errors.log path and the report count this load.
 
 ### 13.14 Backlog investigations (not in scope)

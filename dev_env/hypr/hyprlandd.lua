@@ -45,7 +45,7 @@ hl.config({
             params            = "idle:enabled=true",
             --             capacity          = 64,
             --             min_spacing       = 2,
-            --             interpolate_warps = false,
+            --             warp              = "break",
             --             damage_padding    = 0,
             --             layer1_vertex     = "",  -- "" = the preset's own shader; relative = against ~/.config/hypr/hyprtail/; ~ works
             --             layer1_fragment   = "",
