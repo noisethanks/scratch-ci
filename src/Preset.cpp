@@ -46,7 +46,7 @@ namespace hyprtail::preset {
 
     std::expected<SManifest, std::string> parse(std::string_view text) {
         struct SRaw {
-            std::optional<std::string>              contract, description;
+            std::optional<std::string>              contract, description, sourceKind;
             std::optional<std::vector<std::string>> layers;
         } raw;
         std::map<std::string, std::map<std::string, std::string>> layerKeys;
@@ -87,8 +87,14 @@ namespace hyprtail::preset {
                     if (raw.layers)
                         return std::unexpected(std::format("{}: duplicate \"layers\"", where));
                     raw.layers = splitCommaTrim(value);
+                } else if (key == "source") {
+                    if (raw.sourceKind)
+                        return std::unexpected(std::format("{}: duplicate \"source\"", where));
+                    if (!source::known(value))
+                        return std::unexpected(std::format("{}: unknown source \"{}\" ({})", where, value, source::kindList()));
+                    raw.sourceKind = std::string{value};
                 } else
-                    return std::unexpected(std::format("{}: unknown key \"{}\" (contract, description, layers, or \"<layer>:<name>\")", where, key));
+                    return std::unexpected(std::format("{}: unknown key \"{}\" (contract, description, layers, source, or \"<layer>:<name>\")", where, key));
                 continue;
             }
 
@@ -113,16 +119,30 @@ namespace hyprtail::preset {
             return std::unexpected(std::format("\"layers\" lists {} layers; at most 4", raw.layers->size()));
         {
             std::set<std::string> seen;
-            for (const auto& l : *raw.layers)
+            for (const auto& l : *raw.layers) {
+                if (l == source::KEY_PREFIX)
+                    return std::unexpected(std::format("\"{}\" is reserved for the source's settings and can't be a layer name", l));
                 if (!seen.insert(l).second)
                     return std::unexpected(std::format("\"layers\" lists \"{}\" twice", l));
+            }
+        }
+
+        // "source:<name>" keys are the source's settings, not a layer's.
+        std::map<std::string, std::string> sourceKeys;
+        if (const auto it = layerKeys.find(std::string{source::KEY_PREFIX}); it != layerKeys.end()) {
+            sourceKeys = std::move(it->second);
+            layerKeys.erase(it);
         }
         for (const auto& [layer, keys] : layerKeys) {
             if (std::ranges::find(*raw.layers, layer) == raw.layers->end())
                 return std::unexpected(std::format("\"{}:...\" keys given, but \"{}\" isn't in \"layers\"", layer, layer));
         }
 
-        return SManifest{.description = raw.description.value_or(""), .layers = std::move(*raw.layers), .layerKeys = std::move(layerKeys)};
+        return SManifest{.description = raw.description.value_or(""),
+                         .layers      = std::move(*raw.layers),
+                         .layerKeys   = std::move(layerKeys),
+                         .sourceKind  = raw.sourceKind.value_or(std::string{source::DEFAULT_KIND}),
+                         .sourceKeys  = std::move(sourceKeys)};
     }
 
     namespace {
@@ -147,6 +167,9 @@ namespace hyprtail::preset {
         constexpr unsigned char EMBERS_CONF[] = {
 #embed "../presets/embers.conf"
         };
+        constexpr unsigned char SPRING_CONF[] = {
+#embed "../presets/spring.conf"
+        };
 
         template <size_t N>
         constexpr std::string_view view(const unsigned char (&data)[N]) {
@@ -162,6 +185,7 @@ namespace hyprtail::preset {
                 {"vivid", view(VIVID_CONF)},
                 {"comet", view(COMET_CONF)},
                 {"embers", view(EMBERS_CONF)},
+                {"spring", view(SPRING_CONF)},
             };
             const auto it = m.find(name);
             return it == m.end() ? std::string_view{} : it->second;
@@ -250,7 +274,7 @@ namespace hyprtail::preset {
                 prefab             = true;
                 const auto builtin = builtinManifest(std::string_view{name}.substr(PREFAB_PREFIX.size()));
                 if (builtin.empty())
-                    return std::unexpected(std::format("unknown prefab preset \"{}\" (built-in: prefab:subtle, prefab:classic, prefab:jitter, prefab:spray, prefab:vivid, prefab:comet, prefab:embers)", name));
+                    return std::unexpected(std::format("unknown prefab preset \"{}\" (built-in: prefab:subtle, prefab:classic, prefab:jitter, prefab:spray, prefab:vivid, prefab:comet, prefab:embers, prefab:spring)", name));
                 text = std::string{builtin};
             } else {
                 if (name.empty() || name.contains('/'))
@@ -275,6 +299,8 @@ namespace hyprtail::preset {
             SResolved out;
             out.name        = name;
             out.description = manifest->description;
+            out.sourceKind  = manifest->sourceKind;
+            out.sourceDefaults = manifest->sourceKeys;
             static const std::map<std::string, std::string> empty;
             for (const auto& layerName : manifest->layers) {
                 const auto it   = manifest->layerKeys.find(layerName);

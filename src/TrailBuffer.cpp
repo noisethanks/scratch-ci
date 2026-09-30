@@ -3,17 +3,11 @@
 #include <algorithm>
 #include <cmath>
 
-namespace {
-    // splitmix64 finalizer: well-mixed bits from a counter.
-    uint64_t mix64(uint64_t x) {
-        x += 0x9E3779B97F4A7C15ULL;
-        x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
-        x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
-        return x ^ (x >> 31);
-    }
-}
-
 CTrailRing::CTrailRing(size_t capacity, uint64_t seedBase) : m_nodes(std::max<size_t>(capacity, 1)), m_seedBase(seedBase) {}
+
+std::string_view CTrailRing::kind() const {
+    return "pointer";
+}
 
 void CTrailRing::insert(const SVec2f& pos, double nowMs, bool segmentStart) {
     segmentStart = segmentStart || m_count == 0;
@@ -28,13 +22,17 @@ void CTrailRing::insert(const SVec2f& pos, double nowMs, bool segmentStart) {
         dist = prev.distPx + std::hypot(pos.x - prev.posPx.x, pos.y - prev.posPx.y);
     }
 
-    const auto seed = static_cast<uint32_t>(mix64(m_seedBase + m_inserted++) >> 33); // 31 bits
+    const auto seed = nodeSeed(m_seedBase, m_inserted++); // 31 bits
 
     m_nodes[m_head] = SCursorNode{.posPx = pos, .birthTimeMs = nowMs, .velocity = velocity, .distPx = dist, .seed = seed, .segmentStart = segmentStart};
     m_head          = (m_head + 1) % m_nodes.size();
     m_count         = std::min(m_count + 1, m_nodes.size());
     ++m_generation;
 }
+
+void CTrailRing::tick(double, double) {}
+
+void CTrailRing::configure(const std::map<std::string, double>&) {}
 
 void CTrailRing::resize(size_t capacity) {
     capacity = std::max<size_t>(capacity, 1);
@@ -80,7 +78,9 @@ uint64_t CTrailRing::generation() const {
     return m_generation;
 }
 
-void CTrailRing::tick(double, double) {}
+double CTrailRing::newestBirthMs() const {
+    return newest().birthTimeMs;
+}
 
 bool CTrailRing::needsContinuousUpload() const {
     return false;
@@ -88,10 +88,6 @@ bool CTrailRing::needsContinuousUpload() const {
 
 bool CTrailRing::isSettled(double nowMs, double fadeMs) const {
     return visibleCount(nowMs, fadeMs) == 0;
-}
-
-double CTrailRing::newestBirthMs() const {
-    return newest().birthTimeMs;
 }
 
 void CTrailRing::orderedCopy(std::vector<SGpuNode>& out, double refMs) const {
@@ -112,42 +108,15 @@ void CTrailRing::orderedCopy(std::vector<SGpuNode>& out, double refMs) const {
     }
 }
 
-size_t CTrailRing::visibleCount(double nowMs, double fadeMs) const {
+const SCursorNode& CTrailRing::at(size_t i) const {
     const size_t cap = m_nodes.size();
-    size_t       n   = 0;
-    while (n < m_count && nowMs - m_nodes[(m_head + cap - 1 - n) % cap].birthTimeMs < fadeMs)
-        ++n;
-    return n;
+    return m_nodes[(m_head + cap - 1 - i) % cap];
+}
+
+size_t CTrailRing::visibleCount(double nowMs, double fadeMs) const {
+    return visibleCountOf(m_count, [this](size_t i) -> const SCursorNode& { return at(i); }, nowMs, fadeMs);
 }
 
 std::optional<STrailBounds> CTrailRing::visibleBounds(double nowMs, double fadeMs, bool includeOlderNode) const {
-    std::optional<STrailBounds> b;
-
-    const auto                  add = [&b](const SVec2f& p) {
-        if (!b)
-            b = STrailBounds{p.x, p.y, p.x, p.y};
-        else {
-            b->x1 = std::min(b->x1, p.x);
-            b->y1 = std::min(b->y1, p.y);
-            b->x2 = std::max(b->x2, p.x);
-            b->y2 = std::max(b->y2, p.y);
-        }
-    };
-
-    const size_t cap = m_nodes.size();
-    for (size_t i = 0; i < m_count; ++i) {
-        const auto& n = m_nodes[(m_head + cap - 1 - i) % cap]; // newest first
-        if (nowMs - n.birthTimeMs >= fadeMs) {
-            // First faded node. It still bounds the segment to the oldest
-            // visible node, unless that one starts a new segment.
-            const auto& newer = m_nodes[(m_head + cap - i) % cap];
-            if (includeOlderNode && b && !newer.segmentStart)
-                add(n.posPx);
-            break;
-        }
-
-        add(n.posPx);
-    }
-
-    return b;
+    return visibleBoundsOf(m_count, [this](size_t i) -> const SCursorNode& { return at(i); }, nowMs, fadeMs, includeOlderNode);
 }

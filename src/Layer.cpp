@@ -69,26 +69,8 @@ namespace hyprtail {
         // declare is an authoring mistake worth surfacing, not the silent
         // best-effort mapping this used to be before presets were real (see
         // NOTES "Phase 4").
-        const auto applyOverrides = [&](const std::map<std::string, std::string>& overrides) {
-            for (const auto& [name, text] : overrides) {
-                const auto it = std::ranges::find_if(all, [&](const auto& e) { return e.first.name == name; });
-                if (it == all.end()) {
-                    problems += std::format("\n  {}: not a parameter of this layer; ignoring", name);
-                    continue;
-                }
-                auto v = params::parseValue(it->first.type, text);
-                if (v)
-                    if (auto r = params::checkRange(it->first, *v); !r)
-                        v = std::unexpected(r.error());
-                if (!v) {
-                    problems += std::format("\n  {}: {}; using {}", name, v.error(), params::format(it->second));
-                    continue;
-                }
-                it->second = *v;
-            }
-        };
-        applyOverrides(m_overrides);
-        applyOverrides(m_paramOverrides);
+        params::applyOverrides(all, m_overrides, "layer", problems);
+        params::applyOverrides(all, m_paramOverrides, "layer", problems);
 
         const auto lookup = [&all](std::string_view n) -> std::optional<double> {
             const auto it = std::ranges::find_if(all, [&](const auto& e) { return e.first.name == n; });

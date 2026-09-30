@@ -165,6 +165,10 @@ void CNodeBuffer::destroy() {
     m_ordered.clear();
 }
 
+void CNodeBuffer::invalidate() {
+    m_uploadedGen = UINT64_MAX;
+}
+
 GLuint CNodeBuffer::vao() const {
     return m_vao;
 }
@@ -240,26 +244,27 @@ void CLayerPassElement::drawLayer(const SLayerDraw& d) {
     GLuint     vao   = 0;
     GLsizei    count = 1;
     if (path || instanced) {
-        if (preset.gpuFailed || preset.ring.size() < (path ? 2u : 1u))
+        const auto& source = *preset.source;
+        if (preset.gpuFailed || source.size() < (path ? 2u : 1u))
             return;
-        if (std::string error; !preset.gpu.ensure(preset.ring.capacity(), error)) {
+        if (std::string error; !preset.gpu.ensure(source.capacity(), error)) {
             preset.gpuFailed = true;
             hyprtail::diag::report(eSeverity::ERR, "gl:nodes", std::format("path and instanced layers disabled: GL resource creation failed: {}", error));
             return;
         }
-        preset.gpu.upload(preset.ring);
+        preset.gpu.upload(source);
 
         if (path) {
             vao   = preset.gpu.vao();
-            count = static_cast<GLsizei>(preset.ring.size() - 1); // one instance per segment
+            count = static_cast<GLsizei>(source.size() - 1); // one instance per segment
         } else {
             // Only the visible nodes (the newest ones), K copies of each; the
             // same count the damage box was computed from (main.cpp).
-            const size_t visible = preset.ring.visibleCount(m_nowMs, layer.res.fadeMs);
+            const size_t visible = source.visibleCount(m_nowMs, layer.res.fadeMs);
             if (visible == 0)
                 return;
             const int copies = std::max(layer.res.instances, 1);
-            preset.gpu.pointInstanced(preset.ring.size() - visible, static_cast<GLuint>(copies));
+            preset.gpu.pointInstanced(source.size() - visible, static_cast<GLuint>(copies));
             vao   = preset.gpu.instancedVao();
             count = static_cast<GLsizei>(visible * copies);
         }

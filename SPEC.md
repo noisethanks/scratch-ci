@@ -816,17 +816,69 @@ Three stages:
 
 - **Source** (CPU) produces nodes. Sources exist only for effects where
   points affect each other. For now there is one: `pointer`, the pointer
-  history ring (today's `CTrailRing`). Backlog: a spring-chain source.
-  **Built (spring-chain stage 1), interface only:** `ISource`
+  history ring (`CTrailRing`), and `spring`, a chain of points chasing each
+  other (`CSpringChainSource`, `src/SpringChain.*`). A preset picks one with
+  its `source` key (§13.7).
+  **Built (spring-chain, stages 1-2, untested on host):** `ISource`
   (`src/TrailBuffer.hpp`) is scoped to producing the trail's point buffer:
   `insert(pos, nowMs, segmentStart)`, `tick(nowMs, dt)`, `orderedCopy`,
-  `needsContinuousUpload()`, `isSettled(nowMs, fadeMs)`, plus the reads the
-  upload needs (`generation()`, `empty()`, `newestBirthMs()`). `CTrailRing`
-  is the one implementation: `tick` does nothing, `needsContinuousUpload()`
-  is always false, `isSettled` is `visibleCount(nowMs, fadeMs) == 0`.
-  `isSettled` takes `fadeMs` because fade belongs to the layer, not the
-  source. `SPreset` still holds a concrete `CTrailRing`, and nothing calls
-  `tick` or `isSettled` yet.
+  `needsContinuousUpload()`, `isSettled(nowMs, fadeMs)`, `configure`, plus
+  what the upload, the damage box, the draw count and the warp curve read
+  (`generation`, `size`, `capacity`, `empty`, `newest`, `newestBirthMs`,
+  `visibleCount`, `visibleBounds`, `resize`, `clear`). `SPreset` holds a
+  `std::unique_ptr<ISource>`, made by `source::make` (`src/Source.*`).
+  - **`tick`** runs once per monitor lifecycle right after the sample
+    (`runLifecycle`), with `dt` = time since the previous tick, or 0 if the
+    source was not moving at that tick (idle time isn't motion). It runs
+    whether or not the layers are drawn.
+  - **`needsContinuousUpload()`** is true while the source's points are
+    still changing between inserts (for `spring`: any point unsettled), not a
+    fixed property of the source kind. The pointer ring's is always false.
+  - **`isSettled(nowMs, fadeMs)`** is "stopped moving and every node faded":
+    the pointer ring's is `visibleCount == 0`; the chain's also requires all
+    points at rest. A source that stopped but hasn't faded isn't settled.
+    `fadeMs` is an argument because fade belongs to the layer. The layer's
+    damage box is computed only while not settled, so an unsettled source
+    damages (and so schedules a frame) every frame whatever was inserted,
+    and a settled one lets the monitor go idle.
+  - **Spring chain:** `capacity` points, index 0 the head. The head chases
+    the last inserted position, every other point the already-advanced point
+    before it (head to tail within a tick). Each axis of each point is one
+    `hyprutils::Animation::advanceSpring` call, reframed so its rest position
+    is the solver's fixed 1.0: `value = 1 + (pos - target)` in, `pos =
+    target + (value - 1)` out, against that frame's real target; the
+    point's velocity (px/s) is carried as is, the target being constant over
+    a step (`Spring.cpp:10-56` at hyprutils v0.14.2 = the host's). A point
+    is at rest within 0.05 px and 2 px/s of its target, then snaps to it
+    (core's rule for its own springs, `AnimatedVariable.cpp:129-137`).
+    `tick` integrates at most 33 ms per call: the solve is exact for a fixed
+    target, but a longer gap would carry the chain to the pointer in one
+    step instead of following it. Nothing is appended: `size()` is 0 until
+    the first insert seeds every point at the pointer, then `capacity`.
+    `insert` only sets the head's target (and the activity time), except the
+    first insert and any `segmentStart` (break: lock, pointer constraint,
+    app rule, workspace, warp in `break` mode), which re-seed the whole
+    chain at the new position: a chain has one connected body, there is no
+    severed piece to fade. A `curve` warp inserts several targets in the
+    same instant; only the last matters.
+  - **Node data for the shaders**, in the ring's conventions: oldest = tail,
+    newest = head, only the tail is a segment start, `velocity` px/ms,
+    `distPx` from the tail, `seed` fixed per slot. A point has no birth of its
+    own: point k is born at `activeMs - k * age_step_ms`, `activeMs` being the
+    last time any point was unsettled or the pointer inserted. So the chain
+    is fresh while moving, tapers toward the tail, and fades as one when it
+    stops. Births never increase toward the tail, which keeps the
+    newest-suffix visibility rule valid.
+  - **Upload:** `m_refMs` is still the newest node's birth time, rebased at
+    every upload, and the draw's `ht_nowMs = nowMs - refMs` uses the same
+    value, so both stay consistent when uploads are every frame: the
+    buffer's `birthMs` and the uniform are always rebased on the same
+    `m_refMs`, and the head's birth is about now while moving, so the
+    floats stay small. The tick that settles the last point bumps the
+    generation, so the gate uploads the final state and stops; after that
+    only the uniform advances, as for the ring. The node buffer is
+    `invalidate()`d when the source is replaced (generations are per
+    source).
 - **Geometry** is the vertex shader. It turns nodes into primitives under a
   declared topology (§13.3).
 - **Shading** is the fragment shader.
@@ -1218,6 +1270,34 @@ would have linked fine.
   to the embedded `prefab:subtle` manifest, guaranteed to parse since it
   ships with the plugin. That fallback is degradation after a clear error,
   not resolution: a bare name never resolves to a built-in.
+- **Source (built, spring-chain stage 2, untested on host):** the source is
+  the one thing all of a preset's layers share (§13.1), so the preset
+  declares it once: a top-level `source = pointer | spring` (optional, at
+  most once, default `pointer`; an unknown kind is a load-time error like
+  any structural mistake). Its settings are `source:<name> = <value>` keys,
+  and `source:<name>=<value>` entries in the `params` string (§13.5): the
+  reserved layer name `source` (a layer can't be called that) routes them to
+  the source instead of a layer. They use the parameter machinery of shader
+  params (`params::SDecl`, `parseValue`, `checkRange`, `applyOverrides`), with
+  the same precedence: the kind's declared default < the preset < `params`.
+  `spring` declares `mass` (1, 0.01-100), `stiffness` (30000, 1-1000000),
+  `damping` (200, 0-10000) and `age_step_ms` (10, 0-1000), in
+  `src/Source.cpp`. They are not layer parameters because all layers share
+  one source: a value on a layer would say nothing about which layer wins. An
+  unknown name or bad value is a warning (`params:source`) and the entry is
+  ignored, as for a layer. They apply live, with no rebuild, whenever they
+  or the active source change (`SPreset::sourceDirty`).
+  - **Switching presets:** the same kind of source keeps its state across the
+    switch (the pointer history survives as before). A different kind
+    replaces the source with a new empty one at `capacity`, sets
+    `pendingBreak`, resets the node buffer's uploaded generation
+    (`CNodeBuffer::invalidate`) and stops the tick's `animating` flag. The
+    old trail needs no special clearing: the swap happens at the start of the
+    render's lifecycle, before the sample, and each layer's damage lifecycle
+    sees the new source's (empty) extent and damages the old box away once.
+  - **`capacity`** is the chain length for `spring`. Changing it resizes the
+    chain keeping the head end, as for the ring.
+  - **Built-in:** `prefab:spring`, one ribbon layer over the spring source.
 - **Selection and overrides:**
   - `preset = "<name>"` selects a preset. **Built (phase 4)**
     (`plugin:hyprtail:preset`, `Config.*`): default `prefab:subtle`.
@@ -1503,7 +1583,7 @@ screenshare fields arrive with their phases.
 
 ### 13.14 Backlog investigations (not in scope)
 
-- **Spring-chain source.**
+- **Spring-chain source:** built, see §13.1 and §13.7.
 - **Cursor image as a texture (ghost-cursor preset):**
   - **Reachable from plugin headers:** `CPointerManager::getCurrentCursorTexture()`
     is public (`PointerManager.hpp:90`). It returns the cursor buffer's

@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "Layer.hpp"
+#include "Source.hpp"
 
 // Preset manifests (SPEC §13.7): the preset file format, plain "key = value"
 // lines, '#' to end-of-line comments, blank lines ignored. Layer keys are prefixed
@@ -15,7 +16,9 @@
 //   contract    = 2                          required, exactly once
 //   description = ...                        optional, at most once
 //   layers      = <name>[, <name>...]         required, 1-4, no duplicates
+//   source      = pointer | spring            optional, at most once, default pointer
 //
+//   source:<name>    = <value>                a setting of the source (Source.hpp)
 //   <layer>:vertex   = prefab:<built-in name> or a path
 //   <layer>:fragment = prefab:<built-in name> or a path
 //   <layer>:<name>   = <value>                a parameter default
@@ -26,6 +29,10 @@
 // ~/.config/hypr/hyprtail). Shader stages inside a manifest use the same
 // split: "prefab:<name>" embedded, anything else a path (user presets only),
 // relative ones against the hyprtail root.
+//
+// The source is the one thing every layer of a preset draws from, so it is
+// declared once, by the preset, and its settings live under the reserved
+// layer name "source" (a layer can't be called that).
 namespace hyprtail::preset {
     // Manifest grammar version, unrelated to shader::CONTRACT_VERSION (§5):
     // this one just lets a future breaking change to the preset file format's own
@@ -43,6 +50,8 @@ namespace hyprtail::preset {
         std::string                                                description;
         std::vector<std::string>                                   layers; // draw order, first = bottom
         std::map<std::string, std::map<std::string, std::string>>  layerKeys; // layer name -> (key -> raw value text, incl. "vertex"/"fragment")
+        std::string                                                sourceKind{source::DEFAULT_KIND};
+        std::map<std::string, std::string>                         sourceKeys; // "source:<name>" -> raw value text
 
         bool operator==(const SManifest&) const = default;
     };
@@ -53,8 +62,10 @@ namespace hyprtail::preset {
     // and up to 4 SLayerSpecs with vertex/fragment already resolved to a
     // built-in shader::builtin() name or an absolute path.
     struct SResolved {
-        std::string             name, description;
-        std::vector<SLayerSpec> layers;
+        std::string                        name, description;
+        std::vector<SLayerSpec>            layers;
+        std::string                        sourceKind{source::DEFAULT_KIND};
+        std::map<std::string, std::string> sourceDefaults; // source settings from the manifest
 
         bool operator==(const SResolved&) const = default;
     };

@@ -291,14 +291,14 @@ static void sampleSource(double nowMs) {
 
     const SVec2f pos = emitPoint(p);
 
-    bool         insert = p.ring.empty();
+    bool         insert = p.source->empty();
     if (!insert) {
-        const auto& newest = p.ring.newest().posPx;
+        const auto& newest = p.source->newest().posPx;
         insert             = std::hypot(pos.x - newest.x, pos.y - newest.y) >= p.minSpacingPx;
     }
 
     if (insert) {
-        p.ring.insert(pos, nowMs, p.pendingBreak);
+        p.source->insert(pos, nowMs, p.pendingBreak);
         p.pendingBreak = false;
     }
 }
@@ -319,6 +319,15 @@ static void runLifecycle(const PHLMONITOR& pMonitor) {
     const bool locked = sessionLocked();
     sampleSource(nowMs);
 
+    // Advance the source to this render's instant. One that was at rest at
+    // the last tick has no motion to integrate over the gap since (idle
+    // time, not motion), so the first tick after it wakes has no elapsed
+    // time. Still runs while suppressed or locked: a moving source finishes
+    // settling either way.
+    p.source->tick(nowMs, p.animating ? nowMs - p.lastTickMs : 0.0);
+    p.lastTickMs = nowMs;
+    p.animating  = p.source->needsContinuousUpload();
+
     const Vector2D pos = Pointer::mgr()->position();
     noteMotion(pos, nowMs);
 
@@ -338,8 +347,10 @@ static void runLifecycle(const PHLMONITOR& pMonitor) {
                 // An instanced layer draws the visible nodes only (a path
                 // layer also draws the segment to the next older one), so
                 // its box leaves that node out (SPEC §13.3).
+                // Nothing to damage once the source is settled for this
+                // layer's fade: stopped moving, everything faded.
                 const bool olderNode = l.topology() == eTopology::PATH;
-                if (const auto b = p.gpuFailed ? std::nullopt : p.ring.visibleBounds(nowMs, l.res.fadeMs, olderNode))
+                if (const auto b = (p.gpuFailed || p.source->isSettled(nowMs, l.res.fadeMs)) ? std::nullopt : p.source->visibleBounds(nowMs, l.res.fadeMs, olderNode))
                     cur = CBox{b->x1 - extent - pMonitor->m_position.x, b->y1 - extent - pMonitor->m_position.y, (b->x2 - b->x1) + 2.0 * extent,
                                (b->y2 - b->y1) + 2.0 * extent};
             } else if (!suppressed() && quadInWindow(l, nowMs))
@@ -470,16 +481,16 @@ static void hkRenderSoftwareCursorsFor(void* thisptr, PHLMONITOR pMonitor, const
 // the CPU along a quadratic Bezier from the trail's current end to the warp
 // target, so damage stays exact and every topology works without special
 // casing -- the same argument as `path smooth N`'s CPU-computed control
-// points (§13.3). Nothing to curve from if the ring is empty: falls back to
-// a plain connect at the next sample, same as `line`.
+// points (§13.3). Nothing to curve from if the source is empty: falls back to
+// a plain connect at the next sample, same as `line`. (A spring chain only
+// keeps the last target, so for it this just moves the head's target there.)
 static void insertWarpCurve(SPreset& p, const Vector2D& to, double nowMs) {
-    if (p.ring.empty())
+    if (p.source->empty())
         return;
 
-    // Bound to the ring's backing storage, not invalidated by insert()
-    // below: a fixed-capacity circular buffer only reallocates on resize(),
-    // never on insert(). Stays the pre-warp state through the whole loop.
-    const auto&  prev = p.ring.newest();
+    // A copy: insert() below replaces what newest() refers to. Stays the
+    // pre-warp state through the whole loop.
+    const SCursorNode prev = p.source->newest();
     const SVec2f p0   = prev.posPx;
     const SVec2f p2{sc<float>(to.x), sc<float>(to.y)};
     const float  chord = std::hypot(p2.x - p0.x, p2.y - p0.y);
@@ -493,7 +504,7 @@ static void insertWarpCurve(SPreset& p, const Vector2D& to, double nowMs) {
         p1 = {p0.x + prev.velocity.x / speed * chord * 0.5F, p0.y + prev.velocity.y / speed * chord * 0.5F};
 
     // Length / min_spacing, capped at a quarter of the capacity (SPEC §13.10).
-    const int    n  = std::clamp(sc<int>(std::round(chord / std::max(p.minSpacingPx, 0.01F))), 1, std::max<int>(1, sc<int>(p.ring.capacity() / 4)));
+    const int    n  = std::clamp(sc<int>(std::round(chord / std::max(p.minSpacingPx, 0.01F))), 1, std::max<int>(1, sc<int>(p.source->capacity() / 4)));
     const double t0 = prev.birthTimeMs;
     for (int i = 1; i <= n; ++i) {
         const float  t = sc<float>(i) / sc<float>(n);
@@ -501,7 +512,7 @@ static void insertWarpCurve(SPreset& p, const Vector2D& to, double nowMs) {
         const SVec2f curvePos{u * u * p0.x + 2.F * u * t * p1.x + t * t * p2.x, u * u * p0.y + 2.F * u * t * p1.y + t * t * p2.y};
         // Birth times spread between the previous node's birth and now, so
         // the fade sweeps along the curve.
-        p.ring.insert(curvePos, t0 + (nowMs - t0) * t, false);
+        p.source->insert(curvePos, t0 + (nowMs - t0) * t, false);
     }
 }
 
@@ -766,7 +777,7 @@ static void onLayoutChanged() {
         if (!changed || !s_preset)
             return;
 
-        s_preset->ring.clear();
+        s_preset->source->clear();
         s_preset->pendingBreak = true;
         // Repaint what was drawn last: monitor-local boxes, still where the
         // layers are on screen. The next render of each monitor sees an empty
@@ -968,6 +979,20 @@ static void applyPendingState() {
         p.layers.clear();
         for (const auto& spec : p.pendingPreset->layers)
             p.layers.push_back(makeUnique<hyprtail::CLayer>(spec));
+
+        // The same kind of source keeps its points across the switch. A
+        // different one replaces it, empty: the old trail is damaged away by
+        // this render's lifecycle (the new source has nothing to draw), a
+        // break keeps the first point from connecting to anything, and the
+        // node buffer forgets what it uploaded (generations are per source,
+        // a new source's could equal the old one's).
+        if (p.pendingPreset->sourceKind != p.source->kind()) {
+            p.source       = hyprtail::source::make(p.pendingPreset->sourceKind, s_config.capacity, p.seedBase);
+            p.pendingBreak = true;
+            p.animating    = false;
+            p.gpu.invalidate();
+        }
+        p.sourceDirty  = true;
         p.activePreset = *p.pendingPreset;
         reloadShaders();
     }
@@ -994,7 +1019,12 @@ static void applyPendingState() {
         auto        parsed = hyprtail::params::parseParamsString(s_config.params);
         std::string unknownLayers;
         std::vector<std::map<std::string, std::string>> perLayer(p.layers.size());
+        std::map<std::string, std::string>               sourceParams; // "source:<name>=<value>", the source's own
         for (const auto& e : parsed.entries) {
+            if (e.layer == hyprtail::source::KEY_PREFIX) {
+                sourceParams[e.name] = e.value;
+                continue;
+            }
             const auto it = std::ranges::find_if(p.layers, [&](const auto& l) { return l->name() == e.layer; });
             if (it == p.layers.end()) {
                 if (unknownLayers.find(std::format(" \"{}\"", e.layer)) == std::string::npos)
@@ -1005,6 +1035,19 @@ static void applyPendingState() {
         }
         for (size_t i = 0; i < p.layers.size(); ++i)
             p.layers[i]->setParamOverrides(std::move(perLayer[i]));
+
+        // Applied live, only when they or the active source changed.
+        if (p.sourceDirty || sourceParams != p.sourceOverrides) {
+            p.sourceOverrides = std::move(sourceParams);
+            p.sourceDirty     = false;
+
+            std::string problems;
+            p.source->configure(hyprtail::source::resolve(p.source->kind(), p.activePreset.sourceDefaults, p.sourceOverrides, problems));
+            if (!problems.empty())
+                hyprtail::diag::report(eSeverity::WARN, "params:source", std::format("source {}: parameter problems:{}", p.source->kind(), problems));
+            else
+                hyprtail::diag::resetKey("params:source");
+        }
 
         if (!unknownLayers.empty()) {
             std::string names;
@@ -1040,8 +1083,8 @@ static void applyConfig() {
 
     // Keeps the newest points; the VBO is reallocated at the next draw
     // (CNodeBuffer::ensure), where GL is current.
-    if (p.ring.capacity() != s_config.capacity)
-        p.ring.resize(s_config.capacity);
+    if (p.source->capacity() != s_config.capacity)
+        p.source->resize(s_config.capacity);
 
     reloadShaders();
     armIdleTimer();
@@ -1074,9 +1117,11 @@ static hyprtail::status::SSnapshot statusSnapshot() {
 
     if (s_preset) {
         const auto& p             = *s_preset;
-        s.source.nodes            = p.ring.size();
-        s.source.capacity         = p.ring.capacity();
-        s.source.generation       = p.ring.generation();
+        s.source.kind             = std::string{p.source->kind()};
+        s.source.nodes            = p.source->size();
+        s.source.capacity         = p.source->capacity();
+        s.source.generation       = p.source->generation();
+        s.source.moving           = p.source->needsContinuousUpload();
         s.source.pendingBreak = p.pendingBreak;
         s.source.warpMode     = hyprtail::cfg::warpModeName(p.warpMode);
         s.source.gpuFailed    = p.gpuFailed;

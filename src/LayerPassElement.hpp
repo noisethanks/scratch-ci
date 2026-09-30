@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -47,6 +49,11 @@ class CNodeBuffer {
     void   upload(const ISource& src);
     void   destroy();
 
+    // Forget what was uploaded, so the next upload happens whatever the
+    // source's generation is. A source's generation counts its own changes,
+    // so a replacement source can show a number the old one already uploaded.
+    void   invalidate();
+
     GLuint vao() const;          // path layers
     GLuint instancedVao() const; // instanced layers, see pointInstanced()
     double refMs() const; // reference time of the uploaded birthMs values
@@ -67,12 +74,15 @@ class CNodeBuffer {
     std::vector<SGpuNode> m_ordered;
 };
 
-// A preset instance: the pointer-history source, its GPU mirror, and the
-// layers drawn over it, in order (first = bottom).
+// A preset instance: the trail source, its GPU mirror, and the layers drawn
+// over it, in order (first = bottom).
 struct SPreset {
-    SPreset(size_t capacity, uint64_t seedBase) : ring(capacity, seedBase) {}
+    // Starts as the pointer history; a preset's `source` key replaces it
+    // (SPEC §13.7), see applyPendingState().
+    SPreset(size_t capacity, uint64_t seedBase) : source(std::make_unique<CTrailRing>(capacity, seedBase)), seedBase(seedBase) {}
 
-    CTrailRing                     ring;
+    std::unique_ptr<ISource>       source;
+    uint64_t                       seedBase = 0; // for a replacement source
     CNodeBuffer                    gpu;
     std::vector<UP<hyprtail::CLayer>> layers;
     GLuint                         quadVao = 0; // empty: quad layers use gl_VertexID only
@@ -85,6 +95,18 @@ struct SPreset {
     // or interrupt a running fade.
     std::optional<hyprtail::preset::SResolved> pendingPreset;
     hyprtail::preset::SResolved                activePreset; // default-empty until the first prepareLayers()
+
+    // The source's `source:<name>` settings last applied, and whether they
+    // must be resolved again (new source, new preset): applyPendingState()
+    // redoes the work only when something changed.
+    std::map<std::string, std::string> sourceOverrides;
+    bool                               sourceDirty = true;
+
+    // When the source was last ticked (ms since plugin load), and whether it
+    // was still moving then. A source that was at rest has no elapsed time to
+    // integrate: the gap since the last tick is idle time, not motion.
+    double                   lastTickMs = 0.0;
+    bool                     animating  = false;
 
     // Source settings.
     float                    minSpacingPx    = 2.F;

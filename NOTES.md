@@ -881,10 +881,90 @@ Interface only, no spring math. Reasoning:
   equals the old `!(empty || generation == uploaded)`; `testSource` checks the
   truth table across insert, resize and clear. No GL call was added, moved or
   removed, so host testing only.
-- **Not done:** `SPreset` still holds a concrete `CTrailRing`, `tick` is not
-  called anywhere, and `m_refMs`/`ht_nowMs` still rebase on the newest
-  node's birth time. A source that changes every frame will need that
-  revisited in stage 2.
+- **Not done in stage 1:** `SPreset` still held a concrete `CTrailRing`,
+  `tick` was not called anywhere, and `m_refMs`/`ht_nowMs` still rebased on
+  the newest node's birth time. Stage 2 (below) did all three.
+
+## Spring-chain stage 2: the spring source (built, untested on host)
+
+`CSpringChainSource` (`src/SpringChain.*`), the `source` preset key and
+`source:<name>` settings (`src/Source.*`, `Preset.*`), `prefab:spring`. SPEC
+§13.1 and §13.7 have the design; this records why.
+
+- **Reframing checked against the solver, not assumed.** `advanceSpring`
+  solves around a fixed rest of 1.0 (`displacement = value - 1`,
+  `external/hyprutils/src/animation/Spring.cpp:18`), time in seconds, closed
+  form in all three damping regimes (so any `dt` is stable), `dt <= 0` is a
+  no-op (`:10-12`), mass/stiffness floored at 1e-4 and damping at 0
+  (`:14-16`). So `value = 1 + (pos - target)` in and `pos = target + (value -
+  1)` out is exact, done fresh each frame against that frame's target, and the
+  velocity carried between frames is the point's own (the target is constant
+  over a step). State is px/s; the node's `velocity` is px/ms, divided by 1000
+  on the way out. `testSpringChain` checks the critically damped closed form
+  (`d0 (1 + wt) e^-wt`) independently of the reframing. hyprutils v0.14.2 is
+  both the checkout and the host (`/usr/lib/pkgconfig/hyprutils.pc`); the
+  installed `Spring.hpp`/`AnimationManager.hpp` are identical to the
+  checkout's and `libhyprutils.so` exports `advanceSpring`, which Hyprland's
+  own process already has loaded, so the plugin resolves it at load like any
+  other host symbol (`check-imports.sh` counts every library Hyprland links).
+  The host library's own source isn't readable here; the implementation is
+  read from the checkout.
+- **Settling rule is core's** (`AnimatedVariable.cpp:129-137`: within
+  epsilon of 1 and of rest, then snap), at pixel scale: 0.05 px, 2 px/s. The
+  snap makes settling exact, so `needsContinuousUpload()` really turns false.
+- **Why `needsContinuousUpload()` is "true while unsettled", not always
+  true.** `drawLayer` uploads per layer and per monitor, so a flag that is
+  always true re-uploads an unchanged buffer on every draw through the fade.
+  Settled, nothing changes, so the generation gate is enough *if* the tick
+  that settles the last point bumps the generation, which it does (any
+  position or velocity change). `testSpringChain` runs the renderer's gate
+  against the chain until it settles and compares what was "uploaded" with
+  the final state.
+- **`m_refMs` with uploads every frame:** still correct, unchanged. Each
+  upload rebases `birthMs` on the newest node's birth and stores the same
+  value as `m_refMs`, and every draw uses `ht_nowMs = m_nowMs - m_refMs`
+  with `m_nowMs` the lifecycle time `tick` ran at. The head's birth is about
+  now while moving, so the floats are small. Two draws in one frame (layers,
+  monitors) re-upload the same state. The things that *would* go stale are a
+  replaced source (generations are per object, fixed by `invalidate()`) and
+  the last frame of motion (fixed by the settling tick bumping the
+  generation).
+- **Ages:** a chain has no real births, but the shaders fade and taper by
+  age and `visibleCount` needs births that don't increase toward the tail.
+  Point k is born at `activeMs - k * age_step_ms`; `activeMs` is the last
+  unsettled tick or insert. Consequence worth knowing: with a layer's
+  `fade_ms` F, only `F / age_step_ms` points are visible at once.
+- **Break re-seeds the chain** instead of fading an old trail (there is no
+  coherent severed piece of a rope).
+- **`dt`:** the caller passes 0 on the first tick after the source was at
+  rest (the gap is idle time) and the source clamps to 33 ms (without it the
+  first motion after a stall would teleport the chain to the pointer). Two
+  monitors rendering within the same ms give `dt` ~ 0, harmless.
+- **Damage and scheduling:** a layer's box is computed only while
+  `!isSettled(now, fadeMs)`, which for the ring is the same as
+  `visibleBounds` being empty. An unsettled chain therefore damages every
+  frame (the existing addDamage feedback, NOTES "Damage/render feedback is
+  vblank-paced") and a settled, faded one goes idle. The one case this
+  doesn't cover: a chain still moving while everything has faded (only
+  `fade_ms` 0), which has nothing to show.
+- **Not layer params:** all layers share one source, so `mass` etc. as layer
+  parameters would be ambiguous. They are `source:<name>`, using the same
+  parameter types, ranges, precedence and `params` string.
+- **`ISource` grew** (`size`, `capacity`, `resize`, `clear`, `newest`,
+  `visibleCount`, `visibleBounds`, `kind`, `configure`): the damage box, draw
+  count, spacing gate, warp curve and status all read the source, so they
+  read it through the interface. `insertWarpCurve` copies `newest()` now,
+  since the chain's changes on insert.
+- **Stability risk, and the test it needs (the user's, not run here):**
+  continuous upload runs for real for the first time, and the source can
+  change at runtime. Nested instance, scoped: load `prefab:spring`; move and
+  stop, confirm `hyprctl hyprtail` shows `moving` false and renders stop
+  (no more frames once faded); stack it with other layers (a user preset with
+  more layers over `source = spring`); switch to a pointer preset and back
+  mid-motion, and from a spring preset to another spring preset (state
+  kept); change `capacity` while it is active (both directions);
+  `params = "source:damping=..."` live; a lock/unlock and a workspace
+  switch (re-seed).
 
 ## Open questions
 

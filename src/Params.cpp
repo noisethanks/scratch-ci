@@ -226,6 +226,25 @@ namespace hyprtail::params {
         return std::nullopt;
     }
 
+    void applyOverrides(std::vector<std::pair<SDecl, SValue>>& all, const std::map<std::string, std::string>& overrides, std::string_view owner, std::string& problems) {
+        for (const auto& [name, text] : overrides) {
+            const auto it = std::ranges::find_if(all, [&](const auto& e) { return e.first.name == name; });
+            if (it == all.end()) {
+                problems += std::format("\n  {}: not a parameter of this {}; ignoring", name, owner);
+                continue;
+            }
+            auto v = parseValue(it->first.type, text);
+            if (v)
+                if (auto r = checkRange(it->first, *v); !r)
+                    v = std::unexpected(r.error());
+            if (!v) {
+                problems += std::format("\n  {}: {}; using {}", name, v.error(), format(it->second));
+                continue;
+            }
+            it->second = *v;
+        }
+    }
+
     SParsedParams parseParamsString(std::string_view text) {
         SParsedParams out;
         for (const auto tok : splitWs(text)) {

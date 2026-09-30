@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <format>
 #include <fstream>
@@ -21,6 +22,8 @@
 #include "../../src/CrashGuard.hpp"
 #include "../../src/Params.hpp"
 #include "../../src/ShaderSource.hpp"
+#include "../../src/Source.hpp"
+#include "../../src/SpringChain.hpp"
 #include "../../src/TrailBuffer.hpp"
 
 #include <sys/wait.h>
@@ -258,6 +261,7 @@ static void testPresetManifests() {
     int                                manifests = 0;
     std::map<std::string, Layers>      byPreset;    // file stem -> layer -> key -> value
     std::map<std::string, std::string> layerOrder;  // file stem -> its "layers = ..." value
+    std::map<std::string, std::string> sourceOf;    // file stem -> its "source = ..." value, if any
     for (const auto& entry : fs::directory_iterator("presets")) {
         if (entry.path().extension() != ".conf")
             continue;
@@ -277,6 +281,10 @@ static void testPresetManifests() {
                 layers[trim(key.substr(0, colon))][trim(key.substr(colon + 1))] = trim(line.substr(eq + 1));
             else if (key == "layers")
                 layerOrder[entry.path().stem().string()] = trim(line.substr(eq + 1));
+            else if (key == "source") {
+                sourceOf[entry.path().stem().string()] = trim(line.substr(eq + 1));
+                CHECK(source::known(sourceOf[entry.path().stem().string()]));
+            }
         }
         CHECK(!layers.empty());
         byPreset[entry.path().stem().string()] = layers;
@@ -286,6 +294,27 @@ static void testPresetManifests() {
                 std::cerr << std::format("preset {} layer {}: {}\n", entry.path().string(), layer, why);
                 CHECK(false);
             };
+
+            // "source:<name>": a setting of the preset's source, not a layer.
+            if (layer == source::KEY_PREFIX) {
+                const auto  stem  = entry.path().stem().string();
+                const auto  kind  = sourceOf.contains(stem) ? sourceOf[stem] : std::string{source::DEFAULT_KIND};
+                const auto& decls = source::decls(kind);
+                for (const auto& [name, text] : keys) {
+                    const auto decl = std::ranges::find_if(decls, [&](const auto& d) { return d.name == name; });
+                    if (decl == decls.end()) {
+                        fail(std::format("\"{}\" isn't a setting of source {}", name, kind));
+                        continue;
+                    }
+                    auto v = params::parseValue(decl->type, text);
+                    if (v)
+                        if (auto r = params::checkRange(*decl, *v); !r)
+                            v = std::unexpected(r.error());
+                    if (!v)
+                        fail(std::format("{} = {}: {}", name, text, v.error()));
+                }
+                continue;
+            }
 
             const auto vertKey = keys.find("vertex"), fragKey = keys.find("fragment");
             if (vertKey == keys.end() || fragKey == keys.end() || !vertKey->second.starts_with("prefab:") || !fragKey->second.starts_with("prefab:")) {
@@ -328,7 +357,7 @@ static void testPresetManifests() {
             }
         }
     }
-    CHECK(manifests >= 7); // classic, subtle, jitter, spray, vivid, comet, embers
+    CHECK(manifests >= 8); // classic, subtle, jitter, spray, vivid, comet, embers, spring
 
     // The shipped presets that are built purely from other shipped parts:
     // each exists, lists the layers it should, and pairs the shaders it should.
@@ -347,6 +376,13 @@ static void testPresetManifests() {
     const auto ribbon = [&](const std::string& preset, const std::string& layer) {
         return val(preset, layer, "vertex") == "prefab:ribbon.vert" && val(preset, layer, "fragment") == "prefab:ribbon.frag";
     };
+
+    // spring: one ribbon layer over the spring source, with its settings
+    // set; every other shipped preset leaves the source at the pointer's.
+    CHECK(sourceOf["spring"] == "spring" && layerOrder["spring"] == "trail" && ribbon("spring", "trail"));
+    CHECK(num("spring", "source", "stiffness") > 0.0 && num("spring", "source", "damping") > 0.0 && num("spring", "source", "age_step_ms") > 0.0);
+    for (const auto& [stem, kind] : sourceOf)
+        CHECK(stem == "spring" || kind == "pointer");
 
     // vivid: a wide faint glow under a narrow opaque core, same ribbon shaders.
     CHECK(layerOrder["vivid"] == "glow, core");
@@ -497,15 +533,25 @@ static void testRing() {
 // to exercise the continuous-upload half of the gate.
 namespace {
     struct SContinuousStub final : ISource {
+        std::string_view kind() const override { return "stub"; }
         void     insert(const SVec2f&, double, bool) override {}
         void     tick(double, double) override {}
+        void     configure(const std::map<std::string, double>&) override {}
+        void     resize(size_t) override {}
+        void     clear() override {}
+        size_t   size() const override { return 0; }
+        size_t   capacity() const override { return 0; }
+        const SCursorNode& newest() const override { return node_; }
         void     orderedCopy(std::vector<SGpuNode>&, double) const override {}
         bool     needsContinuousUpload() const override { return true; }
+        size_t   visibleCount(double, double) const override { return 0; }
+        std::optional<STrailBounds> visibleBounds(double, double, bool) const override { return std::nullopt; }
         bool     isSettled(double, double) const override { return false; }
         uint64_t generation() const override { return 7; }
         bool     empty() const override { return empty_; }
         double   newestBirthMs() const override { return 0.0; }
         bool     empty_ = false;
+        SCursorNode node_{};
     };
 }
 
@@ -557,7 +603,256 @@ static void testSource() {
     CHECK(!sourceNeedsUpload(stub, stub.generation()));
 }
 
+// What the renderer does each frame with a source (CNodeBuffer::upload):
+// upload if the gate says so, remembering what was uploaded.
+namespace {
+    struct SUploadSim {
+        std::vector<SGpuNode> uploaded;
+        uint64_t              gen     = UINT64_MAX;
+        double                ref     = 0.0;
+        int                   uploads = 0;
+
+        void                  frame(const ISource& s) {
+            if (!sourceNeedsUpload(s, gen))
+                return;
+            ref = s.newestBirthMs();
+            s.orderedCopy(uploaded, ref);
+            gen = s.generation();
+            ++uploads;
+        }
+
+        // The GPU holds what the source would upload right now.
+        bool current(const ISource& s) const {
+            std::vector<SGpuNode> now;
+            s.orderedCopy(now, ref);
+            return ref == s.newestBirthMs() && now.size() == uploaded.size() && std::memcmp(now.data(), uploaded.data(), now.size() * sizeof(SGpuNode)) == 0;
+        }
+    };
+
+    std::vector<SGpuNode> copyOf(const ISource& s) {
+        std::vector<SGpuNode> out;
+        s.orderedCopy(out, s.newestBirthMs());
+        return out;
+    }
+}
+
+static void testSpringChain() {
+    // The reframing (value = 1 + pos - target, pos = target + value - 1)
+    // against an independent answer: critically damped (omega 50 rad/s, mass
+    // 1, stiffness omega^2, damping 2 omega) from 100 px away at rest has
+    // displacement d0 (1 + wt) e^-wt and velocity -d0 w^2 t e^-wt.
+    {
+        CSpringChainSource c(1, 1);
+        c.configure({{"mass", 1}, {"stiffness", 2500}, {"damping", 100}});
+        CHECK(c.empty() && c.size() == 0 && !c.needsContinuousUpload());
+        c.insert({0, 0}, 0.0, false); // seeds the chain
+        CHECK(!c.empty() && c.size() == 1 && !c.needsContinuousUpload());
+        c.insert({100, 0}, 0.0, false);
+        CHECK(c.needsContinuousUpload());
+        c.tick(16.0, 16.0);
+        const auto out = copyOf(c);
+        CHECK(out.size() == 1 && std::abs(out[0].posPx.x - 19.121F) < 0.05F && out[0].posPx.y == 0.F);
+        CHECK(std::abs(out[0].velocity.x - 1.797F) < 0.01F); // px/ms
+    }
+
+    // dt 0 moves nothing, and a long gap integrates at most MAX_DT (33 ms).
+    {
+        CSpringChainSource a(4, 1), b(4, 1), c(4, 1);
+        for (auto* s : {&a, &b, &c}) {
+            s->configure({{"mass", 1}, {"stiffness", 400}, {"damping", 60}}); // slow: 33 ms is far from arriving
+            s->insert({0, 0}, 0.0, false);
+            s->insert({100, 40}, 0.0, false);
+        }
+        const auto before = copyOf(c);
+        c.tick(5.0, 0.0);
+        const auto after = copyOf(c);
+        CHECK(before.size() == after.size() && std::memcmp(before.data(), after.data(), before.size() * sizeof(SGpuNode)) == 0 && c.needsContinuousUpload());
+        a.tick(10000.0, 10000.0);
+        b.tick(10000.0, 33.0);
+        const auto ca = copyOf(a), cb = copyOf(b);
+        CHECK(ca.size() == cb.size() && ca.back().posPx == cb.back().posPx && ca.back().posPx.x > 0.F && ca.back().posPx.x < 90.F);
+    }
+
+    // Overdamped: every point trails the one before it and none overshoots.
+    {
+        CSpringChainSource c(6, 1);
+        c.configure({{"mass", 1}, {"stiffness", 4000}, {"damping", 400}});
+        c.insert({0, 0}, 0.0, false);
+        c.insert({300, 0}, 0.0, false);
+        for (int i = 1; i <= 5; ++i)
+            c.tick(i * 16.0, 16.0);
+        const auto out = copyOf(c); // tail first
+        bool       ordered = out.size() == 6, inside = true;
+        for (size_t i = 0; i + 1 < out.size(); ++i)
+            ordered = ordered && out[i].posPx.x <= out[i + 1].posPx.x;
+        for (const auto& n : out)
+            inside = inside && n.posPx.x >= 0.F && n.posPx.x <= 300.F;
+        CHECK(ordered && inside && out.back().posPx.x > out.front().posPx.x);
+    }
+
+    // Moves, settles exactly on the target, and what the renderer uploaded
+    // under the upload gate is the final state, however many frames it took.
+    {
+        CSpringChainSource c(8, 7);
+        SUploadSim         sim;
+        c.insert({0, 0}, 0.0, false);
+        sim.frame(c);
+        c.insert({200, 50}, 10.0, false);
+        double now    = 10.0;
+        int    frames = 0;
+        for (; frames < 2000; ++frames) {
+            now += 16.0;
+            c.tick(now, 16.0);
+            sim.frame(c);
+            if (!c.needsContinuousUpload())
+                break;
+        }
+        CHECK(frames < 2000);
+        CHECK(sim.current(c));
+        bool atTarget = true;
+        for (const auto& n : copyOf(c))
+            atTarget = atTarget && n.posPx == SVec2f{200.F, 50.F} && n.velocity == SVec2f{};
+        CHECK(atTarget);
+
+        // Settled and unchanged: no more uploads, no more generations.
+        const auto gen     = c.generation();
+        const int  uploads = sim.uploads;
+        for (int i = 0; i < 10; ++i) {
+            now += 16.0;
+            c.tick(now, 16.0);
+            sim.frame(c);
+        }
+        CHECK(c.generation() == gen && sim.uploads == uploads && sim.current(c));
+
+        // The fade check: stopped is not settled until it has faded too.
+        const double active = c.newestBirthMs();
+        CHECK(!c.isSettled(active + 1.0, 100.0));
+        CHECK(c.isSettled(active + 101.0, 100.0));
+    }
+
+    // Births: point k is (activeMs - k * age_step_ms); the tail is oldest and
+    // the only segment start; distances grow from the tail; seeds are fixed.
+    {
+        CSpringChainSource c(4, 9);
+        c.insert({0, 0}, 100.0, false);
+        auto out = copyOf(c);
+        CHECK(out.size() == 4 && out[3].birthMs == 0.F && out[2].birthMs == -10.F && out[0].birthMs == -30.F);
+        CHECK((out[0].bits & GPU_BIT_SEGMENT_START) && !(out[1].bits & GPU_BIT_SEGMENT_START) && !(out[3].bits & GPU_BIT_SEGMENT_START));
+        CHECK(c.newestBirthMs() == 100.0 && c.newest().posPx == SVec2f{} && c.newest().birthTimeMs == 100.0);
+        CHECK((out[0].bits >> 1) != (out[1].bits >> 1));
+
+        c.insert({30, 40}, 110.0, false);
+        for (int i = 1; i <= 3; ++i)
+            c.tick(110.0 + i * 16.0, 16.0);
+        const auto moved = copyOf(c);
+        CHECK(moved[0].distPx == 0.F && moved[0].distPx <= moved[1].distPx && moved[1].distPx <= moved[2].distPx && moved[2].distPx <= moved[3].distPx && moved[3].distPx > 0.F);
+        for (size_t i = 0; i < 4; ++i)
+            CHECK((moved[i].bits >> 1) == (out[i].bits >> 1)); // seeds don't change
+        CHECK(c.newest().posPx == SVec2f(30.F, 40.F) && c.newest().velocity.x > 0.F); // the last insert, not the head's position
+
+        // Visibility follows the ages: the newest first, here once settled at t = 110.
+        CSpringChainSource s(4, 9);
+        s.insert({0, 0}, 100.0, false);
+        CHECK(s.visibleCount(100.0, 35.0) == 4 && s.visibleCount(100.0, 25.0) == 3 && s.visibleCount(100.0, 5.0) == 1 && s.visibleCount(200.0, 35.0) == 0);
+        CHECK(!s.isSettled(100.0, 35.0) && s.isSettled(200.0, 35.0));
+        CHECK(!s.visibleBounds(200.0, 35.0) && s.visibleBounds(100.0, 35.0, false));
+
+        // Unsettled is never settled, faded or not.
+        s.insert({50, 0}, 100.0, false);
+        CHECK(!s.isSettled(10000.0, 35.0));
+
+        // age_step_ms is live; names the source doesn't have are ignored.
+        const auto gen = s.generation();
+        s.configure({{"bogus", 1.0}});
+        CHECK(s.generation() == gen);
+        s.configure({{"age_step_ms", 20.0}});
+        CHECK(s.generation() != gen && copyOf(s).front().birthMs == -60.F);
+    }
+
+    // A break re-seeds the chain where the pointer is now, at rest.
+    {
+        CSpringChainSource c(5, 3);
+        c.insert({0, 0}, 0.0, false);
+        c.insert({200, 0}, 5.0, false);
+        c.tick(20.0, 15.0);
+        const auto gen = c.generation();
+        c.insert({500, 600}, 30.0, true);
+        CHECK(c.generation() != gen && !c.needsContinuousUpload() && c.newest().segmentStart);
+        bool seeded = true;
+        for (const auto& n : copyOf(c))
+            seeded = seeded && n.posPx == SVec2f{500.F, 600.F} && n.velocity == SVec2f{};
+        CHECK(seeded);
+    }
+
+    // resize keeps the head end, clear empties, both bump the generation.
+    {
+        CSpringChainSource c(4, 3);
+        c.resize(6); // not seeded yet: just the capacity
+        CHECK(c.capacity() == 6 && c.size() == 0 && c.empty());
+        c.insert({10, 20}, 0.0, false);
+        c.insert({60, 20}, 5.0, false);
+        c.tick(20.0, 15.0);
+        const auto head = copyOf(c).back().posPx;
+        auto       gen  = c.generation();
+        c.resize(6);
+        CHECK(c.generation() == gen); // no change
+        c.resize(3);
+        CHECK(c.size() == 3 && c.capacity() == 3 && c.generation() != gen && copyOf(c).back().posPx == head);
+        gen = c.generation();
+        c.resize(9);
+        CHECK(c.size() == 9 && c.generation() != gen && copyOf(c).back().posPx == head);
+        gen = c.generation();
+        c.clear();
+        CHECK(c.empty() && c.size() == 0 && c.capacity() == 9 && c.generation() != gen && !c.needsContinuousUpload());
+        c.tick(100.0, 16.0); // nothing to advance
+        c.insert({1, 1}, 100.0, false);
+        CHECK(c.size() == 9 && c.newest().posPx == SVec2f(1.F, 1.F));
+    }
+
+    // The pointer source satisfies the same contract without moving.
+    {
+        CTrailRing ring(8, 1);
+        CHECK(ring.kind() == "pointer" && ring.capacity() == 8 && ring.size() == 0);
+        ring.insert({1, 2}, 5.0, false);
+        ring.configure({{"mass", 3.0}}); // nothing to configure
+        ring.tick(10.0, 5.0);
+        CHECK(ring.size() == 1 && ring.newest().posPx == SVec2f(1.F, 2.F) && ring.newestBirthMs() == 5.0 && !ring.needsContinuousUpload());
+    }
+
+    // The factory and the settings a source declares.
+    {
+        CHECK(source::known("pointer") && source::known("spring") && !source::known("rope") && !source::known(""));
+        CHECK(source::decls("pointer").empty() && source::decls("rope").empty());
+
+        const auto& d = source::decls("spring");
+        CHECK(d.size() == 4 && d[0].name == "mass" && d[1].name == "stiffness" && d[2].name == "damping" && d[3].name == "age_step_ms");
+        CHECK(d.size() == 4 && d[0].def.x == spring::MASS && d[1].def.x == spring::STIFFNESS && d[2].def.x == spring::DAMPING && d[3].def.x == spring::AGE_STEP_MS);
+
+        const auto sp = source::make("spring", 12, 1);
+        const auto pt = source::make("pointer", 12, 1);
+        CHECK(sp->kind() == "spring" && sp->capacity() == 12 && pt->kind() == "pointer" && pt->capacity() == 12);
+
+        // Declared defaults, then the preset's, then the `params` string's.
+        std::string problems;
+        auto        r = source::resolve("spring", {{"stiffness", "100"}, {"mass", "2"}}, {{"stiffness", "200"}, {"damping", "-1"}, {"bogus", "1"}}, problems);
+        CHECK(r.size() == 4 && r["stiffness"] == 200.0 && r["mass"] == 2.0 && r["damping"] == spring::DAMPING && r["age_step_ms"] == spring::AGE_STEP_MS);
+        CHECK(problems.contains("damping") && problems.contains("bogus") && !problems.contains("stiffness") && !problems.contains("mass"));
+
+        problems.clear();
+        CHECK(source::resolve("spring", {}, {}, problems).size() == 4 && problems.empty());
+        CHECK(source::resolve("pointer", {}, {{"mass", "1"}}, problems).empty() && problems.contains("mass"));
+
+        // A resolved set configures the source it was resolved for.
+        CSpringChainSource c(2, 1);
+        problems.clear();
+        c.configure(source::resolve("spring", {}, {{"age_step_ms", "25"}}, problems));
+        c.insert({0, 0}, 50.0, false);
+        CHECK(problems.empty() && copyOf(c).front().birthMs == -25.F);
+    }
+}
+
 int main() {
+    testSpringChain();
     testSource();
     testParams();
     testShaderSource();

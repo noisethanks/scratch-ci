@@ -43,8 +43,10 @@ namespace hyprtail::status {
         uint64_t    renders    = 0;
 
         struct {
+            std::string kind = "pointer"; // the preset's `source`
             size_t      nodes = 0, capacity = 0;
             uint64_t    generation   = 0;
+            bool        moving       = false; // the source's points are still moving (spring)
             bool        pendingBreak = false;
             std::string warpMode     = "break";
             bool        gpuFailed    = false;

@@ -3,9 +3,11 @@
 #include <cstdint>
 #include <expected>
 #include <functional>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 // Shader-declared parameters and padding expressions (SPEC §13.5). No
@@ -77,6 +79,13 @@ namespace hyprtail::params {
         std::vector<SParamEntry> entries;
         std::vector<std::string> problems; // malformed tokens, plain text
     };
+
+    // Applies value text by name onto resolved (declaration, value) pairs:
+    // each value is parsed as its declaration's type and range-checked. A
+    // name nobody declared, or a bad value, is described in `problems` (one
+    // line each, "\n  <name>: ...") and the declared value stays. `owner`
+    // names what the parameters belong to ("layer", "source") in the message.
+    void applyOverrides(std::vector<std::pair<SDecl, SValue>>& all, const std::map<std::string, std::string>& overrides, std::string_view owner, std::string& problems);
 
     // Splits on whitespace, then each token on the first ':' and first '='.
     // A malformed token (missing ':' or '=', or an empty layer/name/value)

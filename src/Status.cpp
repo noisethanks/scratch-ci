@@ -80,9 +80,9 @@ namespace hyprtail::status {
 
         out += std::format("  preset: {}\n", s.preset);
         out += std::format("  screenshare: {}\n", s.screenshare);
-        out += std::format("  source: {}/{} points, generation {}, pending break {}, warp {}, pointer still for {:.0f} ms{}\n", s.source.nodes, s.source.capacity,
-                           s.source.generation, s.source.pendingBreak ? "yes" : "no", s.source.warpMode, s.source.stillMs,
-                           s.source.gpuFailed ? ", NODE BUFFER FAILED (see errors.log)" : "");
+        out += std::format("  source: {}, {}/{} points{}, generation {}, pending break {}, warp {}, pointer still for {:.0f} ms{}\n", s.source.kind, s.source.nodes,
+                           s.source.capacity, s.source.moving ? " (moving)" : "", s.source.generation, s.source.pendingBreak ? "yes" : "no", s.source.warpMode,
+                           s.source.stillMs, s.source.gpuFailed ? ", NODE BUFFER FAILED (see errors.log)" : "");
         const auto conditions = suppressConditions(s);
         out += conditions.empty() ? "  suppressed: no\n" : std::format("  suppressed: yes ({})\n", conditions);
         out += std::format("  focused window: {}\n",
@@ -127,9 +127,9 @@ namespace hyprtail::status {
         out += std::format(R"("rev": "{}", "builtHash": "{}", "runningHash": "{}", "preset": "{}", "screenshare": "{}", )", esc(s.rev), esc(s.builtHash), esc(s.runningHash),
                            esc(s.preset), esc(s.screenshare));
         out += std::format(R"("hooks": {{"cursor": {}, "warp": {}, "capture": {}}}, "renders": {}, )", b(s.cursorHook), b(s.warpHook), b(s.captureHook), s.renders);
-        out += std::format(R"("source": {{"nodes": {}, "capacity": {}, "generation": {}, "pendingBreak": {}, "warp": "{}", "gpuFailed": {}, "stillMs": {:.1f}}}, )",
+        out += std::format(R"("source": {{"nodes": {}, "capacity": {}, "generation": {}, "pendingBreak": {}, "warp": "{}", "gpuFailed": {}, "stillMs": {:.1f}, "kind": "{}", "moving": {}}}, )",
                            s.source.nodes, s.source.capacity, s.source.generation, b(s.source.pendingBreak), esc(s.source.warpMode), b(s.source.gpuFailed),
-                           s.source.stillMs);
+                           s.source.stillMs, esc(s.source.kind), b(s.source.moving));
         out += std::format(R"("suppress": {{"locked": {}, "constrained": {}, "appRule": {}, "focusedClass": "{}", "focusedTitle": "{}"}}, )", b(s.suppress.locked),
                            b(s.suppress.constrained), b(s.suppress.appRule), esc(s.suppress.focusedClass), esc(s.suppress.focusedTitle));
 

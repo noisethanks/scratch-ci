@@ -20,7 +20,9 @@
 // each instanced preset, changes K and the capacity live, unplugs an output
 // while one draws, stacks path, quad and instanced layers and switches presets
 // mid-run, and asks only that the compositor lives, errors.log stays clean
-// and `hyprctl hyprtail` reports the layers compiled and not disabled.
+// and `hyprctl hyprtail` reports the layers compiled and not disabled. The
+// spring-chain step (4c) does the same for continuous upload and for switching
+// the preset's source at runtime, and also asks that the chain comes to rest.
 
 #include "tests.hpp"
 #include "../../shared.hpp"
@@ -380,6 +382,93 @@ TEST_CASE(hyprtailLifecycle) {
         OK(moveAlong(700, 400, 1200, 700, 20));
         sleepMs(FADE_MS + 200);
         HYPRTAIL_HEALTHY("instanced topology steps");
+    }
+
+    // 4c. Spring-chain source (SPEC §13.1, §13.7): continuous upload runs
+    // for real (the node buffer is rewritten every frame the chain moves),
+    // and a preset's source can change at runtime. State only, see the
+    // header comment.
+    {
+        const std::string fade = std::format("trail:fade_ms={}", FADE_MS);
+
+        // Loads, draws, moves, and once the pointer is still the chain comes
+        // to rest: the status stops reporting its points as moving. (That
+        // needs renders to keep coming while it moves: the tick only runs
+        // inside one.)
+        HYPRTAIL_CONFIGURE("spring preset", "prefab:spring", fade, 0);
+        HYPRTAIL_EXPECT_STATUS("spring preset", "source: spring");
+        if (!waitFor([] { return statusHas("(moving)"); }, 1000))
+            LOG_OK("{}", "spring preset: already at rest before the settle check");
+        if (!waitFor([] { return !statusHas("(moving)"); }, 4000))
+            FAIL_TEST("spring preset: the chain never came to rest:\n{}", status());
+        sleepMs(FADE_MS + 200);
+        HYPRTAIL_HEALTHY("spring preset at rest");
+
+        // Path, instanced and quad layers over the one spring source (a
+        // user preset in the scratch config directory).
+        {
+            std::error_code ec;
+            std::filesystem::create_directories(userPresetsDir(), ec);
+            if (ec)
+                FAIL_TEST("can't create {}: {}", userPresetsDir().string(), ec.message());
+            std::ofstream(userPresetsDir() / "smoke-spring-stack.conf") << "contract = 2\n"
+                                                                           "description = smoke test: path, quad and instanced layers over a spring chain\n"
+                                                                           "layers = trail, idle, sparks\n"
+                                                                           "source = spring\n"
+                                                                           "source:damping = 150\n"
+                                                                           "trail:vertex = prefab:ribbon.vert\n"
+                                                                           "trail:fragment = prefab:ribbon.frag\n"
+                                                                           "idle:vertex = prefab:ring.vert\n"
+                                                                           "idle:fragment = prefab:ring.frag\n"
+                                                                           "idle:enabled = true\n"
+                                                                           "idle:start_ms = 50\n"
+                                                                           "idle:duration_ms = 200\n"
+                                                                           "sparks:vertex = prefab:spray.vert\n"
+                                                                           "sparks:fragment = prefab:dots.frag\n"
+                                                                           "sparks:count = 12\n";
+        }
+        HYPRTAIL_CONFIGURE("spring stack", "smoke-spring-stack", fade + " sparks:fade_ms=" + std::to_string(FADE_MS), 0);
+        HYPRTAIL_EXPECT_STATUS("spring stack", "layer sparks");
+        if (!statusHas("source: spring") || !statusHas("topology path") || !statusHas("topology quad") || !statusHas("topology instanced count"))
+            FAIL_TEST("spring stack: expected a spring source under a path, a quad and an instanced layer:\n{}", status());
+        sleepMs(400);
+        HYPRTAIL_HEALTHY("spring stack");
+
+        // Presets switched while the chain is moving, in and out of the
+        // spring source (a new source replaces the old one, the same kind
+        // keeps it).
+        for (const std::string preset : {"prefab:subtle", "prefab:spring", "prefab:jitter", "smoke-spring-stack", "prefab:spring", "prefab:spring"}) {
+            const auto step = "switch to " + preset;
+            OK(moveAlong(700, 400, 1200, 700, 12));
+            HYPRTAIL_CONFIGURE(step, preset, fade, 0);
+            HYPRTAIL_EXPECT_STATUS(step, preset.contains("spring") ? "source: spring" : "source: pointer");
+            OK(moveAlong(1200, 700, 800, 500, 12));
+            HYPRTAIL_HEALTHY(step);
+        }
+
+        // Capacity (the chain's length, the node buffer is recreated)
+        // changes while the chain is moving, both ways.
+        for (const int capacity : {512, 8, 4096, 2, 64}) {
+            const auto step = std::format("capacity {} under a spring chain", capacity);
+            OK(moveAlong(700, 400, 1200, 700, 20));
+            HYPRTAIL_CONFIGURE(step, "prefab:spring", fade, capacity);
+            HYPRTAIL_EXPECT_STATUS(step, std::format("/{} points", capacity));
+            HYPRTAIL_HEALTHY(step);
+        }
+
+        // The source's settings change live through `params`; a bad one is
+        // a warning, which HYPRTAIL_HEALTHY would catch.
+        HYPRTAIL_CONFIGURE("spring params", "prefab:spring", fade + " source:damping=120 source:age_step_ms=6 source:stiffness=20000 source:mass=2", 0);
+        HYPRTAIL_EXPECT_STATUS("spring params", "source: spring");
+        HYPRTAIL_HEALTHY("spring params");
+
+        // Back to smoke.lua's own settings for the steps below.
+        std::filesystem::remove(pluginSettingsFile());
+        OK(getFromSocket("/reload"));
+        sleepMs(300);
+        OK(moveAlong(700, 400, 1200, 700, 20));
+        sleepMs(FADE_MS + 200);
+        HYPRTAIL_HEALTHY("spring chain steps");
     }
 
     // 5. Unload (synchronous, HyprCtl.cpp:1840-1849), then pointer motion

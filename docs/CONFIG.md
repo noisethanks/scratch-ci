@@ -40,7 +40,7 @@ A preset name is addressed in one of two namespaces, and they never overlap:
 - **`prefab:<name>`** is always the built-in preset embedded in the plugin,
   regardless of any local file with the same name. Built-ins: `prefab:subtle`,
   `prefab:classic`, `prefab:jitter`, `prefab:spray`, `prefab:vivid`,
-  `prefab:comet` and `prefab:embers`.
+  `prefab:comet`, `prefab:embers` and `prefab:spring`.
 - **`<name>`** (no prefix) is always your own file,
   `~/.config/hypr/hyprtail/presets/<name>.conf`. If that file doesn't exist,
   loading fails with an error naming the path it looked for; it never falls
@@ -81,6 +81,14 @@ Shipped presets:
   Points pushed out of the buffer take their particles with them, so raise
   `capacity` (for example 256) for long strokes. Try
   `params = "embers:count=4 embers:fade_ms=2000"`.
+
+- **`prefab:spring`**: a springy rope instead of a pointer history (source
+  `spring`, see "Sources" below): a chain of `capacity` points, the first
+  chasing the pointer and each other one chasing the point before it, drawn
+  as one ribbon. The tail swings and settles rather than replaying the
+  pointer's path, and when the pointer stops the rope springs together under
+  the cursor and fades. Try `params = "source:damping=120 source:age_step_ms=6"`
+  for a livelier, longer rope.
 
 `jitter`, `spray` and `embers` draw *(visible points) x (copies per point)* quads, so `capacity` and
 `fade_ms` together with the copy count set the GPU cost: the most a single
@@ -127,7 +135,10 @@ core:color    = rgba(ffffffa0)
 
 - `contract = 2` is required.
 - `layers = <name>[, <name>...]` lists 1–4 layer names, draw order first =
-  bottom. No duplicates.
+  bottom. No duplicates. `source` can't be a layer name.
+- `source = pointer | spring` (optional, default `pointer`) picks what
+  produces the trail's points, see "Sources" below.
+- `source:<name> = <value>` sets a setting of that source, see below.
 - Every other line is `<layer>:<key> = <value>`, where `<layer>` must be one
   of the names in `layers`.
   - `<layer>:vertex` / `<layer>:fragment` pick that layer's shader:
@@ -142,6 +153,38 @@ core:color    = rgba(ffffffa0)
 - `#` starts a comment to end of line; blank lines are ignored.
 - If the selected preset fails to load (missing file, parse error, bad
   shader reference), hyprtail reports it and uses `prefab:subtle` instead.
+
+### Sources
+
+Every layer of a preset draws from one shared source of points, so the
+source belongs to the preset (`source = ...`), not to a layer.
+
+- **`pointer`** (default): the recorded history of the pointer, one point per
+  `min_spacing` px of travel, kept in a buffer of `capacity` points. No
+  settings.
+- **`spring`**: a chain of `capacity` points that chase each other, so the
+  points are fixed and always there; nothing is recorded. The first point
+  chases the pointer and each of the others the point before it, each axis an
+  independent damped spring. Settings, set as `source:<name> = <value>` in the
+  preset or `source:<name>=<value>` in `params` (same value rules and
+  precedence as layer parameters: the source's default < the preset < `params`;
+  applied live):
+
+  | Name | Default | Range | Meaning |
+  |---|---|---|---|
+  | `mass` | `1` | 0.01–100 | Heavier points answer more slowly. |
+  | `stiffness` | `30000` | 1–1000000 | How hard a point is pulled toward the one before it. Large, because every link adds lag. |
+  | `damping` | `200` | 0–10000 | Resistance to motion. The damping ratio is `damping / (2 * sqrt(stiffness * mass))`: under 1 bounces, over 1 doesn't. |
+  | `age_step_ms` | `10` | 0–1000 | How much older each point is than the one in front of it. It tapers a ribbon toward the tail; with a layer's `fade_ms` it sets how many points are visible (`fade_ms / age_step_ms`). |
+
+  A chain has no severed pieces to fade, so anything that would start a new
+  segment in a pointer history (screen lock, pointer constraint, a warp in
+  `break` mode, a workspace change, a monitor layout change) restarts the
+  chain at the pointer instead. The chain stops redrawing once it has stopped
+  moving and every layer's `fade_ms` has passed.
+
+`hyprctl hyprtail` shows which source is active and whether its points are
+still moving.
 
 ## Overriding a preset's shaders
 
@@ -178,7 +221,8 @@ One string, space-separated entries of the form `<layer>:<name>=<value>`:
 plugin:hyprtail:params = core:width=4 glow:radius=18 core:color=rgba(ffffffa0)
 ```
 
-- `<layer>` is a layer name from the active preset.
+- `<layer>` is a layer name from the active preset, or `source` for the
+  preset's source (see "Sources").
 - `<name>` is a parameter that layer's shader declares (or a reserved name,
   below).
 - `<value>` syntax depends on the parameter's type: a plain number for
@@ -213,7 +257,7 @@ without switching presets.
 
 | Key | Type | Default | Range | Meaning |
 |---|---|---|---|---|
-| `capacity` | int, points | `64` | 2–4096 | Max number of trail points kept in the buffer. Higher = longer possible trail (subject to `fade_ms`), more GPU work. |
+| `capacity` | int, points | `64` | 2–4096 | Max number of trail points kept in the buffer (for the `spring` source: the number of points in the chain). Higher = longer possible trail (subject to `fade_ms`), more GPU work. |
 | `min_spacing` | float, logical px | `2` | 0–256 | Minimum pointer travel before a new point is recorded. Too low makes tight turns fold over themselves. |
 | `damage_padding` | float, px | `0` | 0–4096 | Extra screen-redraw margin added on top of what each shader already reaches (its own padding declaration). Raise this if a custom shader draws outside its declared reach and you see trailing artifacts. |
 
