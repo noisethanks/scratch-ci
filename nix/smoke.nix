@@ -123,14 +123,41 @@ pkgs.testers.runNixOSTest {
     # Wait for tty to be up
     machine.wait_for_unit("multi-user.target")
 
+    # Hang or crash? Samples the Hyprland process (pid, state, kernel wait
+    # channel) four times a second into /tmp/hyprproc, and marks the first
+    # sample taken after hyprtester logs an IPC timeout. The process still
+    # there (R busy loop, S/D blocked) means a hang, gone means a crash.
+    watcher = """
+    seen=0
+    while :; do
+      s="$(ps -eo pid=,stat=,wchan:20=,comm= | grep -i hyprland | tr -s ' ' | tr '\\n' ';')"
+      [ -n "$s" ] || s="no Hyprland process"
+      echo "$(date +%s.%N) $s"
+      if [ $seen = 0 ] && grep -q "respond in time" /tmp/testerlog 2>/dev/null; then
+        seen=1
+        echo "$(date +%s.%N) IPC TIMEOUT first seen, Hyprland: $s"
+      fi
+      sleep 0.25
+    done
+    """
+    machine.execute(f"cat > /tmp/hyprwatch.sh <<'EOF'\n{watcher}\nEOF")
+    machine.execute("nohup sh /tmp/hyprwatch.sh > /tmp/hyprproc 2>&1 < /dev/null &")
+
     # Run only the hyprtail test (hyprtester takes test names as arguments)
     print("Running hyprtail smoke test")
     exit_status, _out = machine.execute("su - alice -c 'hyprtester -b ${hyprland}/bin/Hyprland -c ${hyprtester}/share/hypr/hyprtail_smoke.lua -p ${hyprtester}/lib/hyprtestplugin.so hyprtailLifecycle 2>&1 | tee /tmp/testerlog; exit ''${PIPESTATUS[0]}'")
     print(f"Hyprtester exited with {exit_status}")
 
+    machine.execute("pkill -f hyprwatch.sh")
+
     # Print logs for visibility in CI
     _, out = machine.execute("cat /tmp/testerlog")
     print(f"Hyprtester log:\n{out}")
+
+    # Only the samples where the process state changed (uniq skips the
+    # timestamp field), so a healthy run is a few lines.
+    _, out = machine.execute("uniq -f1 /tmp/hyprproc")
+    print(f"Hyprland process timeline (epoch seconds):\n{out}")
 
     # Copy logs to host. The build succeeds whatever the test did, so the logs
     # survive; the workflow reads exit_status.
@@ -139,6 +166,7 @@ pkgs.testers.runNixOSTest {
     machine.copy_from_machine("/tmp/testerlog")
     machine.copy_from_machine("/tmp/hyprlog")
     machine.copy_from_machine("/tmp/exit_status")
+    machine.copy_from_machine("/tmp/hyprproc")
     for optional in ["/tmp/state/hyprtail/errors.log", "/tmp/state/hyprtail/errors.log.1"]:
         # Not there when the plugin never got as far as writing them.
         if machine.execute(f"test -f {optional}")[0] == 0:
