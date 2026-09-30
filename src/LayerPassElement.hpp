@@ -42,7 +42,9 @@ class CNodeBuffer {
     // the capacity changed. On failure returns false with a description in
     // error, and leaves nothing allocated.
     bool   ensure(size_t ringCapacity, std::string& error);
-    void   upload(const CTrailRing& ring);
+    // Uploads src when sourceNeedsUpload() says so: a new generation, or
+    // every frame for a source that needs continuous upload.
+    void   upload(const ISource& src);
     void   destroy();
 
     GLuint vao() const;          // path layers

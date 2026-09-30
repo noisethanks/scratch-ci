@@ -122,14 +122,14 @@ void CNodeBuffer::pointInstanced(size_t firstNode, GLuint copies) {
     hyprtail::compat::bindArrayBuffer(0);
 }
 
-void CNodeBuffer::upload(const CTrailRing& ring) {
-    if (!m_vbo || ring.empty() || ring.generation() == m_uploadedGen)
+void CNodeBuffer::upload(const ISource& src) {
+    if (!m_vbo || !sourceNeedsUpload(src, m_uploadedGen))
         return;
 
     // Rebase on the newest node: every uploaded birthMs is <= 0 and small, so
     // float keeps sub-ms precision regardless of how long the plugin has run.
-    m_refMs = ring.newest().birthTimeMs;
-    ring.orderedCopy(m_ordered, m_refMs);
+    m_refMs = src.newestBirthMs();
+    src.orderedCopy(m_ordered, m_refMs);
 
     // Pads, see header: front = n0 as a segment start, back = newest.
     SGpuNode front = m_ordered.front();
@@ -143,7 +143,7 @@ void CNodeBuffer::upload(const CTrailRing& ring) {
     glBufferSubData(GL_ARRAY_BUFFER, 0, n * NODE_STRIDE, m_ordered.data());
     hyprtail::compat::bindArrayBuffer(0);
 
-    m_uploadedGen = ring.generation();
+    m_uploadedGen = src.generation();
 }
 
 void CNodeBuffer::destroy() {

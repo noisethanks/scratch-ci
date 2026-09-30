@@ -52,17 +52,66 @@ struct STrailBounds {
     float x1 = 0.F, y1 = 0.F, x2 = 0.F, y2 = 0.F;
 };
 
-// Fixed-capacity circular buffer, the single source of truth for one trail
-// instance. Writes are O(1) at the head, the storage is never shifted.
-class CTrailRing {
+// Whatever produces the trail's point buffer (SPEC §13.1). Not a general
+// animation interface: it covers feeding points in, advancing the source,
+// and handing the GPU upload an ordered copy of them.
+class ISource {
+  public:
+    virtual ~ISource() = default;
+
+    // segmentStart: don't connect to the previous node (no segment drawn
+    // between them, no velocity or distance across the gap).
+    virtual void   insert(const SVec2f& pos, double nowMs, bool segmentStart) = 0;
+
+    // Advance the source to nowMs, dt ms after the previous tick. Sources
+    // whose points only change on insert do nothing.
+    virtual void   tick(double nowMs, double dt) = 0;
+
+    // Oldest -> newest, rebuilt from scratch into out, converting to the GPU
+    // layout with birth times relative to refMs.
+    virtual void   orderedCopy(std::vector<SGpuNode>& out, double refMs) const = 0;
+
+    // True if the points change between inserts, so the upload can't wait
+    // for a new generation and happens every frame.
+    virtual bool   needsContinuousUpload() const = 0;
+
+    // Nothing left that can draw at nowMs for a layer fading over fadeMs.
+    virtual bool   isSettled(double nowMs, double fadeMs) const = 0;
+
+    // What the upload reads around orderedCopy().
+    virtual uint64_t generation() const       = 0; // bumped whenever orderedCopy() would differ; gates uploads
+    virtual bool     empty() const            = 0;
+    virtual double   newestBirthMs() const    = 0; // requires !empty(); the upload's reference time
+};
+
+// Whether the node buffer must upload this frame: something to upload, and
+// either the source changed since uploadedGen or it changes every frame.
+inline bool sourceNeedsUpload(const ISource& s, uint64_t uploadedGen) {
+    return !s.empty() && (s.generation() != uploadedGen || s.needsContinuousUpload());
+}
+
+// Fixed-capacity circular buffer of real pointer history, the single source
+// of truth for one trail instance and the first ISource. Writes are O(1) at
+// the head, the storage is never shifted.
+class CTrailRing final : public ISource {
   public:
     // seedBase: per-load random value; node seeds hash it with an insertion
     // counter.
     CTrailRing(size_t capacity, uint64_t seedBase);
 
-    // segmentStart: don't connect to the previous node (no segment drawn
-    // between them, no velocity or distance across the gap).
-    void               insert(const SVec2f& pos, double nowMs, bool segmentStart);
+    void               insert(const SVec2f& pos, double nowMs, bool segmentStart) override;
+
+    // Points only change on insert, so there is nothing to advance.
+    void               tick(double nowMs, double dt) override;
+
+    // Never: an upload is only needed when the generation changed.
+    bool               needsContinuousUpload() const override;
+
+    // visibleCount(nowMs, fadeMs) == 0: nothing is drawn, the same test the
+    // draw and damage paths use.
+    bool               isSettled(double nowMs, double fadeMs) const override;
+
+    double             newestBirthMs() const override;
 
     // New capacity, keeping the newest min(size(), capacity) nodes in order.
     // Bumps the generation.
@@ -73,16 +122,14 @@ class CTrailRing {
 
     size_t             size() const;
     size_t             capacity() const;
-    bool               empty() const;
+    bool               empty() const override;
     const SCursorNode& newest() const; // requires !empty()
 
-    // Bumped on every insert. Gates VBO uploads.
-    uint64_t generation() const;
+    // Bumped on every insert, resize and clear. Gates VBO uploads.
+    uint64_t generation() const override;
 
-    // Oldest -> newest, rebuilt from scratch into out, converting to the GPU
-    // layout with birth times relative to refMs. Stateless projection of the
-    // ring, not a second source of truth.
-    void orderedCopy(std::vector<SGpuNode>& out, double refMs) const;
+    // Stateless projection of the ring, not a second source of truth.
+    void orderedCopy(std::vector<SGpuNode>& out, double refMs) const override;
 
     // Nodes that can still draw at nowMs: those with age < fadeMs. Birth
     // times are monotonic in insertion order, so they are always the newest

@@ -861,6 +861,31 @@ Source analysis plus read-only fetches of upstream files; no `nix` binary here, 
 - **Smoke config drift found in the same pass:** `tests/hyprtester/smoke.lua` still set the contract-1 keys (`fade_ms`, `idle_enabled`, `idle_delay_ms`, `idle_duration_ms`), removed in phase 4, so the default `prefab:subtle` preset (no idle layer) ran and the idle effect was never exercised. It now selects `prefab:classic` and sets `params = "idle:enabled=true idle:start_ms=50 idle:duration_ms=200 trail:fade_ms=500"`.
 - **Stability risk:** none for the plugin (workflow, flake and test config only), so no nested-instance test was warranted for the CI work itself.
 
+## Spring-chain stage 1: the source interface (built, untested on host)
+
+Interface only, no spring math. Reasoning:
+
+- **Scope:** `ISource` covers producing the trail's point buffer and nothing
+  else. It is not an animation interface.
+- **`isSettled(nowMs, fadeMs)`:** "fully faded, nothing to draw" is decided
+  per layer today (`visibleBounds` in `runLifecycle`, `visibleCount` in
+  `drawLayer`), because `fade_ms` is a layer setting. A no-argument
+  `isSettled()` would have had to guess a fade. The ring's version is
+  `visibleCount(nowMs, fadeMs) == 0`.
+- **`insert` keeps `segmentStart`:** breaks are part of the source contract
+  (SPEC §7); `sampleSource` passes `pendingBreak`.
+- **Extra reads:** `generation()`, `empty()`, `newestBirthMs()` are what the
+  upload gate and its reference time read, so the gate can take an `ISource`.
+- **Gate:** `sourceNeedsUpload` is `!empty && (generation != uploaded ||
+  needsContinuousUpload)`. For the ring the flag is constant false, so it
+  equals the old `!(empty || generation == uploaded)`; `testSource` checks the
+  truth table across insert, resize and clear. No GL call was added, moved or
+  removed, so host testing only.
+- **Not done:** `SPreset` still holds a concrete `CTrailRing`, `tick` is not
+  called anywhere, and `m_refMs`/`ht_nowMs` still rebase on the newest
+  node's birth time. A source that changes every frame will need that
+  revisited in stage 2.
+
 ## Open questions
 
 - [x] Hyprland commit to pin: `efb5099` (v0.56.2, host package)

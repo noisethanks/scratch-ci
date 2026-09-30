@@ -159,7 +159,9 @@ this file states the decision and marks what's still a placeholder.
   number lands far outside that range.
 - **Wrap handling:** rebuild a temporally-ordered copy from the ring
   (`CTrailRing::orderedCopy`) whenever the ring's generation changed since
-  the last upload, not on every frame. The ring buffer itself is never
+  the last upload, not on every frame, or every frame for a source whose
+  `needsContinuousUpload()` is true (`sourceNeedsUpload`; the ring's is always
+  false, so its gate is unchanged). The ring buffer itself is never
   shifted, O(1) writes at the cursor position always. The reordered copy is
   a stateless projection, not a second source of truth, nothing to
   desynchronize since it's fully rebuilt from the ring each time it is made.
@@ -815,6 +817,16 @@ Three stages:
 - **Source** (CPU) produces nodes. Sources exist only for effects where
   points affect each other. For now there is one: `pointer`, the pointer
   history ring (today's `CTrailRing`). Backlog: a spring-chain source.
+  **Built (spring-chain stage 1), interface only:** `ISource`
+  (`src/TrailBuffer.hpp`) is scoped to producing the trail's point buffer:
+  `insert(pos, nowMs, segmentStart)`, `tick(nowMs, dt)`, `orderedCopy`,
+  `needsContinuousUpload()`, `isSettled(nowMs, fadeMs)`, plus the reads the
+  upload needs (`generation()`, `empty()`, `newestBirthMs()`). `CTrailRing`
+  is the one implementation: `tick` does nothing, `needsContinuousUpload()`
+  is always false, `isSettled` is `visibleCount(nowMs, fadeMs) == 0`.
+  `isSettled` takes `fadeMs` because fade belongs to the layer, not the
+  source. `SPreset` still holds a concrete `CTrailRing`, and nothing calls
+  `tick` or `isSettled` yet.
 - **Geometry** is the vertex shader. It turns nodes into primitives under a
   declared topology (§13.3).
 - **Shading** is the fragment shader.

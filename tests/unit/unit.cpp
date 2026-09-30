@@ -493,7 +493,72 @@ static void testRing() {
     CHECK(wrapped.size() == 2 && wrapped.visibleCount(55.0, 100.0) == 2 && wrapped.visibleCount(55.0, 10.0) == 1);
 }
 
+// A source that changes between inserts: stands in for a future animated one
+// to exercise the continuous-upload half of the gate.
+namespace {
+    struct SContinuousStub final : ISource {
+        void     insert(const SVec2f&, double, bool) override {}
+        void     tick(double, double) override {}
+        void     orderedCopy(std::vector<SGpuNode>&, double) const override {}
+        bool     needsContinuousUpload() const override { return true; }
+        bool     isSettled(double, double) const override { return false; }
+        uint64_t generation() const override { return 7; }
+        bool     empty() const override { return empty_; }
+        double   newestBirthMs() const override { return 0.0; }
+        bool     empty_ = false;
+    };
+}
+
+static void testSource() {
+    CTrailRing ring(8, 42);
+
+    // The real-history ring never asks for continuous upload, and is settled
+    // exactly when nothing is visible.
+    CHECK(!ring.needsContinuousUpload());
+    CHECK(ring.isSettled(0.0, 100.0)); // empty
+    ring.tick(10.0, 10.0);             // no-op
+    CHECK(ring.empty() && ring.generation() == 0);
+
+    ring.insert({0, 0}, 0.0, false);
+    ring.insert({3, 4}, 10.0, false);
+    ring.insert({6, 8}, 20.0, false);
+    CHECK(!ring.needsContinuousUpload());
+    CHECK(ring.newestBirthMs() == 20.0);
+    for (const double now : {0.0, 20.0, 25.0, 45.0, 1000.0}) {
+        for (const double fade : {1.0, 10.0, 30.0, 100.0})
+            CHECK(ring.isSettled(now, fade) == (ring.visibleCount(now, fade) == 0));
+    }
+    CHECK(!ring.isSettled(25.0, 30.0) && ring.isSettled(1000.0, 30.0));
+
+    // Upload gate: for the ring, identical to the condition it replaced,
+    // upload unless empty or the generation is unchanged.
+    const auto old = [](const CTrailRing& r, uint64_t uploaded) { return !(r.empty() || r.generation() == uploaded); };
+    const auto same = [&](const CTrailRing& r, uint64_t uploaded) { return sourceNeedsUpload(r, uploaded) == old(r, uploaded); };
+
+    CTrailRing fresh(4, 1);
+    CHECK(same(fresh, UINT64_MAX) && !sourceNeedsUpload(fresh, UINT64_MAX)); // empty: nothing to upload
+    CHECK(same(ring, UINT64_MAX) && sourceNeedsUpload(ring, UINT64_MAX));    // never uploaded
+    CHECK(same(ring, ring.generation()) && !sourceNeedsUpload(ring, ring.generation())); // up to date
+    const auto uploaded = ring.generation();
+    ring.insert({9, 12}, 30.0, false);
+    CHECK(same(ring, uploaded) && sourceNeedsUpload(ring, uploaded)); // insert
+    const auto afterInsert = ring.generation();
+    ring.resize(2);
+    CHECK(same(ring, afterInsert) && sourceNeedsUpload(ring, afterInsert)); // resize
+    const auto afterResize = ring.generation();
+    ring.clear();
+    CHECK(same(ring, afterResize) && !sourceNeedsUpload(ring, afterResize)); // clear: empty, nothing to upload
+
+    // A continuous source uploads every frame even at an unchanged
+    // generation, but never when empty.
+    SContinuousStub stub;
+    CHECK(sourceNeedsUpload(stub, stub.generation()));
+    stub.empty_ = true;
+    CHECK(!sourceNeedsUpload(stub, stub.generation()));
+}
+
 int main() {
+    testSource();
     testParams();
     testShaderSource();
     testPresetManifests();

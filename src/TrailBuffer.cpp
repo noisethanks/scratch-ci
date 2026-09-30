@@ -80,6 +80,20 @@ uint64_t CTrailRing::generation() const {
     return m_generation;
 }
 
+void CTrailRing::tick(double, double) {}
+
+bool CTrailRing::needsContinuousUpload() const {
+    return false;
+}
+
+bool CTrailRing::isSettled(double nowMs, double fadeMs) const {
+    return visibleCount(nowMs, fadeMs) == 0;
+}
+
+double CTrailRing::newestBirthMs() const {
+    return newest().birthTimeMs;
+}
+
 void CTrailRing::orderedCopy(std::vector<SGpuNode>& out, double refMs) const {
     out.clear();
     out.reserve(m_count);
