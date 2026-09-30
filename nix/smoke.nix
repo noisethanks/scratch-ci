@@ -85,6 +85,9 @@ pkgs.testers.runNixOSTest {
         # directory (errors.log and the crash-guard marker go there).
         "HYPRTAIL_SO" = "${hyprtail}/lib/libhyprtail.so";
         "XDG_STATE_HOME" = "/tmp/state";
+        # Where the test writes the user preset it stacks layers with
+        # (presets/ under hypr/hyprtail/).
+        "XDG_CONFIG_HOME" = "/tmp/config";
       };
 
       programs.hyprland = {

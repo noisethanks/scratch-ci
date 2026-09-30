@@ -27,6 +27,7 @@ namespace hyprtail {
     // parameters of both stages (merged) and its padding expressions.
     struct SProgramInfo {
         shader::eTopology            topology = shader::eTopology::PATH;
+        shader::SInstanceCount       instances; // instanced topology: K, a literal or a param name
         std::vector<params::SDecl>   params;
         std::vector<shader::SPadding> padding;
     };

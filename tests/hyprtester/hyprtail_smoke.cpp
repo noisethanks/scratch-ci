@@ -8,12 +8,19 @@
 //
 // Environment (set by `make smoke`, inherited by the Hyprland it starts: the
 // hyprutils CProcess only adds variables before execvp, Process.cpp:183-234):
-//   HYPRTAIL_SO     the plugin to test
-//   XDG_STATE_HOME  scratch dir; the plugin writes hyprtail/errors.log there
+//   HYPRTAIL_SO      the plugin to test
+//   XDG_STATE_HOME   scratch dir; the plugin writes hyprtail/errors.log there
+//   XDG_CONFIG_HOME  scratch dir; user presets (hypr/hyprtail/presets/) go here
 //
 // Checks after every step: the compositor still answers IPC (getFromSocket
 // returns "" once it can't connect, hyprctlCompat.cpp:82-103) and errors.log
 // has nothing past its header line.
+//
+// State only, no rendering checks: the instanced-topology step (4b) loads
+// each instanced preset, changes K and the capacity live, unplugs an output
+// while one draws, stacks path, quad and instanced layers and switches presets
+// mid-run, and asks only that the compositor lives, errors.log stays clean
+// and `hyprctl hyprtail` reports the layers compiled and not disabled.
 
 #include "tests.hpp"
 #include "../../shared.hpp"
@@ -86,6 +93,33 @@ namespace {
         return "ok";
     }
 
+    // Plugin settings smoke.lua reads when the config is (re)loaded; see
+    // plugin_settings() there. capacity 0 = unset (the plugin default).
+    std::filesystem::path pluginSettingsFile() {
+        return std::filesystem::path{env("XDG_STATE_HOME")} / "hyprtail-smoke-plugin.conf";
+    }
+
+    void writePluginSettings(const std::string& preset, const std::string& params, int capacity) {
+        std::ofstream out(pluginSettingsFile(), std::ios::trunc);
+        out << "preset=" << preset << "\nparams=" << params << "\n";
+        if (capacity > 0)
+            out << "capacity=" << capacity << "\n";
+    }
+
+    // hyprtail's presets directory in the scratch XDG_CONFIG_HOME
+    // (cfg::hyprtailRoot() / "presets").
+    std::filesystem::path userPresetsDir() {
+        return std::filesystem::path{env("XDG_CONFIG_HOME")} / "hypr" / "hyprtail" / "presets";
+    }
+
+    std::string status() {
+        return getFromSocket("/hyprtail");
+    }
+
+    bool statusHas(const std::string& needle) {
+        return status().contains(needle);
+    }
+
     std::filesystem::path errorsLog() {
         const auto state = env("XDG_STATE_HOME");
         return state.empty() ? std::filesystem::path{} : std::filesystem::path{state} / "hyprtail" / "errors.log";
@@ -128,6 +162,35 @@ namespace {
         if (const auto ENTRIES = errorEntries(); !ENTRIES.empty())                                                                                                                 \
             FAIL_TEST("errors.log after {}:\n{}", step, ENTRIES);                                                                                                                  \
         LOG_OK("errors.log clean: {}", step);                                                                                                                                      \
+    } while (0)
+
+// Apply new plugin settings through a config reload (smoke.lua re-reads
+// them), and let the plugin settle.
+#define HYPRTAIL_CONFIGURE(step, preset, params, capacity)                                                                                                                         \
+    do {                                                                                                                                                                           \
+        writePluginSettings(preset, params, capacity);                                                                                                                             \
+        OK(getFromSocket("/reload"));                                                                                                                                              \
+        sleepMs(300);                                                                                                                                                              \
+        HYPRTAIL_ALIVE(step);                                                                                                                                                      \
+    } while (0)
+
+// Pointer motion so the output renders (rendering compiles the layers), then
+// wait for the status to show `needle`.
+#define HYPRTAIL_EXPECT_STATUS(step, needle)                                                                                                                                       \
+    do {                                                                                                                                                                           \
+        OK(moveAlong(700, 400, 1200, 700, 20));                                                                                                                                    \
+        if (!waitFor([&] { return statusHas(needle); }, 3000))                                                                                                                     \
+            FAIL_TEST("{}: `hyprctl hyprtail` never showed \"{}\":\n{}", step, needle, status());                                                                                 \
+        LOG_OK("status shows {}: {}", needle, step);                                                                                                                               \
+    } while (0)
+
+// No layer or node buffer failed, and errors.log is clean.
+#define HYPRTAIL_HEALTHY(step)                                                                                                                                                     \
+    do {                                                                                                                                                                           \
+        HYPRTAIL_ALIVE(step);                                                                                                                                                      \
+        if (const auto S = status(); S.contains("DISABLED") || S.contains("NODE BUFFER FAILED"))                                                                                   \
+            FAIL_TEST("a layer or the node buffer failed after {}:\n{}", step, S);                                                                                                 \
+        HYPRTAIL_NO_ERRORS(step);                                                                                                                                                  \
     } while (0)
 
 TEST_CASE(hyprtailLifecycle) {
@@ -201,6 +264,122 @@ TEST_CASE(hyprtailLifecycle) {
         sleepMs(FADE_MS + 100);
         HYPRTAIL_ALIVE(step + ": after fade");
         HYPRTAIL_NO_ERRORS(step);
+    }
+
+    // 4b. Instanced topology (SPEC §13.3, phase 5): new GL resource handling
+    // (a second VAO on the node VBO with a divisor of K, integer attributes
+    // re-pointed at the first visible node before every draw, up to 64 x 4096
+    // instances in one draw). State only, see the header comment.
+    {
+        // Every step below keeps trail:fade_ms at FADE_MS so the waits hold.
+        const std::string fade = std::format("trail:fade_ms={}", FADE_MS);
+
+        // Each instanced preset loads, compiles and draws.
+        for (const std::string preset : {"prefab:jitter", "prefab:spray"}) {
+            const auto step = "instanced preset " + preset;
+            HYPRTAIL_CONFIGURE(step, preset, fade, 0);
+            // The status names the K param (jitter: copies, spray: count), so
+            // it only matches once this preset's own program is active.
+            HYPRTAIL_EXPECT_STATUS(step, preset == "prefab:jitter" ? "topology instanced copies" : "topology instanced count");
+            sleepMs(FADE_MS + 200);
+            HYPRTAIL_HEALTHY(step);
+        }
+
+        // K changes live through `params` on a config reload, across its
+        // whole range, for a K param named in the pragma (jitter: copies,
+        // spray: count). The status lists the layer's resolved values.
+        const std::pair<std::string, std::string> kParams[] = {{"prefab:jitter", "copies"}, {"prefab:spray", "count"}};
+        for (const auto& [preset, param] : kParams) {
+            for (const int k : {32, 64, 1, 8}) {
+                const auto step  = std::format("{} {}={}", preset, param, k);
+                const auto value = std::format("{}={}", param, k);
+                HYPRTAIL_CONFIGURE(step, preset, std::format("{} trail:{}", fade, value), 0);
+                HYPRTAIL_EXPECT_STATUS(step, value);
+                HYPRTAIL_HEALTHY(step);
+            }
+        }
+
+        // Capacity resizes (the node buffer is recreated) while an
+        // instanced layer is showing, at the largest K, up to the largest
+        // capacity: 4096 nodes x 64 copies is the biggest draw there is.
+        // Each reload lands in the middle of a fading trail.
+        for (const int capacity : {512, 8, 4096, 2, 64}) {
+            const auto step = std::format("capacity {} under an instanced layer", capacity);
+            OK(moveAlong(700, 400, 1200, 700, 20));
+            HYPRTAIL_CONFIGURE(step, "prefab:jitter", fade + " trail:copies=64", capacity);
+            HYPRTAIL_EXPECT_STATUS(step, "topology instanced copies");
+            HYPRTAIL_HEALTHY(step);
+        }
+
+        // An output unplugged while an instanced layer draws on it.
+        HYPRTAIL_CONFIGURE("spray before the hotplug rounds", "prefab:spray", fade + " trail:count=16", 0);
+        for (int round = 1; round <= 2; ++round) {
+            const auto step = std::format("instanced hotplug round {}", round);
+
+            OK(getFromSocket(std::format("/output create headless {}", TEST_OUTPUT)));
+            HYPRTAIL_ALIVE(step + ": output added");
+            if (!waitFor([] { return getFromSocket("/monitors").contains(std::format("at {}x{}", OUT_X, OUT_Y)); }, 2000))
+                FAIL_TEST("{}: {} never got its smoke.lua position {}x{}:\n{}", step, TEST_OUTPUT, OUT_X, OUT_Y, getFromSocket("/monitors"));
+
+            OK(moveAlong(OUT_X + 100, OUT_Y + 100, OUT_X + 1000, OUT_Y + 600, 15));
+            OK(getFromSocket(std::format("/output remove {}", TEST_OUTPUT)));
+            HYPRTAIL_ALIVE(step + ": output removed mid-fade");
+            if (!waitFor([] { return !getFromSocket("/monitors").contains(TEST_OUTPUT); }, 2000))
+                FAIL_TEST("{}: {} still listed after removal", step, TEST_OUTPUT);
+
+            OK(moveAlong(800, 400, 1100, 600, 10));
+            sleepMs(FADE_MS + 100);
+            HYPRTAIL_HEALTHY(step);
+        }
+
+        // Path, quad and instanced layers in one preset (a user preset in the
+        // scratch config directory): the shared node VAO, the quad VAO and
+        // the instanced VAO in one render.
+        {
+            if (env("XDG_CONFIG_HOME").empty())
+                FAIL_TEST("{}", "XDG_CONFIG_HOME is not set (run this through `make smoke`)");
+            std::error_code ec;
+            std::filesystem::create_directories(userPresetsDir(), ec);
+            if (ec)
+                FAIL_TEST("can't create {}: {}", userPresetsDir().string(), ec.message());
+            std::ofstream(userPresetsDir() / "smoke-stack.conf") << "contract = 2\n"
+                                                                    "description = smoke test: path, quad and instanced layers\n"
+                                                                    "layers = trail, idle, sparks\n"
+                                                                    "trail:vertex = prefab:ribbon.vert\n"
+                                                                    "trail:fragment = prefab:ribbon.frag\n"
+                                                                    "idle:vertex = prefab:ring.vert\n"
+                                                                    "idle:fragment = prefab:ring.frag\n"
+                                                                    "idle:enabled = true\n"
+                                                                    "idle:start_ms = 50\n"
+                                                                    "idle:duration_ms = 200\n"
+                                                                    "sparks:vertex = prefab:spray.vert\n"
+                                                                    "sparks:fragment = prefab:dots.frag\n"
+                                                                    "sparks:count = 12\n";
+        }
+        HYPRTAIL_CONFIGURE("stacked preset", "smoke-stack", fade + " sparks:fade_ms=" + std::to_string(FADE_MS), 0);
+        HYPRTAIL_EXPECT_STATUS("stacked preset", "layer sparks");
+        if (!statusHas("topology path") || !statusHas("topology quad") || !statusHas("topology instanced count"))
+            FAIL_TEST("stacked preset: expected a path, a quad and an instanced layer:\n{}", status());
+        sleepMs(400); // through the idle window too
+        HYPRTAIL_HEALTHY("stacked preset");
+
+        // Presets switched while a trail is still on screen, in an order
+        // that swaps instanced <-> path <-> quad state under the same VBO.
+        for (const std::string preset : {"prefab:jitter", "prefab:classic", "prefab:spray", "smoke-stack", "prefab:subtle", "prefab:jitter"}) {
+            const auto step = "switch to " + preset;
+            OK(moveAlong(700, 400, 1200, 700, 12));
+            HYPRTAIL_CONFIGURE(step, preset, fade, 0);
+            OK(moveAlong(1200, 700, 800, 500, 12));
+            HYPRTAIL_HEALTHY(step);
+        }
+
+        // Back to smoke.lua's own settings for the steps below.
+        std::filesystem::remove(pluginSettingsFile());
+        OK(getFromSocket("/reload"));
+        sleepMs(300);
+        OK(moveAlong(700, 400, 1200, 700, 20));
+        sleepMs(FADE_MS + 200);
+        HYPRTAIL_HEALTHY("instanced topology steps");
     }
 
     // 5. Unload (synchronous, HyprCtl.cpp:1840-1849), then pointer motion

@@ -205,18 +205,14 @@ namespace hyprtail {
         // appear, padding expressions over known scalar parameters.
         std::expected<SProgramInfo, std::string> programInfo(const SShaderPair& pair) {
             SProgramInfo info;
-            info.topology = pair.vert.topology.value_or(shader::eTopology::PATH);
+            info.topology  = pair.vert.topology.value_or(shader::eTopology::PATH);
+            info.instances = pair.vert.instances;
 
             // #pragma hyprtail expects (SPEC §13.3): the fragment shader's
             // declared topology compatibility against what the vertex
             // shader actually provides.
-            if (!pair.frag.expects.empty() && std::ranges::find(pair.frag.expects, info.topology) == pair.frag.expects.end()) {
-                std::string kinds;
-                for (const auto& k : pair.frag.expects)
-                    kinds += (kinds.empty() ? "" : ",") + std::string{shader::topologyName(k)};
-                return std::unexpected(std::format("{} expects topology {}; {} declares {}", pair.frag.sourceNames.front(), kinds, pair.vert.sourceNames.front(),
-                                                   shader::topologyName(info.topology)));
-            }
+            if (auto mismatch = shader::expectsMismatch(pair.vert, pair.frag))
+                return std::unexpected(std::move(*mismatch));
 
             for (const auto* src : {&pair.vert, &pair.frag}) {
                 for (const auto& p : src->params) {
@@ -230,6 +226,10 @@ namespace hyprtail {
                         return std::unexpected(std::format("param {} is declared differently in the two stages ({}); declare it identically", p.decl.name, p.where));
                 }
             }
+
+            // An instanced topology's K param, against the merged parameters.
+            if (auto problem = shader::instanceCountProblem(pair.vert, info.params))
+                return std::unexpected(std::move(*problem));
 
             for (const auto* src : {&pair.vert, &pair.frag}) {
                 for (const auto& pad : src->padding) {
@@ -417,7 +417,7 @@ namespace hyprtail {
         return {
             .active     = m_shader != nullptr,
             .pending    = m_pending.has_value(),
-            .topology   = m_shader ? shader::topologyName(m_info.topology) : "",
+            .topology   = m_shader ? shader::topologyText(m_info.topology, m_info.instances) : "",
             .vertOrigin = m_activeVertOrigin,
             .fragOrigin = m_activeFragOrigin,
             .lastResult = m_lastResult,

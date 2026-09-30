@@ -98,7 +98,15 @@ void CTrailRing::orderedCopy(std::vector<SGpuNode>& out, double refMs) const {
     }
 }
 
-std::optional<STrailBounds> CTrailRing::visibleBounds(double nowMs, double fadeMs) const {
+size_t CTrailRing::visibleCount(double nowMs, double fadeMs) const {
+    const size_t cap = m_nodes.size();
+    size_t       n   = 0;
+    while (n < m_count && nowMs - m_nodes[(m_head + cap - 1 - n) % cap].birthTimeMs < fadeMs)
+        ++n;
+    return n;
+}
+
+std::optional<STrailBounds> CTrailRing::visibleBounds(double nowMs, double fadeMs, bool includeOlderNode) const {
     std::optional<STrailBounds> b;
 
     const auto                  add = [&b](const SVec2f& p) {
@@ -119,7 +127,7 @@ std::optional<STrailBounds> CTrailRing::visibleBounds(double nowMs, double fadeM
             // First faded node. It still bounds the segment to the oldest
             // visible node, unless that one starts a new segment.
             const auto& newer = m_nodes[(m_head + cap - i) % cap];
-            if (b && !newer.segmentStart)
+            if (includeOlderNode && b && !newer.segmentStart)
                 add(n.posPx);
             break;
         }

@@ -29,21 +29,35 @@
 //   locations 12..13  next  (3 nodes)         pos, bits
 // 14 locations: GLES 3.0 guarantees at least 16 vertex attributes. Path
 // layers draw size() - 1 instances, one per segment p0 -> p1.
+//
+// A second VAO over the same VBO serves instanced layers (SPEC §13.3): one
+// node's fields at locations 0..4 (pos, birth, velocity, dist, bits), with a
+// divisor of K so K consecutive instances read the same node. GLES 3.0 has
+// no base-instance draw, so pointInstanced() re-points the five attributes
+// at the first node to draw before every draw.
 class CNodeBuffer {
   public:
     // No GL in the destructor: destroy() runs explicitly while the context is
-    // current. Creates VAO/VBO sized for ringCapacity, recreating them if the
-    // capacity changed. On failure returns false with a description in
+    // current. Creates VAOs/VBO sized for ringCapacity, recreating them if
+    // the capacity changed. On failure returns false with a description in
     // error, and leaves nothing allocated.
     bool   ensure(size_t ringCapacity, std::string& error);
     void   upload(const CTrailRing& ring);
     void   destroy();
 
-    GLuint vao() const;
+    GLuint vao() const;          // path layers
+    GLuint instancedVao() const; // instanced layers, see pointInstanced()
     double refMs() const; // reference time of the uploaded birthMs values
+
+    // Instanced layers: leaves the instanced VAO bound, its attributes
+    // starting at ring node `firstNode` (0 = oldest, counted in the last
+    // upload) with divisor `copies`. Draw copies x (nodes from firstNode to
+    // the newest) instances.
+    void   pointInstanced(size_t firstNode, GLuint copies);
 
   private:
     GLuint                m_vao         = 0;
+    GLuint                m_instVao     = 0;
     GLuint                m_vbo         = 0;
     size_t                m_vboNodes    = 0;
     uint64_t              m_uploadedGen = UINT64_MAX;

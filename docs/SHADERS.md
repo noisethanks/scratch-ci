@@ -14,15 +14,16 @@ prelude, below, is not made of layers.
 **The prelude** is the text the loader puts in place of your
 `#pragma hyprtail contract 2` line. It is assembled from pieces that are
 specific to a **stage** (vertex or fragment) and, for the vertex stage, to a
-**topology** (`path` or `quad`): a common piece (precision, built-in
-uniforms) for both stages, plus the fragment piece for a fragment shader, or
-the vertex piece and then the `path` or `quad` piece for a vertex shader.
-The prelude is internal (`shaders/prelude/`); don't copy or edit it.
+**topology** (`path`, `quad` or `instanced`): a common piece (precision,
+built-in uniforms) for both stages, plus the fragment piece for a fragment
+shader, or the vertex piece and then the `path`, `quad` or `instanced` piece
+for a vertex shader. The prelude is internal (`shaders/prelude/`); don't copy
+or edit it.
 
-Two topologies are currently implemented: `path` (the trail ribbon) and
-`quad` (a fixed square around the pointer, for idle/presence effects).
-Contract 2's design also names `path smooth N` and `instanced K`, but
-those are not built yet — don't rely on them.
+Three topologies are implemented: `path` (the trail ribbon), `quad` (a fixed
+square around the pointer, for idle/presence effects) and `instanced K` (K
+quads per trail node, for particles, spray and jitter). Contract 2's design
+also names `path smooth N`, but that is not built yet — don't rely on it.
 
 ## Minimum required pragma
 
@@ -45,8 +46,8 @@ supported range.
 | Pragma | Where | Required | Meaning |
 |---|---|---|---|
 | `#pragma hyprtail contract 2` | every file, first line after `#version` | yes | Declares contract version; triggers prelude injection. |
-| `#pragma hyprtail topology path\|quad` | vertex (geometry) shader, main file only | yes, exactly once | What kind of geometry this shader produces. |
-| `#pragma hyprtail expects <kind>[,<kind>...]` | fragment shader, main file only | no, at most once | Refuses to pair with a vertex shader whose topology isn't in this list. Comma-separated, no spaces, e.g. `path,quad`. |
+| `#pragma hyprtail topology path\|quad\|instanced <K>` | vertex (geometry) shader, main file only | yes, exactly once | What kind of geometry this shader produces. `instanced` takes K, see below. |
+| `#pragma hyprtail expects <kind>[,<kind>...]` | fragment shader, main file only | no, at most once | Refuses to pair with a vertex shader whose topology isn't in this list. Kinds: `path`, `quad`, `instanced` (no K). Comma-separated, no spaces, e.g. `quad,instanced`. |
 | `#pragma hyprtail param <type> <name> <default> [<min> <max>]` | either stage, anywhere | no | Declares a shader-controlled parameter. Becomes `uniform <glsl-type> <name>;` in place. |
 | `#pragma hyprtail padding <expr>` | either stage or an include | no | How far past the node/anchor position this layer draws, in px. The largest declaration across the whole program counts. |
 
@@ -56,12 +57,23 @@ an error.
 ### `topology`
 
 ```glsl
-#pragma hyprtail topology path   // per-segment ribbon geometry
-#pragma hyprtail topology quad   // one fixed quad around the pointer
+#pragma hyprtail topology path              // per-segment ribbon geometry
+#pragma hyprtail topology quad              // one fixed quad around the pointer
+#pragma hyprtail topology instanced 8       // 8 quads per visible node
+#pragma hyprtail topology instanced copies  // K is the int param "copies"
 ```
 
 A vertex shader with no topology pragma, more than one, or an unrecognized
-kind is refused.
+kind is refused. `path` and `quad` take no options.
+
+**K of `instanced`** is either an integer literal from 1 to 64, or the name of
+an `int` parameter of the same program. A named K must be declared with a range
+inside 1..64 (`#pragma hyprtail param int copies 6 1 64`); a missing
+declaration, another type, or a missing or wider range is refused. Its value
+is read every draw, so changing it in a preset or through `params`
+(`params = "trail:copies=12"`) takes effect on the next config reload, with
+no recompile. The status command shows the topology as `instanced 8` or, for a
+param, `instanced copies`, and the layer's current parameter values.
 
 ### `expects`
 
@@ -137,6 +149,7 @@ Declared by the prelude, always available, never declared by you:
 | `ht_stillMs` | `float` | Time since the pointer last moved, ms. |
 | `ht_anchor` | `vec2` | Pointer position, global layout px (what `quad` layers center on). |
 | `ht_extentPx` | `float` | This layer's total reach: its padding expression plus `damage_padding`. |
+| `ht_K` | `int` | `instanced` topology only: copies per node (the K of the topology pragma). |
 | `fade_ms` | `float` | Reserved lifecycle parameter, see below. |
 | `start_ms` | `float` | Reserved lifecycle parameter, see below. |
 | `duration_ms` | `float` | Reserved lifecycle parameter, see below. |
@@ -151,8 +164,8 @@ being arbitrary shader knobs:
 | Name | Type | Default | Meaning |
 |---|---|---|---|
 | `enabled` | bool | `true` | `false` disables the whole layer (not compiled). |
-| `draw_when_cursor_hidden` | bool | `true` for `path`, `false` for `quad` | Whether the layer keeps drawing while the OS cursor is hidden. |
-| `fade_ms` | float, ms, 1–60000 | `500` | `path` topology: a node stops being visible once its age passes this. |
+| `draw_when_cursor_hidden` | bool | `true` for `path` and `instanced`, `false` for `quad` | Whether the layer keeps drawing while the OS cursor is hidden. |
+| `fade_ms` | float, ms, 1–60000 | `500` | `path` and `instanced` topologies: a node stops being visible once its age passes this. |
 | `start_ms` | float, ms, 0–60000 | `500` | `quad` topology: the layer becomes visible once the pointer has been still this long. |
 | `duration_ms` | float, ms, 0–600000 | `1500` | `quad` topology: how long it then stays visible (`0` = forever, until the pointer moves). |
 
@@ -198,6 +211,51 @@ vec2 ht_corner(); // this vertex's corner, (-1,-1)..(1,1)
 
 Typical body: `gl_Position = ht_toClip(ht_anchor + ht_corner() * ht_extentPx);`
 
+## Node accessor API (`instanced` topology, vertex shader)
+
+An `instanced`-topology vertex shader draws **K copies of a 4-vertex
+triangle strip for every visible node**, oldest node first. A node is visible
+while its age is below `fade_ms`; the plugin draws only those (it re-points the
+node attributes at the first visible node before each draw), so a faded node
+costs nothing, unlike a `path` layer, which also draws the segment reaching
+back to the next older node. Every copy of a node reads that same node:
+
+```glsl
+HtNode ht_node();      // this vertex's node (same HtNode as the path API)
+int    ht_instance();  // which copy of the node, 0 .. ht_K - 1
+vec2   ht_corner();    // this vertex's corner, (-1,-1)..(1,1)
+```
+
+There are no neighbors: no `prev`/`next`, no segment. `ht_node().vel` is the
+pointer velocity when the node was created, zero for a segment start. Typical
+body (`scatter` stands for your own function, e.g. built on `ht_rand`):
+
+```glsl
+HtNode n = ht_node();
+uint   i = uint(ht_instance());
+vec2   p = n.pos + scatter(n.seed, i) + ht_corner() * size;
+gl_Position = ht_toClip(p);
+```
+
+**Padding is yours to get right.** Damage is the box of the visible nodes'
+positions grown by the padding expression (plus `damage_padding`); anything a
+copy draws outside it is not guaranteed to be repainted, and leaves ghosts. Two
+disciplines, both shipped:
+
+- *Bounded offset* (`prefab:jitter.vert`): each copy sits at a fixed offset of
+  at most `spread` from its node, so `padding spread + size + 1`.
+- *Growth with age* (`prefab:spray.vert`): copies drift away as the node ages.
+  Write the padding for the farthest point before `fade_ms`, e.g. `padding
+  speed * fade_ms / 1000 + wobble + size + 1` (`fade_ms` is allowed in padding
+  expressions, being a reserved parameter), and cap the age used in the shader
+  at `fade_ms` so it can't outrun it. Use only quantities the padding bounds:
+  a node's *direction* (`vel` normalized), not its speed, unless a parameter
+  limits that.
+
+Because `instanced` draws `visible nodes x K` instances, every node the trail
+keeps costs K copies: keep K and `capacity` (CONFIG.md) reasonable; 64 x 4096
+is the limit.
+
 ## Shared vertex-shader helpers
 
 ```glsl
@@ -216,7 +274,7 @@ with it:
 
 | Varying | Type | Meaning |
 |---|---|---|
-| `ht_vLocal` | `vec2` | `path`: x = position along the segment (0 at the newer end, 1 at the older end), y = position across the width (-1..1). `quad`: quad coordinates (-1..1, -1..1). |
+| `ht_vLocal` | `vec2` | `path`: x = position along the segment (0 at the newer end, 1 at the older end), y = position across the width (-1..1). `quad`, `instanced`: quad coordinates (-1..1, -1..1). |
 | `ht_vAge` | `float` | ms since this node/point was created. |
 | `ht_vLife` | `float` | 1 at birth, sweeping to 0 over the visibility window (implement your own curve using `fade_ms`/age, or use the fade prefab below). |
 | `ht_vSpeed` | `float` | px/ms the pointer was moving at this node's creation. |
@@ -301,6 +359,19 @@ vec2 ht_jointOffset(vec2 dirIn, vec2 dirOut, float hw, float miterLimit);
 float ht_life(float age, float fadeMs); // 1 at age 0, linearly to 0 at fadeMs
 bool  ht_faded(float age, float fadeMs);
 ```
+
+**`helpers/noise.glsl`** (vertex or fragment): deterministic hashing and
+noise, for scattering the copies of an `instanced` node.
+
+```glsl
+uint  ht_hash(uint x);                 // 32-bit integer hash
+float ht_rand(float seed, uint salt);  // 0..1 from a node seed (HtNode.seed) and a salt
+float ht_noise(vec2 p);                // 2D value noise, 0..1
+```
+
+`ht_rand(n.seed, salt)` is stable for a (node, salt) pair: vary the salt per
+copy and per use (`2u * i`, `2u * i + 1u`) for independent values from one
+node seed, and the copies stay where they were from frame to frame.
 
 **`helpers/sdf.glsl`** (fragment only — uses `fwidth`, won't compile in a
 vertex shader):

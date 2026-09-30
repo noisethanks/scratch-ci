@@ -212,7 +212,9 @@ test-compat: | $(HEADER_CHECK)
 #   WAYLAND_DISPLAY independent of XDG_RUNTIME_DIR (wayland-client.c:1164-1185).
 #   The test Hyprland is a Wayland client of the session: nothing is loaded
 #   into it. Its one Wayland output is disabled by test.lua's catch-all rule.
-# - Scratch XDG_STATE_HOME, so errors.log is the test's own.
+# - Scratch XDG_STATE_HOME, so errors.log is the test's own, and scratch
+#   XDG_CONFIG_HOME, where the test writes the user preset it stacks layers
+#   with (hyprtail reads presets from $XDG_CONFIG_HOME/hypr/hyprtail/).
 # The test file and config are copied into the checkout for the build and
 # removed afterwards. On failure the scratch directory (Hyprland log under
 # hypr/, errors.log under state/hyprtail/) is kept and its path printed.
@@ -239,7 +241,7 @@ smoke:
 	cmake --build $(HYPRLAND_SRC)/build --target hyprtester -j$$(nproc) || exit 1; \
 	mkdir -p "$$tmp/state" || exit 1; \
 	cd $(HYPRLAND_SRC) && env -u DISPLAY -u HYPRLAND_INSTANCE_SIGNATURE \
-		WAYLAND_DISPLAY="$$wl" XDG_RUNTIME_DIR="$$tmp" XDG_STATE_HOME="$$tmp/state" HYPRTAIL_SO="$(CURDIR)/$(OUTPUT)" \
+		WAYLAND_DISPLAY="$$wl" XDG_RUNTIME_DIR="$$tmp" XDG_STATE_HOME="$$tmp/state" XDG_CONFIG_HOME="$$tmp/config" HYPRTAIL_SO="$(CURDIR)/$(OUTPUT)" \
 		./build/hyprtester/hyprtester -c $(SMOKE_CONFIG) -b ./build/Hyprland -p hyprtester/plugin/hyprtestplugin.so hyprtailLifecycle; \
 	status=$$?; \
 	if [ $$status -eq 0 ]; then rm -rf "$$tmp"; echo "smoke: passed"; \

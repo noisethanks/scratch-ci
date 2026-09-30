@@ -1,6 +1,7 @@
 #include "ShaderSource.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <charconv>
 #include <cstdlib>
 #include <format>
@@ -28,6 +29,15 @@ namespace hyprtail::shader {
         constexpr unsigned char CLASSIC_RING_FRAG[] = {
 #embed "../shaders/ring.frag"
         };
+        constexpr unsigned char PREFAB_JITTER_VERT[] = {
+#embed "../shaders/jitter.vert"
+        };
+        constexpr unsigned char PREFAB_SPRAY_VERT[] = {
+#embed "../shaders/spray.vert"
+        };
+        constexpr unsigned char PREFAB_DOTS_FRAG[] = {
+#embed "../shaders/dots.frag"
+        };
         constexpr unsigned char PRELUDE_COMMON[] = {
 #embed "../shaders/prelude/common.glsl"
         };
@@ -39,6 +49,9 @@ namespace hyprtail::shader {
         };
         constexpr unsigned char PRELUDE_QUAD[] = {
 #embed "../shaders/prelude/quad.glsl"
+        };
+        constexpr unsigned char PRELUDE_INSTANCED[] = {
+#embed "../shaders/prelude/instanced.glsl"
         };
         constexpr unsigned char PRELUDE_FRAGMENT[] = {
 #embed "../shaders/prelude/fragment.glsl"
@@ -52,6 +65,9 @@ namespace hyprtail::shader {
         constexpr unsigned char PREFAB_SDF[] = {
 #embed "../shaders/helpers/sdf.glsl"
         };
+        constexpr unsigned char PREFAB_NOISE[] = {
+#embed "../shaders/helpers/noise.glsl"
+        };
 
         template <size_t N>
         constexpr std::string_view view(const unsigned char (&data)[N]) {
@@ -63,6 +79,7 @@ namespace hyprtail::shader {
                 {"helpers/ribbon.glsl", view(PREFAB_RIBBON)},
                 {"helpers/fade.glsl", view(PREFAB_FADE)},
                 {"helpers/sdf.glsl", view(PREFAB_SDF)},
+                {"helpers/noise.glsl", view(PREFAB_NOISE)},
             };
             return m;
         }
@@ -73,7 +90,7 @@ namespace hyprtail::shader {
         const std::regex RE_INCLUDE{R"re(^\s*#\s*include\s+"([^"]+)"\s*$)re"};
         const std::regex RE_INCLUDE_ANY{R"re(^\s*#\s*include\b)re"};
         const std::regex RE_CONTRACT{R"re(^\s*#\s*pragma\s+hyprtail\s+contract\s+(\S+)\s*$)re"};
-        const std::regex RE_TOPOLOGY{R"re(^\s*#\s*pragma\s+hyprtail\s+topology\s+(\S+)\s*$)re"};
+        const std::regex RE_TOPOLOGY{R"re(^\s*#\s*pragma\s+hyprtail\s+topology\s+(\S+)(?:\s+(\S+))?\s*$)re"};
         const std::regex RE_EXPECTS{R"re(^\s*#\s*pragma\s+hyprtail\s+expects\s+(\S+)\s*$)re"};
         const std::regex RE_PARAM{R"re(^\s*#\s*pragma\s+hyprtail\s+param\s+(.*)$)re"};
         const std::regex RE_PADDING{R"re(^\s*#\s*pragma\s+hyprtail\s+padding\s+(.*)$)re"};
@@ -122,17 +139,59 @@ namespace hyprtail::shader {
             t += view(PRELUDE_VERTEX);
             if (topology == eTopology::QUAD)
                 t += view(PRELUDE_QUAD);
+            else if (topology == eTopology::INSTANCED)
+                t += view(PRELUDE_INSTANCED);
             else
                 t += view(PRELUDE_PATH);
             return t;
         }
 
+        // A kind name, as used by `expects` (an instanced kind has no K there).
         std::optional<eTopology> parseTopology(std::string_view s) {
             if (s == "path")
                 return eTopology::PATH;
             if (s == "quad")
                 return eTopology::QUAD;
+            if (s == "instanced")
+                return eTopology::INSTANCED;
             return std::nullopt;
+        }
+
+        struct STopologyDecl {
+            eTopology      kind = eTopology::PATH;
+            SInstanceCount instances;
+        };
+
+        // The arguments of "topology <kind> [<K>]".
+        std::expected<STopologyDecl, std::string> parseTopologyDecl(const std::string& kindText, const std::string& arg, bool hasArg) {
+            const auto kind = parseTopology(kindText);
+            if (!kind)
+                return std::unexpected(std::format("unknown topology \"{}\" (path, quad, instanced <K>)", kindText));
+
+            STopologyDecl out{.kind = *kind};
+            if (*kind != eTopology::INSTANCED) {
+                if (hasArg)
+                    return std::unexpected(std::format("topology {} takes no options, got \"{}\"", kindText, arg));
+                return out;
+            }
+
+            const auto usage = std::format("topology instanced needs K: an integer 1..{} or the name of an int param", MAX_INSTANCES);
+            if (!hasArg)
+                return std::unexpected(usage);
+
+            if (std::ranges::all_of(arg, [](unsigned char c) { return std::isdigit(c); })) {
+                int        k   = 0;
+                const auto res = std::from_chars(arg.data(), arg.data() + arg.size(), k);
+                if (res.ec != std::errc{} || res.ptr != arg.data() + arg.size() || k < 1 || k > MAX_INSTANCES)
+                    return std::unexpected(std::format("instanced K \"{}\" is outside 1..{}", arg, MAX_INSTANCES));
+                out.instances.literal = k;
+                return out;
+            }
+
+            if (!params::validName(arg))
+                return std::unexpected(std::format("{}, got \"{}\"", usage, arg));
+            out.instances.param = arg;
+            return out;
         }
 
         // "a,b,c" -> ["a", "b", "c"]; no whitespace trimming, matching
@@ -323,7 +382,18 @@ namespace hyprtail::shader {
     }
 
     const char* topologyName(eTopology t) {
-        return t == eTopology::QUAD ? "quad" : "path";
+        switch (t) {
+            case eTopology::QUAD: return "quad";
+            case eTopology::INSTANCED: return "instanced";
+            case eTopology::PATH: break;
+        }
+        return "path";
+    }
+
+    std::string topologyText(eTopology t, const SInstanceCount& k) {
+        if (t != eTopology::INSTANCED)
+            return topologyName(t);
+        return std::format("instanced {}", k.param.empty() ? std::to_string(k.literal) : k.param);
     }
 
     std::string_view builtin(std::string_view name) {
@@ -332,20 +402,57 @@ namespace hyprtail::shader {
             {"ribbon.frag", view(CLASSIC_RIBBON_FRAG)},
             {"ring.vert", view(CLASSIC_RING_VERT)},
             {"ring.frag", view(CLASSIC_RING_FRAG)},
+            {"jitter.vert", view(PREFAB_JITTER_VERT)},
+            {"spray.vert", view(PREFAB_SPRAY_VERT)},
+            {"dots.frag", view(PREFAB_DOTS_FRAG)},
         };
         const auto it = m.find(name);
         return it == m.end() ? std::string_view{} : it->second;
     }
 
+    std::optional<std::string> expectsMismatch(const SSource& vert, const SSource& frag) {
+        const auto topology = vert.topology.value_or(eTopology::PATH);
+        if (frag.expects.empty() || std::ranges::find(frag.expects, topology) != frag.expects.end())
+            return std::nullopt;
+
+        std::string kinds;
+        for (const auto& k : frag.expects)
+            kinds += (kinds.empty() ? "" : ",") + std::string{topologyName(k)};
+        return std::format("{} expects topology {}; {} declares {}", frag.sourceNames.front(), kinds, vert.sourceNames.front(), topologyText(topology, vert.instances));
+    }
+
+    std::optional<std::string> instanceCountProblem(const SSource& vert, const std::vector<params::SDecl>& programParams) {
+        if (vert.topology != eTopology::INSTANCED || vert.instances.param.empty())
+            return std::nullopt;
+
+        const auto& name = vert.instances.param;
+        const auto  it   = std::ranges::find_if(programParams, [&](const auto& d) { return d.name == name; });
+        if (it == programParams.end())
+            return std::format("{}: instanced K names \"{}\", which isn't a param of this program (declare it with #pragma hyprtail param int {} <default> 1 {})",
+                               vert.sourceNames.front(), name, name, MAX_INSTANCES);
+        if (it->type != params::eType::INT)
+            return std::format("{}: instanced K names \"{}\", which is a {} param; it must be int", vert.sourceNames.front(), name, params::typeName(it->type));
+        if (!it->min || !it->max || *it->min < 1.0 || *it->max > MAX_INSTANCES)
+            return std::format("{}: instanced K param \"{}\" must declare a range inside 1..{} (#pragma hyprtail param int {} <default> <min> <max>)", vert.sourceNames.front(), name,
+                               MAX_INSTANCES, name);
+        return std::nullopt;
+    }
+
     const std::vector<std::string>& preludeUniforms() {
-        static const std::vector<std::string> u{"ht_proj", "ht_nowMs", "ht_stillMs", "ht_anchor", "ht_extentPx", "fade_ms", "start_ms", "duration_ms"};
+        static const std::vector<std::string> u{"ht_proj", "ht_nowMs", "ht_stillMs", "ht_anchor", "ht_extentPx", "ht_K", "fade_ms", "start_ms", "duration_ms"};
         return u;
     }
 
     const std::vector<int>& preludeAttribLocations(eTopology t) {
         static const std::vector<int> path{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13};
+        static const std::vector<int> instanced{0, 1, 2, 3, 4};
         static const std::vector<int> none{};
-        return t == eTopology::PATH ? path : none;
+        switch (t) {
+            case eTopology::PATH: return path;
+            case eTopology::INSTANCED: return instanced;
+            case eTopology::QUAD: break;
+        }
+        return none;
     }
 
     const std::vector<SReserved>& reservedParams() {
@@ -394,9 +501,11 @@ namespace hyprtail::shader {
                             return std::unexpected(std::format("{}: #pragma hyprtail topology belongs in the geometry (vertex) shader", where));
                         if (st.out.topology)
                             return std::unexpected(std::format("{}: duplicate #pragma hyprtail topology", where));
-                        st.out.topology = parseTopology(m[1].str());
-                        if (!st.out.topology)
-                            return std::unexpected(std::format("{}: unknown topology \"{}\" (path, quad)", where, m[1].str()));
+                        const auto decl = parseTopologyDecl(m[1].str(), m[2].str(), m[2].matched);
+                        if (!decl)
+                            return std::unexpected(std::format("{}: {}", where, decl.error()));
+                        st.out.topology  = decl->kind;
+                        st.out.instances = decl->instances;
                         continue;
                     }
 
@@ -409,7 +518,7 @@ namespace hyprtail::shader {
                         for (const auto& kind : splitComma(m[1].str())) {
                             const auto t = parseTopology(kind);
                             if (!t)
-                                return std::unexpected(std::format("{}: unknown topology \"{}\" in #pragma hyprtail expects (path, quad)", where, kind));
+                                return std::unexpected(std::format("{}: unknown topology \"{}\" in #pragma hyprtail expects (path, quad, instanced)", where, kind));
                             st.out.expects.push_back(*t);
                         }
                     }
@@ -425,7 +534,7 @@ namespace hyprtail::shader {
                                                    "porting; the classic preset's shaders are the reference",
                                                    displayName, CONTRACT_VERSION));
             if (stage == eStage::VERTEX && !st.out.topology)
-                return std::unexpected(std::format("{}: geometry (vertex) shaders need \"#pragma hyprtail topology path\" or \"quad\"", displayName));
+                return std::unexpected(std::format("{}: geometry (vertex) shaders need \"#pragma hyprtail topology path\", \"quad\" or \"instanced <K>\"", displayName));
 
             return std::move(st.out);
         } catch (const std::exception& e) { return std::unexpected(std::format("{}: preprocessing failed: {}", name, e.what())); }
