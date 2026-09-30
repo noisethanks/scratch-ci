@@ -112,7 +112,7 @@ namespace hyprtail::cfg {
                                           warpModeName(DEFAULTS.warp));
         r.damagePadding = makeShared<CFloatValue>("plugin:hyprtail:damage_padding", "extra damage padding on top of the stock extent and shader-declared padding, px",
                                                   DEFAULTS.damagePaddingPx, SFloatValueOptions{.min = 0.F, .max = 4096.F});
-        r.preset        = makeShared<CStringValue>("plugin:hyprtail:preset", "which preset to use (SPEC section 13.7): \"prefab:<name>\" (built-in: subtle, classic, jitter, spray) or a bare \"<name>\" for <hyprtail root>/presets/<name>.conf", DEFAULTS.preset.c_str());
+        r.preset        = makeShared<CStringValue>("plugin:hyprtail:preset", "which preset to use (SPEC section 13.7): \"prefab:<name>\" (built-in: subtle, classic, jitter, spray, vivid, comet, embers) or a bare \"<name>\" for <hyprtail root>/presets/<name>.conf", DEFAULTS.preset.c_str());
         r.emitFrom      = makeShared<CStringValue>("plugin:hyprtail:emit_from",
                                                     "where on the cursor image trail points are emitted from: \"hotspot\" (default), or a normalized \"x y\" position in "
                                                     "the cursor image box (0 0 = top-left, 0.5 0.5 = center) (SPEC section 13.9)",

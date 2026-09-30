@@ -253,15 +253,19 @@ static void testPresetManifests() {
         return s;
     };
 
-    int manifests = 0;
+    using Layers = std::map<std::string, std::map<std::string, std::string>>;
+
+    int                                manifests = 0;
+    std::map<std::string, Layers>      byPreset;    // file stem -> layer -> key -> value
+    std::map<std::string, std::string> layerOrder;  // file stem -> its "layers = ..." value
     for (const auto& entry : fs::directory_iterator("presets")) {
         if (entry.path().extension() != ".conf")
             continue;
         ++manifests;
 
-        std::map<std::string, std::map<std::string, std::string>> layers;
-        std::ifstream                                            in(entry.path());
-        std::string                                              line;
+        Layers        layers;
+        std::ifstream in(entry.path());
+        std::string   line;
         while (std::getline(in, line)) {
             line = trim(line.substr(0, line.find('#')));
             const auto eq = line.find('=');
@@ -271,8 +275,11 @@ static void testPresetManifests() {
             const auto colon = key.find(':');
             if (colon != std::string::npos)
                 layers[trim(key.substr(0, colon))][trim(key.substr(colon + 1))] = trim(line.substr(eq + 1));
+            else if (key == "layers")
+                layerOrder[entry.path().stem().string()] = trim(line.substr(eq + 1));
         }
         CHECK(!layers.empty());
+        byPreset[entry.path().stem().string()] = layers;
 
         for (const auto& [layer, keys] : layers) {
             const auto fail = [&](const std::string& why) {
@@ -321,7 +328,48 @@ static void testPresetManifests() {
             }
         }
     }
-    CHECK(manifests >= 4); // classic, subtle, jitter, spray
+    CHECK(manifests >= 7); // classic, subtle, jitter, spray, vivid, comet, embers
+
+    // The shipped presets that are built purely from other shipped parts:
+    // each exists, lists the layers it should, and pairs the shaders it should.
+    // (That every layer's shaders, keys and values are valid is the loop above.)
+    const auto val = [&](const std::string& preset, const std::string& layer, const std::string& key) -> std::string {
+        const auto p = byPreset.find(preset);
+        if (p == byPreset.end() || !p->second.contains(layer) || !p->second.at(layer).contains(key))
+            return {};
+        return p->second.at(layer).at(key);
+    };
+    const auto num   = [&](const std::string& preset, const std::string& layer, const std::string& key) { return std::atof(val(preset, layer, key).c_str()); };
+    const auto alpha = [&](const std::string& preset, const std::string& layer, const std::string& key) {
+        const auto c = params::parseValue(params::eType::COLOR, val(preset, layer, key));
+        return c ? static_cast<int>(c->argb >> 24) : -1;
+    };
+    const auto ribbon = [&](const std::string& preset, const std::string& layer) {
+        return val(preset, layer, "vertex") == "prefab:ribbon.vert" && val(preset, layer, "fragment") == "prefab:ribbon.frag";
+    };
+
+    // vivid: a wide faint glow under a narrow opaque core, same ribbon shaders.
+    CHECK(layerOrder["vivid"] == "glow, core");
+    CHECK(ribbon("vivid", "glow") && ribbon("vivid", "core"));
+    CHECK(num("vivid", "glow", "width") > num("vivid", "core", "width") && num("vivid", "core", "width") > 0.0);
+    for (const auto* key : {"color_slow", "color_fast"}) {
+        CHECK(alpha("vivid", "glow", key) > 0 && alpha("vivid", "glow", key) < 0x80);
+        CHECK(alpha("vivid", "core", key) == 0xff);
+    }
+
+    // comet: one narrow ribbon layer with a short fade, a higher speed_ref than
+    // the ribbon default (2).
+    CHECK(layerOrder["comet"] == "trail" && ribbon("comet", "trail"));
+    CHECK(num("comet", "trail", "width") > 0.0 && num("comet", "trail", "width") < num("classic", "trail", "width"));
+    CHECK(num("comet", "trail", "fade_ms") < num("subtle", "trail", "fade_ms"));
+    CHECK(num("comet", "trail", "speed_ref") > 2.0);
+
+    // embers: one instanced layer, no ribbon or path layer, and its own
+    // count, speed and fade rather than a copy of spray's.
+    CHECK(layerOrder["embers"] == "embers" && byPreset["embers"].size() == 1);
+    CHECK(val("embers", "embers", "vertex") == "prefab:spray.vert" && val("embers", "embers", "fragment") == "prefab:dots.frag");
+    for (const auto* key : {"count", "speed", "fade_ms"})
+        CHECK(num("embers", "embers", key) != num("spray", "trail", key));
 }
 
 static void testCrashGuard() {

@@ -39,7 +39,8 @@ A preset name is addressed in one of two namespaces, and they never overlap:
 
 - **`prefab:<name>`** is always the built-in preset embedded in the plugin,
   regardless of any local file with the same name. Built-ins: `prefab:subtle`,
-  `prefab:classic`, `prefab:jitter` and `prefab:spray`.
+  `prefab:classic`, `prefab:jitter`, `prefab:spray`, `prefab:vivid`,
+  `prefab:comet` and `prefab:embers`.
 - **`<name>`** (no prefix) is always your own file,
   `~/.config/hypr/hyprtail/presets/<name>.conf`. If that file doesn't exist,
   loading fails with an error naming the path it looked for; it never falls
@@ -63,8 +64,25 @@ Shipped presets:
   to `speed` px/s while shrinking and fading over `fade_ms`. The redrawn area
   grows with `speed * fade_ms`, so a fast, long-lived spray costs more to
   draw. Try `params = "trail:count=12 trail:speed=120"`.
+- **`prefab:vivid`**: a glowing ribbon, two layers over the same trail
+  points: `glow`, a wide (26 px), faint, longer-lived ribbon underneath, and
+  `core`, a narrow (4 px), opaque, brighter ribbon on top. Both shade cyan
+  (slow) to magenta (fast). Layers composite with ordinary alpha blending
+  (there is no per-layer blend mode), so the glow is a translucent halo, not
+  additive light. Try `params = "glow:width=40 core:width=6"`.
+- **`prefab:comet`**: one narrow ribbon (4 px) with a very short fade
+  (160 ms), so the tail tapers to a point right behind the pointer. Ice blue
+  shifts to amber with speed; `speed_ref` (px/ms) is set high (4), so the
+  amber only appears on fast flicks. Try `params = "trail:speed_ref=1.5"`
+  to make it flare on lighter movement.
+- **`prefab:embers`**: sparse glowing particles, built on the instanced
+  topology alone (no ribbon layer): 2 small, soft dots per point drifting
+  slowly (24 px/s) in nearly random directions and lingering for 1.2 s.
+  Points pushed out of the buffer take their particles with them, so raise
+  `capacity` (for example 256) for long strokes. Try
+  `params = "embers:count=4 embers:fade_ms=2000"`.
 
-Both draw *(visible points) x (copies per point)* quads, so `capacity` and
+`jitter`, `spray` and `embers` draw *(visible points) x (copies per point)* quads, so `capacity` and
 `fade_ms` together with the copy count set the GPU cost: the most a single
 layer can draw is 64 copies x 4096 points.
 

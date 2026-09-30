@@ -138,6 +138,15 @@ namespace hyprtail::preset {
         constexpr unsigned char SPRAY_CONF[] = {
 #embed "../presets/spray.conf"
         };
+        constexpr unsigned char VIVID_CONF[] = {
+#embed "../presets/vivid.conf"
+        };
+        constexpr unsigned char COMET_CONF[] = {
+#embed "../presets/comet.conf"
+        };
+        constexpr unsigned char EMBERS_CONF[] = {
+#embed "../presets/embers.conf"
+        };
 
         template <size_t N>
         constexpr std::string_view view(const unsigned char (&data)[N]) {
@@ -150,6 +159,9 @@ namespace hyprtail::preset {
                 {"classic", view(CLASSIC_CONF)},
                 {"jitter", view(JITTER_CONF)},
                 {"spray", view(SPRAY_CONF)},
+                {"vivid", view(VIVID_CONF)},
+                {"comet", view(COMET_CONF)},
+                {"embers", view(EMBERS_CONF)},
             };
             const auto it = m.find(name);
             return it == m.end() ? std::string_view{} : it->second;
@@ -238,7 +250,7 @@ namespace hyprtail::preset {
                 prefab             = true;
                 const auto builtin = builtinManifest(std::string_view{name}.substr(PREFAB_PREFIX.size()));
                 if (builtin.empty())
-                    return std::unexpected(std::format("unknown prefab preset \"{}\" (built-in: prefab:subtle, prefab:classic, prefab:jitter, prefab:spray)", name));
+                    return std::unexpected(std::format("unknown prefab preset \"{}\" (built-in: prefab:subtle, prefab:classic, prefab:jitter, prefab:spray, prefab:vivid, prefab:comet, prefab:embers)", name));
                 text = std::string{builtin};
             } else {
                 if (name.empty() || name.contains('/'))
