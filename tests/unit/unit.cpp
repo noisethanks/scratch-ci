@@ -12,7 +12,11 @@
 #include <format>
 #include <fstream>
 #include <iostream>
+#include <map>
+#include <optional>
+#include <regex>
 #include <string>
+#include <vector>
 
 #include "../../src/CrashGuard.hpp"
 #include "../../src/Params.hpp"
@@ -132,6 +136,77 @@ static void testShaderSource() {
     auto q = pp("#version 300 es\n#pragma hyprtail contract 2\n#pragma hyprtail topology quad\nvoid main() {}\n", eStage::VERTEX);
     CHECK(q && q->topology == eTopology::QUAD && q->text.contains("ht_corner") && !q->text.contains("ht_a_p0Pos"));
 
+    // Instanced topology (SPEC §13.3): K is a literal 1..64 or a param name.
+    const std::string instHead = "#version 300 es\n#pragma hyprtail contract 2\n";
+    const auto        inst     = [&](const std::string& topology, const std::string& rest = "") { return pp(instHead + "#pragma hyprtail topology " + topology + "\n" + rest + "void main() {}\n", eStage::VERTEX); };
+
+    auto i8 = inst("instanced 8");
+    CHECK(i8 && i8->topology == eTopology::INSTANCED && i8->instances.literal == 8 && i8->instances.param.empty());
+    CHECK(i8 && i8->text.contains("ht_a_pos") && i8->text.contains("ht_instance") && i8->text.contains("uniform int ht_K;") && !i8->text.contains("ht_a_p0Pos"));
+    CHECK(inst("instanced 1") && inst("instanced 64"));
+    CHECK(!inst("instanced 0") && !inst("instanced 65") && !inst("instanced 99999999999999999999")); // outside 1..64
+    CHECK(!inst("instanced"));                                                                        // K is required
+    CHECK(!inst("instanced -1") && !inst("instanced 1.5") && !inst("instanced Copies"));              // neither a count nor a param name
+    CHECK(!inst("instanced 8 9"));
+    CHECK(!inst("path 4") && !inst("quad 1"));                                                          // no options
+    auto ip = inst("instanced copies", "#pragma hyprtail param int copies 4 1 64\n");
+    CHECK(ip && ip->instances.param == "copies" && ip->instances.literal == 0);
+    CHECK(shader::topologyText(eTopology::INSTANCED, i8->instances) == "instanced 8");
+    CHECK(ip && shader::topologyText(eTopology::INSTANCED, ip->instances) == "instanced copies");
+    CHECK(shader::topologyText(eTopology::PATH, {}) == "path" && shader::topologyText(eTopology::QUAD, {}) == "quad");
+
+    // K param: declared, int, with a range inside 1..64.
+    const auto kProblem = [&](const std::string& decl) {
+        auto v = inst("instanced copies", decl);
+        std::vector<params::SDecl> declared;
+        if (v)
+            for (const auto& p : v->params)
+                declared.push_back(p.decl);
+        return v ? shader::instanceCountProblem(*v, declared) : std::optional<std::string>{"preprocess failed"};
+    };
+    CHECK(!kProblem("#pragma hyprtail param int copies 4 1 64\n"));
+    CHECK(!kProblem("#pragma hyprtail param int copies 4 2 16\n"));
+    CHECK(kProblem(""));                                                    // not declared
+    CHECK(kProblem("#pragma hyprtail param float copies 4 1 64\n"));       // not an int
+    CHECK(kProblem("#pragma hyprtail param int copies 4\n"));              // no range
+    CHECK(kProblem("#pragma hyprtail param int copies 4 0 64\n"));         // min below 1
+    CHECK(kProblem("#pragma hyprtail param int copies 4 1 65\n"));         // max above 64
+    CHECK(!shader::instanceCountProblem(*i8, {}));                         // a literal needs no param
+
+    // expects: kinds path, quad, instanced; checked against the vertex shader.
+    const auto frag = [&](const std::string& expects) { return pp(instHead + "#pragma hyprtail expects " + expects + "\nvoid main() {}\n", eStage::FRAGMENT); };
+    CHECK(frag("instanced") && frag("quad,instanced") && frag("path,quad,instanced"));
+    CHECK(!frag("instanced 8") && !frag("particles"));
+    const auto fInst = frag("quad,instanced"), fPath = frag("path");
+    CHECK(fInst && fPath && i8 && ip);
+    if (fInst && fPath && i8 && ip) {
+        CHECK(!shader::expectsMismatch(*i8, *fInst) && !shader::expectsMismatch(*ip, *fInst));
+        const auto bad = shader::expectsMismatch(*i8, *fPath);
+        CHECK(bad && bad->contains("expects topology path") && bad->contains("declares instanced 8"));
+        const auto badParam = shader::expectsMismatch(*ip, *fPath);
+        CHECK(badParam && badParam->contains("declares instanced copies"));
+        const auto quad = pp(instHead + "#pragma hyprtail topology quad\nvoid main() {}\n", eStage::VERTEX);
+        CHECK(quad && shader::expectsMismatch(*quad, *fInst).has_value() == false);
+        CHECK(quad && shader::expectsMismatch(*quad, *fPath).has_value());
+    }
+    CHECK(!shader::expectsMismatch(*i8, *pp(instHead + "void main() {}\n", eStage::FRAGMENT))); // no expects: any topology
+
+    // The prelude's attributes are exactly the locations the loader says it
+    // feeds (the program contract check refuses anything else).
+    for (const auto t : {eTopology::PATH, eTopology::INSTANCED}) {
+        const auto  src = pp(instHead + "#pragma hyprtail topology " + (t == eTopology::PATH ? "path" : "instanced 2") + "\nvoid main() {}\n", eStage::VERTEX);
+        std::vector<int> found;
+        if (src) {
+            static const std::regex RE{R"(layout\(location = (\d+)\) in )"};
+            for (auto it = std::sregex_iterator(src->text.begin(), src->text.end(), RE); it != std::sregex_iterator(); ++it)
+                found.push_back(std::stoi((*it)[1]));
+        }
+        std::ranges::sort(found);
+        CHECK(!found.empty() && found == shader::preludeAttribLocations(t));
+    }
+    CHECK(shader::preludeAttribLocations(eTopology::INSTANCED).size() == 5 && shader::preludeAttribLocations(eTopology::QUAD).empty());
+    CHECK(std::ranges::find(shader::preludeUniforms(), std::string{"ht_K"}) != shader::preludeUniforms().end());
+
     // Reserved and duplicate params, bad padding, unknown pragma.
     CHECK(!pp("#version 300 es\n#pragma hyprtail contract 2\n#pragma hyprtail param float fade_ms 1\nvoid main() {}\n", eStage::FRAGMENT));
     CHECK(!pp("#version 300 es\n#pragma hyprtail contract 2\n#pragma hyprtail param float a 1\n#pragma hyprtail param float a 1\nvoid main() {}\n", eStage::FRAGMENT));
@@ -139,10 +214,114 @@ static void testShaderSource() {
     CHECK(!pp("#version 300 es\n#pragma hyprtail contract 2\n#pragma hyprtail glow 1\nvoid main() {}\n", eStage::FRAGMENT));
 
     // Built-ins preprocess.
-    for (const auto* name : {"ribbon.vert", "ring.vert"})
+    for (const auto* name : {"ribbon.vert", "ring.vert", "jitter.vert", "spray.vert"})
         CHECK(shader::preprocess(shader::builtin(name), name, {}, eStage::VERTEX).has_value());
-    for (const auto* name : {"ribbon.frag", "ring.frag"})
+    for (const auto* name : {"ribbon.frag", "ring.frag", "dots.frag"})
         CHECK(shader::preprocess(shader::builtin(name), name, {}, eStage::FRAGMENT).has_value());
+
+    // The instanced built-ins declare what the loader checks: topology,
+    // a K param inside 1..64, a padding expression, and (dots.frag) expects.
+    for (const auto* name : {"jitter.vert", "spray.vert"}) {
+        const auto s = shader::preprocess(shader::builtin(name), name, {}, eStage::VERTEX);
+        CHECK(s && s->topology == eTopology::INSTANCED && !s->instances.param.empty() && !s->padding.empty());
+        if (!s)
+            continue;
+        std::vector<params::SDecl> declared;
+        for (const auto& p : s->params)
+            declared.push_back(p.decl);
+        CHECK(!shader::instanceCountProblem(*s, declared));
+    }
+    const auto dots = shader::preprocess(shader::builtin("dots.frag"), "dots.frag", {}, eStage::FRAGMENT);
+    CHECK(dots && dots->expects.size() == 2);
+}
+
+// The built-in preset manifests (presets/*.conf, run from the repo root):
+// every layer names built-in shaders that preprocess, and every other key
+// is a parameter of the paired program (or a reserved one) with a value of
+// its type inside its range. preset::parse() itself needs Hyprland headers,
+// so this reads the files with the same "key = value" / "layer:name" rules;
+// it's the part that would otherwise only show up as a runtime warning.
+static void testPresetManifests() {
+    namespace fs = std::filesystem;
+    if (!fs::is_directory("presets"))
+        return;
+
+    const auto trim = [](std::string s) {
+        const auto ws = " \t\r";
+        s.erase(0, s.find_first_not_of(ws));
+        s.erase(s.find_last_not_of(ws) + 1);
+        return s;
+    };
+
+    int manifests = 0;
+    for (const auto& entry : fs::directory_iterator("presets")) {
+        if (entry.path().extension() != ".conf")
+            continue;
+        ++manifests;
+
+        std::map<std::string, std::map<std::string, std::string>> layers;
+        std::ifstream                                            in(entry.path());
+        std::string                                              line;
+        while (std::getline(in, line)) {
+            line = trim(line.substr(0, line.find('#')));
+            const auto eq = line.find('=');
+            if (eq == std::string::npos)
+                continue;
+            const auto key   = trim(line.substr(0, eq));
+            const auto colon = key.find(':');
+            if (colon != std::string::npos)
+                layers[trim(key.substr(0, colon))][trim(key.substr(colon + 1))] = trim(line.substr(eq + 1));
+        }
+        CHECK(!layers.empty());
+
+        for (const auto& [layer, keys] : layers) {
+            const auto fail = [&](const std::string& why) {
+                std::cerr << std::format("preset {} layer {}: {}\n", entry.path().string(), layer, why);
+                CHECK(false);
+            };
+
+            const auto vertKey = keys.find("vertex"), fragKey = keys.find("fragment");
+            if (vertKey == keys.end() || fragKey == keys.end() || !vertKey->second.starts_with("prefab:") || !fragKey->second.starts_with("prefab:")) {
+                fail("needs prefab: vertex and fragment shaders");
+                continue;
+            }
+            const auto vertName = vertKey->second.substr(7), fragName = fragKey->second.substr(7);
+            const auto vert = shader::preprocess(shader::builtin(vertName), vertName, {}, shader::eStage::VERTEX);
+            const auto frag = shader::preprocess(shader::builtin(fragName), fragName, {}, shader::eStage::FRAGMENT);
+            if (!vert || !frag) {
+                fail(std::format("{} or {} isn't a built-in shader that preprocesses", vertName, fragName));
+                continue;
+            }
+            if (const auto mismatch = shader::expectsMismatch(*vert, *frag))
+                fail(*mismatch);
+
+            std::vector<params::SDecl> decls;
+            for (const auto& r : shader::reservedParams())
+                decls.push_back(r.decl);
+            for (const auto* src : {&*vert, &*frag})
+                for (const auto& p : src->params)
+                    decls.push_back(p.decl);
+            if (const auto problem = shader::instanceCountProblem(*vert, decls))
+                fail(*problem);
+
+            for (const auto& [name, text] : keys) {
+                if (name == "vertex" || name == "fragment")
+                    continue;
+                const auto decl = std::ranges::find_if(decls, [&](const auto& d) { return d.name == name; });
+                if (decl == decls.end()) {
+                    fail(std::format("\"{}\" isn't a parameter of {} + {}", name, vertName, fragName));
+                    continue;
+                }
+                auto v = params::parseValue(decl->type, text);
+                if (v)
+                    if (auto r = params::checkRange(*decl, *v); !r)
+                        v = std::unexpected(r.error());
+                if (!v)
+                    fail(std::format("{} = {}: {}", name, text, v.error()));
+            }
+        }
+    }
+    CHECK(manifests >= 4); // classic, subtle, jitter, spray
 }
 
 static void testCrashGuard() {
@@ -230,11 +409,46 @@ static void testRing() {
     std::vector<SGpuNode> out2;
     other.orderedCopy(out2, 0.0);
     CHECK((out2[0].bits >> 1) != (out[0].bits >> 1));
+
+    // Visible range (SPEC §13.3): the newest nodes with age < fade. Nodes
+    // are at t = 0, 10, 20, 30 (a segment start), 40; now = 45.
+    CHECK(ring.visibleCount(45.0, 100.0) == 5);
+    CHECK(ring.visibleCount(45.0, 30.0) == 3); // ages 5, 15, 25 (35 is faded)
+    CHECK(ring.visibleCount(45.0, 25.0) == 2); // age 25 is not < 25
+    CHECK(ring.visibleCount(45.0, 4.0) == 0);
+    CHECK(CTrailRing(4, 1).visibleCount(0.0, 100.0) == 0); // empty
+
+    // Bounds: nodes at (6,8), (100,100), (100,110) are visible at fade 30.
+    // Path layers add the next older node (3,4), connected to (6,8); an
+    // instanced layer draws visible nodes only.
+    const auto withOlder = ring.visibleBounds(45.0, 30.0);
+    const auto nodesOnly = ring.visibleBounds(45.0, 30.0, false);
+    CHECK(withOlder && withOlder->x1 == 3.F && withOlder->y1 == 4.F && withOlder->x2 == 100.F && withOlder->y2 == 110.F);
+    CHECK(nodesOnly && nodesOnly->x1 == 6.F && nodesOnly->y1 == 8.F && nodesOnly->x2 == 100.F && nodesOnly->y2 == 110.F);
+    // Fade 20: (100,100) and (100,110) visible; the older node (6,8) is
+    // separated by the segment start, so neither variant includes it.
+    const auto brk     = ring.visibleBounds(45.0, 20.0);
+    const auto brkOnly = ring.visibleBounds(45.0, 20.0, false);
+    CHECK(brk && brkOnly && brk->x1 == 100.F && brk->y1 == 100.F && brkOnly->x1 == 100.F && brkOnly->y1 == 100.F);
+    CHECK(!ring.visibleBounds(45.0, 4.0, false));
+
+    // After the ring wraps (capacity 4, six inserts keep t = 20..50) and
+    // after a resize.
+    CTrailRing wrapped(4, 7);
+    for (int i = 0; i <= 5; ++i)
+        wrapped.insert({static_cast<float>(i), 0.F}, i * 10.0, false);
+    CHECK(wrapped.size() == 4 && wrapped.visibleCount(55.0, 100.0) == 4);
+    CHECK(wrapped.visibleCount(55.0, 25.0) == 2); // ages 5, 15
+    const auto wb = wrapped.visibleBounds(55.0, 25.0, false);
+    CHECK(wb && wb->x1 == 4.F && wb->x2 == 5.F);
+    wrapped.resize(2);
+    CHECK(wrapped.size() == 2 && wrapped.visibleCount(55.0, 100.0) == 2 && wrapped.visibleCount(55.0, 10.0) == 1);
 }
 
 int main() {
     testParams();
     testShaderSource();
+    testPresetManifests();
     testCrashGuard();
     testRing();
 
@@ -246,6 +460,9 @@ int main() {
             {"ribbon.frag", shader::eStage::FRAGMENT},
             {"ring.vert", shader::eStage::VERTEX},
             {"ring.frag", shader::eStage::FRAGMENT},
+            {"jitter.vert", shader::eStage::VERTEX},
+            {"spray.vert", shader::eStage::VERTEX},
+            {"dots.frag", shader::eStage::FRAGMENT},
         };
         for (const auto& [name, stage] : builtins) {
             auto src = shader::preprocess(shader::builtin(name), name, {}, stage);

@@ -876,7 +876,8 @@ phase 4 (§13.7): the shipped `prefab:subtle` and `prefab:classic` are
   `start_ms`, `duration_ms`), `vertex.glsl` (standard varyings as `out`,
   `ht_initVaryings()`, `ht_toClip()`, `HtNode`), `path.glsl` (attributes,
   `ht_prev()`, `ht_p0()`, `ht_p1()`, `ht_next()`, `ht_atEnd()`,
-  `ht_side()`), `quad.glsl` (`ht_corner()`), `fragment.glsl` (varyings as
+  `ht_side()`), `quad.glsl` (`ht_corner()`; phase 5 adds `instanced.glsl`,
+  §13.3), `fragment.glsl` (varyings as
   `in`, `ht_fragColor`). `HtNode` = pos, age, vel, dist, seed (0..1),
   segmentStart; for prev/next only pos, seed and segmentStart are set. Every
   built-in and reserved uniform is set for every layer, whatever its
@@ -891,12 +892,33 @@ A geometry shader declares exactly one topology:
 |---|---|---|---|---|
 | `path` | visible segments | 4 | prev, p0, p1, next (today's four bindings, divisor 1) | ribbon |
 | `path smooth N` | visible segments | 2(N+1), N <= 32 | same | smoothed ribbon |
-| `instanced K` | visible nodes x K, K <= 64 | 4 | one node, divisor K; `ht_instance` = `gl_InstanceID % K` | particles, spray, jitter |
+| `instanced K` | visible nodes x K, K <= 64 | 4 | one node, divisor K; `ht_instance()` = `gl_InstanceID % K` | particles, spray, jitter |
 | `quad` | 1 | 4 | no nodes: pointer position (plus the layer's own offset) and `ht_stillMs()` | idle / presence effect |
 
-- **Drawing only the visible range.** GLES 3.0 has no base-instance draw, so
-  the attribute pointers are re-pointed at the first visible node before
-  each draw. The visible nodes are always the newest suffix of the ring.
+- **K of `instanced`** is either an integer literal 1..64 or the name of an
+  `int` param of the same program (decided: a literal alone would force a
+  recompile to change it, and K is the one topology option worth tuning
+  live). Either way it is bounded by 64: a literal is checked when the
+  pragma is read, a named param must be declared with a `min` and `max`
+  inside 1..64 (`#pragma hyprtail param int copies 6 1 64`), and every value
+  set for it is range-checked like any param, so no K outside 1..64 ever
+  reaches a draw. A param's value is read at draw time and uploaded as the
+  `ht_K` uniform and the attribute divisor; a change through `params` or a
+  preset applies on the next config reload without recompiling the program.
+  The topology shows as `instanced 8`, or `instanced copies` for a named
+  param, in the status command and the `expects` refusal.
+- **Drawing only the visible range, `instanced` only.** GLES 3.0 has no
+  base-instance draw, so the attribute pointers are re-pointed at the first
+  visible node before each draw. The visible nodes are always the newest
+  suffix of the ring. **Path layers deliberately do not do this** and keep
+  drawing all `size() - 1` segments: a faded segment costs four collapsed
+  vertices, the visible-range draw would have to include the one older
+  segment that still fades out plus the `prev`/`next` neighbors of the
+  first, and the ribbon shader already collapses what has faded. An
+  `instanced` layer costs K instances per node, so drawing faded nodes would
+  multiply the waste by K, which is where the optimization pays. It is a
+  property of the topology, not an omission; revisit for `path` only with a
+  measurement.
 - **Mismatches are refused.** A fragment shader may declare
   `#pragma hyprtail expects <kind>[,<kind>...]`. The loader refuses a pair
   whose kinds don't match, with a plain message, e.g. "glow.frag expects
@@ -917,10 +939,45 @@ A geometry shader declares exactly one topology:
 
 **Built (phase 2):** `path` (without `smooth`) and `quad`. Differences: quad
 stillness is the uniform `ht_stillMs`, not a function; path layers still
-draw all `size() - 1` instances (the visible-range re-pointing comes with
-phase 5). Not built: `path smooth N`, `instanced K` (phase 5). A geometry
+draw all `size() - 1` instances (by design, see above). A geometry
 shader without a topology pragma, a second one, an unknown kind, or one in
 a fragment shader or include is refused.
+
+**Built (phase 5, untested):** `instanced K`. Not built: `path smooth N`.
+- **Loader** (`ShaderSource.cpp`): `topology instanced <K>` (`RE_TOPOLOGY`
+  takes an optional second token; `path` and `quad` refuse one, `instanced`
+  requires it), `SInstanceCount` (literal or param name), `instanced` as an
+  `expects` kind (no K there). `instanceCountProblem()` checks a named K
+  against the program's merged params (declared, `int`, `min`/`max` inside
+  1..64) and `expectsMismatch()` the fragment's kinds against the vertex
+  topology, both called from `programInfo()` (`ShaderSlot.cpp`) and unit
+  tested. `topologyText()` gives `instanced 8` / `instanced copies`.
+- **Prelude** (`shaders/prelude/instanced.glsl`): one node's attributes at
+  locations 0-4 (pos, birth, velocity, dist, bits), `ht_node()`,
+  `ht_instance()`, `ht_corner()`, and the `ht_K` uniform. The program
+  contract check accepts exactly locations 0-4 for this topology and the
+  `ht_K` uniform.
+- **Node buffer** (`CNodeBuffer`, `LayerPassElement.*`): a second VAO on the
+  same VBO. `pointInstanced(first, K)` binds it, re-points the five
+  attributes (the integer one through `glVertexAttribIPointer`) at ring node
+  `first`, and sets divisor K on all of them, before every draw. The draw is
+  `glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, visible * K)`, at most
+  64 x 4096 = 262144 instances.
+- **Visibility and damage** (`CTrailRing::visibleCount`, `visibleBounds(...,
+  includeOlderNode)`; `main.cpp`): the draw takes the newest `visibleCount`
+  nodes; the damage box is the bounds of exactly those nodes (no extra older
+  node, unlike `path`) grown by the layer's extent. Instanced layers share
+  the path layers' cursor-hidden default (true), motion-damage radius and
+  `fade_ms` visibility.
+- **Shipped shaders and presets:** `helpers/noise.glsl` (`ht_hash`,
+  `ht_rand(seed, salt)`, `ht_noise`, all `ht_`-prefixed, either stage),
+  `jitter.vert` (K copies at fixed random offsets, bounded reach: padding
+  `spread + size + 1`), `spray.vert` (K particles per node drifting with
+  age, reach grows: padding `speed * fade_ms / 1000 + wobble + size + 1`),
+  `dots.frag` (`expects quad,instanced`), and the presets `prefab:jitter` and
+  `prefab:spray`, deliberately two: they show the two padding disciplines
+  (a constant bound vs. growth with age) that an instanced shader has to get
+  right for damage to be correct.
 
 **Built (phase 3):** `expects`, fragment stage, main file, at most once,
 comma-separated kinds with no spaces (`ShaderSource.cpp`'s `RE_EXPECTS` /
@@ -1456,7 +1513,8 @@ the diagnostics path (§9). Everything on the §12 list stays open.
 
 ### 13.16 Phased implementation plan
 
-Each phase ends buildable, with `make smoke` extended and passing, and is
+Each phase ends buildable, with `make smoke` extended and passing (phase 5:
+step 4b of `tests/hyprtester/hyprtail_smoke.cpp`, state only), and is
 tested nested first, then on the host. CPU-only parts (pragma parser,
 padding expressions, preset manifest, Bezier and Catmull-Rom bounds) are
 kept free of Hyprland headers and get unit tests (`make test-unit`, no
@@ -1492,8 +1550,9 @@ compositor).
    user preset files, `prefab:subtle` and `prefab:classic`. Not built: `vivid`
    (needs a real glow shader, out of scope for this phase), migration
    notes in the README (the SPEC §9 note above covers it for now).
-5. **Topologies.** `instanced K` (plus a particle demo preset) and
-   `path smooth N` with exact Bezier bounds.
+5. **Topologies.** `instanced K` **(built, untested; see §13.3)** with two
+   demo presets, `prefab:jitter` and `prefab:spray`. Not built: `path smooth
+   N` with exact Bezier bounds.
 6. **Pointer features (built, untested).** Emit offset with the
    shape-change break, `warp = curve`. Per-layer `offset_from`/`offset`
    for quad layers (§13.4) is a separate, further feature, not part of

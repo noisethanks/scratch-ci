@@ -116,6 +116,14 @@ namespace hyprtail {
             r.paddingPx = std::max(r.paddingPx, static_cast<float>(std::clamp(*v, 0.0, 4096.0)));
         }
 
+        if (info.topology == shader::eTopology::INSTANCED) {
+            // A param K was range-checked (1..64) when the program was put
+            // together and again for every value set; the clamp only keeps a
+            // bad draw from ever sizing a buffer.
+            const double k = info.instances.param.empty() ? info.instances.literal : get(info.instances.param);
+            r.instances    = std::clamp(static_cast<int>(k), 1, shader::MAX_INSTANCES);
+        }
+
         for (size_t i = shader::reservedParams().size(); i < all.size(); ++i)
             r.values.push_back(all[i]);
 

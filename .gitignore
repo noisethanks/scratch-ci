@@ -1,4 +1,6 @@
 reference
 external 
 out
+# run_dev.sh's symlink to the nested instance's log, under a per-machine runtime path
+dev_env/hyprtail-latest.log
 

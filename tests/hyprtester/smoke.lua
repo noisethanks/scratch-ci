@@ -10,15 +10,45 @@
 -- catch-all rule above, which disables unknown outputs.
 hl.monitor({ output = "HYPRTAIL-TEST", mode = "1280x720@60", position = "20000x0", scale = "1" })
 
+-- Plugin settings the test changes while it runs (the instanced-topology
+-- rounds in hyprtail_smoke.cpp): it writes "preset=", "params=" and
+-- "capacity=" lines to $XDG_STATE_HOME/hyprtail-smoke-plugin.conf and sends
+-- /reload, which runs this file again. No file: the defaults below.
+local function plugin_settings()
+    local settings = {
+        -- classic has the idle ring layer, off in the preset itself; the
+        -- params string turns it on with a short delay and duration.
+        -- trail:fade_ms is FADE_MS in hyprtail_smoke.cpp.
+        preset   = "prefab:classic",
+        params   = "idle:enabled=true idle:start_ms=50 idle:duration_ms=200 trail:fade_ms=500",
+        capacity = nil,
+    }
+
+    local state = os.getenv("XDG_STATE_HOME")
+    local file  = state and io.open(state .. "/hyprtail-smoke-plugin.conf", "r")
+    if file then
+        for line in file:lines() do
+            local key, value = line:match("^(%w+)=(.*)$")
+            if key == "preset" or key == "params" then
+                settings[key] = value
+            elseif key == "capacity" then
+                settings.capacity = tonumber(value)
+            end
+        end
+        file:close()
+    end
+    return settings
+end
+
+local settings = plugin_settings()
+
 hl.config({
     plugin = {
         hyprtail = {
-            -- classic has the idle ring layer, off in the preset itself; the
-            -- params string turns it on with a short delay and duration.
-            -- trail:fade_ms is FADE_MS in hyprtail_smoke.cpp.
-            preset = "prefab:classic",
-            params = "idle:enabled=true idle:start_ms=50 idle:duration_ms=200 trail:fade_ms=500",
-            warp   = "line", -- the test moves by warps; connect them into a ribbon
+            preset   = settings.preset,
+            params   = settings.params,
+            capacity = settings.capacity, -- nil (unset) keeps the plugin default
+            warp     = "line", -- the test moves by warps; connect them into a ribbon
         },
     },
 })

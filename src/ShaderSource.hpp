@@ -15,12 +15,16 @@
 //   #pragma hyprtail contract 2  required, right after #version, before any
 //                                other hyprtail pragma or #include; replaced
 //                                by the prelude (shaders/prelude/)
-//   #pragma hyprtail topology <path|quad>
+//   #pragma hyprtail topology <path|quad|instanced <K>>
 //                                geometry (vertex) shaders only, main file,
-//                                exactly once
+//                                exactly once. K (instanced only) is an
+//                                integer literal 1..64 or the name of an int
+//                                param declared with a range inside 1..64;
+//                                the layer draws K quads per visible node.
 //   #pragma hyprtail expects <kind>[,<kind>...]
 //                                shading (fragment) shaders only, main file,
 //                                at most once; no spaces around the commas.
+//                                Kinds: path, quad, instanced (no K).
 //                                Refused if the paired vertex shader's
 //                                topology isn't one of the listed kinds.
 //   #pragma hyprtail param <type> <name> <default> [<min> <max>]
@@ -47,11 +51,24 @@ namespace hyprtail::shader {
     enum class eTopology : uint8_t {
         PATH,
         QUAD,
+        INSTANCED,
     };
 
     constexpr int CONTRACT_VERSION = 2;
+    constexpr int MAX_INSTANCES    = 64; // K of an instanced topology
+
+    // K of "topology instanced <K>": a literal (param empty), or the name of
+    // an int param whose value is read at draw time (literal 0).
+    struct SInstanceCount {
+        int         literal = 0;
+        std::string param;
+    };
 
     const char* topologyName(eTopology t);
+
+    // For messages and status: "path", "quad", "instanced 8" or "instanced
+    // <param>".
+    std::string topologyText(eTopology t, const SInstanceCount& k);
 
     struct SPadding {
         params::CExpr expr;
@@ -68,7 +85,8 @@ namespace hyprtail::shader {
         std::vector<std::string>           sourceNames; // index = GLSL source-string number
         std::vector<std::filesystem::path> files;       // real files read, for watching
 
-        std::optional<eTopology>           topology; // vertex stage only
+        std::optional<eTopology>           topology;  // vertex stage only
+        SInstanceCount                     instances; // vertex stage, instanced topology only
         std::vector<eTopology>             expects;      // fragment stage only; empty = accepts any
         std::string                        expectsWhere; // file:line, for messages
         std::vector<SParamWhere>           params;
@@ -90,6 +108,17 @@ namespace hyprtail::shader {
     // Rewrite "<source-id>:<line>" references in a driver info log to
     // "<file>:<line>", best effort (drivers format logs differently).
     std::string mapLog(const std::string& log, const SSource& src);
+
+    // Pair checks, run when a program's two stages are put together (both
+    // nullopt on success, else a plain message):
+    //
+    // The fragment shader's `expects` against the vertex shader's topology.
+    std::optional<std::string> expectsMismatch(const SSource& vert, const SSource& frag);
+
+    // An instanced topology's K parameter against the program's merged
+    // parameters: declared, int, with a min and max inside 1..MAX_INSTANCES.
+    // Nothing to check for a literal K or another topology.
+    std::optional<std::string> instanceCountProblem(const SSource& vert, const std::vector<params::SDecl>& programParams);
 
     // What the prelude provides, for the program contract check.
     const std::vector<std::string>& preludeUniforms();

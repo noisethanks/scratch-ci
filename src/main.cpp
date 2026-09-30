@@ -182,6 +182,12 @@ static bool layerDrawable(const hyprtail::CLayer& l, bool hidden) {
     return !l.disabled && l.enabledSetting() && l.resolved() && (l.res.drawWhenHidden || !hidden);
 }
 
+// Layers drawn from the trail's nodes, path and instanced alike: visible
+// while node age < fade_ms, damaged by the extent of the visible nodes.
+static bool nodeLayer(const hyprtail::CLayer& l) {
+    return l.topology() != eTopology::QUAD;
+}
+
 // Quad layers: shown while the pointer has been still for [start, start +
 // duration) (duration 0 = until it moves).
 static bool quadInWindow(const hyprtail::CLayer& l, double nowMs) {
@@ -328,8 +334,12 @@ static void runLifecycle(const PHLMONITOR& pMonitor) {
 
         if (!locked && layerDrawable(l, hidden)) {
             extent = layerExtentPx(p, l);
-            if (l.topology() == eTopology::PATH) {
-                if (const auto b = p.gpuFailed ? std::nullopt : p.ring.visibleBounds(nowMs, l.res.fadeMs))
+            if (nodeLayer(l)) {
+                // An instanced layer draws the visible nodes only (a path
+                // layer also draws the segment to the next older one), so
+                // its box leaves that node out (SPEC §13.3).
+                const bool olderNode = l.topology() == eTopology::PATH;
+                if (const auto b = p.gpuFailed ? std::nullopt : p.ring.visibleBounds(nowMs, l.res.fadeMs, olderNode))
                     cur = CBox{b->x1 - extent - pMonitor->m_position.x, b->y1 - extent - pMonitor->m_position.y, (b->x2 - b->x1) + 2.0 * extent,
                                (b->y2 - b->y1) + 2.0 * extent};
             } else if (!suppressed() && quadInWindow(l, nowMs))
@@ -657,11 +667,11 @@ static void onMouseMoveInternal() {
     if (!s_preset || suppressed())
         return;
 
-    // Reach of the widest path layer (before any program is compiled, a
-    // small default: the first render sizes it).
+    // Reach of the widest path or instanced layer (before any program is
+    // compiled, a small default: the first render sizes it).
     float r = 0.F;
     for (const auto& l : s_preset->layers) {
-        if (!l->disabled && l->resolved() && l->topology() == eTopology::PATH)
+        if (!l->disabled && l->resolved() && nodeLayer(*l))
             r = std::max(r, layerExtentPx(*s_preset, *l));
     }
     if (r <= 0.F)

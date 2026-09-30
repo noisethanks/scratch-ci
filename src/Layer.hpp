@@ -37,6 +37,10 @@ namespace hyprtail {
 
         // Largest padding expression of the program, px (without damage_padding).
         float  paddingPx = 0.F;
+
+        // Instanced topology: copies drawn per node (K, SPEC §13.3), 1..64.
+        // 0 for other topologies.
+        int    instances = 0;
     };
 
     class CLayer {

@@ -2,7 +2,7 @@
 // Standard varyings (the fragment prelude declares the same set as inputs).
 // ht_initVaryings() zeroes them; write the ones your geometry means.
 out vec2  ht_vLocal; // path: x along the segment (0 newer end, 1 older end), y across (-1..1);
-                     // quad: quad coordinates (-1..1, -1..1)
+                     // quad, instanced: quad coordinates (-1..1, -1..1)
 out float ht_vAge;   // ms
 out float ht_vLife;  // 1 -> 0 over the visibility window
 out float ht_vSpeed; // px/ms at birth

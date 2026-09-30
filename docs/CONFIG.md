@@ -38,8 +38,8 @@ its own shader pair and default parameter values. Pick one with:
 A preset name is addressed in one of two namespaces, and they never overlap:
 
 - **`prefab:<name>`** is always the built-in preset embedded in the plugin,
-  regardless of any local file with the same name. Built-ins: `prefab:subtle`
-  and `prefab:classic`.
+  regardless of any local file with the same name. Built-ins: `prefab:subtle`,
+  `prefab:classic`, `prefab:jitter` and `prefab:spray`.
 - **`<name>`** (no prefix) is always your own file,
   `~/.config/hypr/hyprtail/presets/<name>.conf`. If that file doesn't exist,
   loading fails with an error naming the path it looked for; it never falls
@@ -55,6 +55,18 @@ Shipped presets:
 - **`prefab:classic`**: a wider, speed-tinted trail (slow motion tints one
   color, fast motion tints another) plus an optional idle ring around a
   stationary cursor (off by default).
+- **`prefab:jitter`**: a cloud of small dots scattered around every trail
+  point, `copies` of them (1–64, default 6) at random offsets of at most
+  `spread` px. Try `params = "trail:copies=16 trail:spread=24"`.
+- **`prefab:spray`**: particles thrown off the trail, `count` per point
+  (1–64, default 4), drifting away (mostly behind the pointer's motion) at up
+  to `speed` px/s while shrinking and fading over `fade_ms`. The redrawn area
+  grows with `speed * fade_ms`, so a fast, long-lived spray costs more to
+  draw. Try `params = "trail:count=12 trail:speed=120"`.
+
+Both draw *(visible points) x (copies per point)* quads, so `capacity` and
+`fade_ms` together with the copy count set the GPU cost: the most a single
+layer can draw is 64 copies x 4096 points.
 
 ### Quickstart: make your own copy
 
@@ -102,7 +114,8 @@ core:color    = rgba(ffffffa0)
   of the names in `layers`.
   - `<layer>:vertex` / `<layer>:fragment` pick that layer's shader:
     `prefab:<name>` for an embedded one (`prefab:ribbon.vert`,
-    `prefab:ribbon.frag`, `prefab:ring.vert`, `prefab:ring.frag`), or
+    `prefab:ribbon.frag`, `prefab:ring.vert`, `prefab:ring.frag`,
+    `prefab:jitter.vert`, `prefab:spray.vert`, `prefab:dots.frag`), or
     anything else as a path to your own file. A relative path resolves
     against the hyprtail config root; `~` and absolute paths also work.
     Built-in presets may only use `prefab:` shaders.
@@ -160,7 +173,9 @@ plugin:hyprtail:params = core:width=4 glow:radius=18 core:color=rgba(ffffffa0)
   type or out of the parameter's declared range is a per-entry warning; that
   one entry is ignored and everything else in the string still applies.
 - Re-read on every config reload and on every shader file change — no
-  separate reload needed.
+  separate reload needed. That includes the copy count K of an `instanced`
+  layer (`prefab:jitter`'s `copies`, `prefab:spray`'s `count`): it changes
+  live, without recompiling the shader.
 
 **Reserved parameter names**, settable on any layer the same way as any
 other parameter:
@@ -168,7 +183,7 @@ other parameter:
 | Name | Type | Default | Meaning |
 |---|---|---|---|
 | `enabled` | bool | `true` | `false` turns this layer off entirely (not even compiled). |
-| `draw_when_cursor_hidden` | bool | `true` for `path` layers, `false` for `quad` layers | Whether the layer keeps drawing while the OS cursor is hidden. |
+| `draw_when_cursor_hidden` | bool | `true` for `path` and `instanced` layers, `false` for `quad` layers | Whether the layer keeps drawing while the OS cursor is hidden. |
 | `fade_ms` | float, ms | `500` | Trail/particle layers: how long a point stays visible after it's created. |
 | `start_ms` | float, ms | `500` | Idle-style layers: how long the pointer must sit still before the layer starts showing. |
 | `duration_ms` | float, ms | `1500` | Idle-style layers: how long it stays visible once started (`0` = forever, until the pointer moves). |

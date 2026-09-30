@@ -8,7 +8,7 @@ namespace hyprtail::status {
             const auto origin = [](const std::string& o) { return o.empty() ? std::string{"built-in"} : o; };
             if (!sh.active)
                 return std::format("none active (last compile: {}{})", sh.lastResult, sh.pending ? ", reload pending" : "");
-            return std::format("{} topology, vertex {}, fragment {} (last compile: {}{})", sh.topology, origin(sh.vertOrigin), origin(sh.fragOrigin), sh.lastResult,
+            return std::format("topology {}, vertex {}, fragment {} (last compile: {}{})", sh.topology, origin(sh.vertOrigin), origin(sh.fragOrigin), sh.lastResult,
                                sh.pending ? ", reload pending" : "");
         }
 

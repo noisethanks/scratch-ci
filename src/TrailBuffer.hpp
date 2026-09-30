@@ -84,13 +84,18 @@ class CTrailRing {
     // ring, not a second source of truth.
     void orderedCopy(std::vector<SGpuNode>& out, double refMs) const;
 
-    // Extent of everything that can still draw at nowMs: nodes with
-    // age < fadeMs, plus the next older node if it's connected to the oldest
-    // visible one (that segment still draws, fading toward the older end).
-    // nullopt if nothing is visible. Birth times are monotonic in insertion
-    // order, so the visible nodes are always the newest ones: walks
-    // newest -> oldest and stops after the first faded node.
-    std::optional<STrailBounds> visibleBounds(double nowMs, double fadeMs) const;
+    // Nodes that can still draw at nowMs: those with age < fadeMs. Birth
+    // times are monotonic in insertion order, so they are always the newest
+    // ones (a suffix of the ring): walks newest -> oldest and stops at the
+    // first faded node.
+    size_t visibleCount(double nowMs, double fadeMs) const;
+
+    // Extent of everything that can still draw at nowMs: the visibleCount()
+    // newest nodes, plus (includeOlderNode) the next older node if it's
+    // connected to the oldest visible one: a path layer still draws that
+    // segment, fading toward the older end. An instanced layer draws
+    // visible nodes only, so it passes false. nullopt if nothing is visible.
+    std::optional<STrailBounds> visibleBounds(double nowMs, double fadeMs, bool includeOlderNode = true) const;
 
   private:
     std::vector<SCursorNode> m_nodes;
