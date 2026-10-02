@@ -15,6 +15,7 @@
 #include <config/values/types/StringValue.hpp>
 #include <config/values/types/Vec2Value.hpp>
 
+#include "ConfigParse.hpp"
 #include "Diagnostics.hpp"
 
 using hyprtail::diag::eSeverity;
@@ -88,16 +89,6 @@ namespace hyprtail::cfg {
             return fallback;
         }
 
-        // "x y", two whitespace-separated numbers and nothing else, same
-        // grammar as the Lua vec2 string form (LuaConfigVec2.cpp:14-25).
-        std::optional<Vector2D> parseTwoFloats(std::string_view text) {
-            std::istringstream in{std::string{text}};
-            double             x = 0.0, y = 0.0;
-            std::string        tail;
-            if (!(in >> x >> y) || (in >> tail))
-                return std::nullopt;
-            return Vector2D{x, y};
-        }
     }
 
     bool registerValues(HANDLE handle) {
@@ -112,13 +103,17 @@ namespace hyprtail::cfg {
                                           warpModeName(DEFAULTS.warp));
         r.damagePadding = makeShared<CFloatValue>("plugin:hyprtail:damage_padding", "extra damage padding on top of the stock extent and shader-declared padding, px",
                                                   DEFAULTS.damagePaddingPx, SFloatValueOptions{.min = 0.F, .max = 4096.F});
-        r.preset        = makeShared<CStringValue>("plugin:hyprtail:preset", "which preset to use (SPEC section 13.7): \"prefab:<name>\" (built-in: subtle, classic, jitter, spray, vivid, comet, embers) or a bare \"<name>\" for <hyprtail root>/presets/<name>.conf", DEFAULTS.preset.c_str());
+        r.preset        = makeShared<CStringValue>("plugin:hyprtail:preset", "which preset to use (SPEC section 13.7): \"prefab:<name>\" (built-in: subtle, classic, jitter, spray, vivid, comet, embers, spring) or a bare \"<name>\" for <hyprtail root>/presets/<name>.conf", DEFAULTS.preset.c_str());
         r.emitFrom      = makeShared<CStringValue>("plugin:hyprtail:emit_from",
                                                     "where on the cursor image trail points are emitted from: \"hotspot\" (default), or a normalized \"x y\" position in "
-                                                    "the cursor image box (0 0 = top-left, 0.5 0.5 = center) (SPEC section 13.9)",
+                                                    "the cursor image box, each in 0..1 (0 0 = top-left, 0.5 0.5 = center) (SPEC section 13.9)",
                                                     "hotspot");
-        r.emitOffset    = makeShared<CVec2Value>("plugin:hyprtail:emit_offset", "fixed pixel offset added after emit_from, logical px (SPEC section 13.9)",
+        r.emitOffset    = makeShared<CVec2Value>("plugin:hyprtail:emit_offset", "fixed pixel offset added after emit_from, logical px, each component within +-128 (SPEC section 13.9)",
                                                Config::VEC2{sc<float>(DEFAULTS.emitOffsetPx.x), sc<float>(DEFAULTS.emitOffsetPx.y)});
+        // No SVec2ValueOptions::validator: at the pin neither provider applies
+        // a CVec2Value validator (LuaConfigUtils.cpp:41-42, legacy
+        // ConfigManager.cpp:501-502 take only defaultVal()), so the bound is
+        // enforced in read() alone.
 
         // Per-layer shader overrides (SPEC §13.7): static keys indexed by
         // position in the preset's layer list, capped at 4. Names must be
@@ -181,19 +176,31 @@ namespace hyprtail::cfg {
             if (text == "hotspot") {
                 v.emitFromNorm = std::nullopt;
                 diag::resetKey(key);
-            } else if (const auto parsed = parseTwoFloats(text)) {
-                v.emitFromNorm = parsed;
-                diag::resetKey(key);
             } else {
-                diag::report(eSeverity::WARN, key,
-                             std::format("plugin:hyprtail:emit_from = \"{}\" isn't \"hotspot\" or \"x y\"; keeping {}", text,
-                                         previous.emitFromNorm ? std::format("\"{} {}\"", previous.emitFromNorm->x, previous.emitFromNorm->y) : std::string{"\"hotspot\""}));
-                v.emitFromNorm = previous.emitFromNorm;
+                const auto  parsed = parseTwoFloats(text);
+                const auto  kept   = previous.emitFromNorm ? std::format("\"{} {}\"", previous.emitFromNorm->x, previous.emitFromNorm->y) : std::string{"\"hotspot\""};
+                if (parsed && emitFromInRange(*parsed)) {
+                    v.emitFromNorm = Vector2D{parsed->x, parsed->y};
+                    diag::resetKey(key);
+                } else {
+                    diag::report(eSeverity::WARN, key,
+                                 std::format("plugin:hyprtail:emit_from = \"{}\" {}; keeping {}", text,
+                                             parsed ? "has a component outside 0..1" : "isn't \"hotspot\" or \"x y\"", kept));
+                    v.emitFromNorm = previous.emitFromNorm;
+                }
             }
         }
         if (r.emitOffset) {
-            const auto vec = r.emitOffset->value();
-            v.emitOffsetPx = {vec.x, vec.y};
+            const auto  vec = r.emitOffset->value();
+            const char* key = "config:plugin:hyprtail:emit_offset";
+            const auto  next = resolveEmitOffset(vec.x, vec.y, SPair{previous.emitOffsetPx.x, previous.emitOffsetPx.y});
+            v.emitOffsetPx   = {next.x, next.y};
+            if (emitOffsetInRange(vec.x, vec.y))
+                diag::resetKey(key);
+            else
+                diag::report(eSeverity::WARN, key,
+                             std::format("plugin:hyprtail:emit_offset = {} {} is outside +-{} on an axis; keeping {} {}", vec.x, vec.y, EMIT_OFFSET_MAX_PX,
+                                         previous.emitOffsetPx.x, previous.emitOffsetPx.y));
         }
 
         for (size_t i = 0; i < 4; ++i) {

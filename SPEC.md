@@ -349,7 +349,7 @@ this file states the decision and marks what's still a placeholder.
   plugins: its uniforms are set by `passCMUniforms`, which is private.
 - **Damage padding** around the node extent = stock extent
   (`widthPx / 2 * miterLimit + 1px`) + shader-declared padding + config
-  `damage_padding`, all additive. A shader declares its extra reach with
+  `damage_padding` (logical px), all additive. A shader declares its extra reach with
   `#pragma hyprtail padding <px>` (0..4096) in either stage or any include;
   the largest declaration of the active program counts, so a shared shader
   file carries its own extent. The pragma line is removed before compiling;
@@ -653,7 +653,9 @@ this file states the decision and marks what's still a placeholder.
   | `min_spacing` | float, logical px | 2 | 0..256 |
   | `miter_limit` | float, half-widths | 2 | 1..16 |
   | `interpolate_warps` | bool | false | removed (phase 6): see `warp`, §13.10 |
-  | `damage_padding` | float, px, additive (§5) | 0 | 0..4096 |
+  | `damage_padding` | float, logical px, additive (§5) | 0 | 0..4096 |
+  | `emit_from` | string | `"hotspot"` | `"hotspot"`, or `"fx fy"` with each component 0..1 inclusive (§13.9) |
+  | `emit_offset` | vec2, logical px | `0 0` | each component -128..128 inclusive (§13.9) |
   | `vertex_shader` | path | `""` = built-in | |
   | `fragment_shader` | path | `""` = built-in | |
   | `color_slow` | color (ARGB, sRGB) | `0xFF1A66FF` | |
@@ -1376,12 +1378,24 @@ would have linked fine.
 
 - **`emit_from`** (string): `"hotspot"` (default, today's behavior) or
   `"x y"`, a position normalized to the cursor image box (`0 0` = top left,
-  `0.5 0.5` = center).
-- **`emit_offset`** (vec2, logical px), added after. Lua `{x, y}` or
-  `"x y"` (`LuaConfigVec2.cpp:14-40`); the plugin's own `emit_from` uses the
-  same space-separated grammar for its `"x y"` case, but as a plain
-  `CStringValue` (it also has to accept the `"hotspot"` literal), not a
-  `CVec2Value`.
+  `0.5 0.5` = center). Each component must be within 0..1 inclusive.
+- **`emit_offset`** (vec2, logical px), added after. Each component must be
+  within -128..128 inclusive (`EMIT_OFFSET_MAX_PX`, `ConfigParse.hpp`). Lua
+  `{x, y}` or `"x y"` (`LuaConfigVec2.cpp:14-40`); the plugin's own
+  `emit_from` uses the same space-separated grammar for its `"x y"` case,
+  but as a plain `CStringValue` (it also has to accept the `"hotspot"`
+  literal), not a `CVec2Value`.
+- **Out-of-range values** for either key are rejected with a warning and the
+  previous value is kept; on the first parse that is the default (`hotspot`,
+  `0 0`), because `s_config` starts as `{}` (`main.cpp:1199`).
+- **Enforcement point for `emit_offset`:** `CVec2Value` settings cannot get a
+  Hyprland-level config error at this pinned version (`efb5099`). Neither
+  config provider applies a `CVec2Value` validator (Lua:
+  `config/lua/types/LuaConfigUtils.cpp:41-42`; legacy:
+  `config/legacy/ConfigManager.cpp:501-502`; both take only `defaultVal()`,
+  though `SVec2ValueOptions::validator` exists, `Vec2Value.hpp:12`), so the plugin's own
+  rejection in `read()` is the only enforcement point, not a gap to fix
+  later.
 - **Cursor image box:** `CPointerManager::getCursorBoxGlobal()` is the
   pointer position minus the hotspot, with size = image size / scale
   (`PointerManager.cpp:719-721`); the raw values come from

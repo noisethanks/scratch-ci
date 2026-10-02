@@ -65,6 +65,13 @@ Run on every PR but **not required yet**, each on purpose:
 | `hyprland-smoke-stable` | Not enough clean runs yet (`SMOKE_ENABLED` is on; the count starts at zero, see "Promoting the smoke rows"). | See "Promoting the smoke rows" below. |
 | `hyprland-smoke-main` | Same, plus the `main` problem above. | See "Promoting the smoke rows" below. |
 
+The non-required rows `hyprland-main`, `hyprland-smoke-stable` and
+`hyprland-smoke-main` set `continue-on-error` in `ci.yml` (the
+`release-branch` rows stay strict), so a red one does not turn the run (or the
+status badge) red. This does not change which checks are required. It does
+make the job `conclusion` read `success`, so `alert` detects failures from
+step conclusions, not from `needs.test.result`.
+
 Never require `hyprland-release-branch` or `hyprland-smoke-release-branch`:
 they only exist in the matrix (and therefore only report a check) on runs
 where the release branch is actually ahead of the latest tag. A required

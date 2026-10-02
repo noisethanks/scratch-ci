@@ -19,6 +19,7 @@
 #include <string>
 #include <vector>
 
+#include "../../src/ConfigParse.hpp"
 #include "../../src/CrashGuard.hpp"
 #include "../../src/Params.hpp"
 #include "../../src/ShaderSource.hpp"
@@ -851,7 +852,57 @@ static void testSpringChain() {
     }
 }
 
+// emit_from / emit_offset grammar and bounds (SPEC §13.9, ConfigParse.hpp).
+static void testEmitConfig() {
+    using namespace hyprtail::cfg;
+
+    // Grammar.
+    CHECK(parseTwoFloats("0.5 0.5") == SPair({0.5, 0.5}));
+    CHECK(parseTwoFloats("  0   1 ") == SPair({0.0, 1.0}));
+    CHECK(!parseTwoFloats("hotspot"));
+    CHECK(!parseTwoFloats("0.5"));
+    CHECK(!parseTwoFloats("0.5 0.5 0.5"));
+    CHECK(!parseTwoFloats("0.5 abc"));
+    CHECK(!parseTwoFloats("nan 0"));
+    CHECK(!parseTwoFloats("inf 0"));
+
+    // emit_from range: 0 and 1 are in, anything past either edge is out.
+    const auto inRange = [](const char* s) {
+        const auto p = parseTwoFloats(s);
+        return p && emitFromInRange(*p);
+    };
+    CHECK(inRange("0 0"));
+    CHECK(inRange("1 1"));
+    CHECK(inRange("0.5 0.25"));
+    CHECK(!inRange("1.0001 0.5"));
+    CHECK(!inRange("0.5 1.0001"));
+    CHECK(!inRange("-0.0001 0.5"));
+    CHECK(!inRange("0.5 -0.0001"));
+    CHECK(!inRange("2 2"));
+
+    // emit_offset: +-EMIT_OFFSET_MAX_PX per component, inclusive.
+    CHECK(emitOffsetInRange(0, 0));
+    CHECK(emitOffsetInRange(EMIT_OFFSET_MAX_PX, -EMIT_OFFSET_MAX_PX));
+    CHECK(emitOffsetInRange(-3.5, 12));
+    CHECK(!emitOffsetInRange(EMIT_OFFSET_MAX_PX + 0.01, 0));
+    CHECK(!emitOffsetInRange(0, -EMIT_OFFSET_MAX_PX - 0.01));
+    CHECK(!emitOffsetInRange(1e9, 0));
+    CHECK(!emitOffsetInRange(std::nan(""), 0));
+    CHECK(!emitOffsetInRange(0, INFINITY));
+
+    // First parse: cfg::read() starts from the defaults (s_config = {}), so
+    // an out-of-range first value resolves to the default {0, 0}, and a
+    // later bad value keeps the last good one.
+    const SPair dflt{0.0, 0.0};
+    CHECK(resolveEmitOffset(500, 0, dflt) == dflt);
+    CHECK(resolveEmitOffset(0, -129, dflt) == dflt);
+    CHECK(resolveEmitOffset(std::nan(""), 0, dflt) == dflt);
+    CHECK(resolveEmitOffset(5, -7, dflt) == SPair({5.0, -7.0}));
+    CHECK(resolveEmitOffset(500, 0, SPair{5.0, -7.0}) == SPair({5.0, -7.0}));
+}
+
 int main() {
+    testEmitConfig();
     testSpringChain();
     testSource();
     testParams();

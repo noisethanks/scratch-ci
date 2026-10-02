@@ -259,14 +259,14 @@ without switching presets.
 |---|---|---|---|---|
 | `capacity` | int, points | `64` | 2–4096 | Max number of trail points kept in the buffer (for the `spring` source: the number of points in the chain). Higher = longer possible trail (subject to `fade_ms`), more GPU work. |
 | `min_spacing` | float, logical px | `2` | 0–256 | Minimum pointer travel before a new point is recorded. Too low makes tight turns fold over themselves. |
-| `damage_padding` | float, px | `0` | 0–4096 | Extra screen-redraw margin added on top of what each shader already reaches (its own padding declaration). Raise this if a custom shader draws outside its declared reach and you see trailing artifacts. |
+| `damage_padding` | float, logical px | `0` | 0–4096 | Extra screen-redraw margin added on top of what each shader already reaches (its own padding declaration). Raise this if a custom shader draws outside its declared reach and you see trailing artifacts. |
 
 ## Where the trail starts (emit point)
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `emit_from` | string | `hotspot` | `hotspot` = the cursor's actual click point (default). Or `"x y"`, a position normalized to the cursor image's own box: `"0 0"` = top-left of the cursor image, `"0.5 0.5"` = its center, `"1 1"` = bottom-right. |
-| `emit_offset` | vec2, logical px | `0 0` | A fixed pixel offset added after `emit_from`. Lua: `{x, y}`; hyprlang: `"x y"`. |
+| `emit_from` | string | `hotspot` | `hotspot` = the cursor's actual click point (default). Or `"x y"`, a position normalized to the cursor image's own box: `"0 0"` = top-left of the cursor image, `"0.5 0.5"` = its center, `"1 1"` = bottom-right. Each component must be within 0–1 inclusive; anything else is rejected with a warning and the previous value is kept. |
+| `emit_offset` | vec2, logical px | `0 0` | A fixed pixel offset added after `emit_from`. Each component must be within -128–128 inclusive; anything else is rejected with a warning and the previous value is kept. Lua: `{x, y}`; hyprlang: `"x y"`. |
 
 These move where new trail points are created relative to the visible
 cursor image — useful if you want the trail to start from, say, the tip of

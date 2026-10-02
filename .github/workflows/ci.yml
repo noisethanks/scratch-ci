@@ -98,6 +98,10 @@ jobs:
     needs: resolve
     name: hyprland-${{ matrix.name }}
     runs-on: ubuntu-latest
+    # Informational row: keeps the run-level conclusion (and the status
+    # badge) green. It also hides the failure from `needs.test.result` and
+    # the jobs API's job `conclusion`; `alert` reads step conclusions instead.
+    continue-on-error: ${{ matrix.name == 'main' }}
     strategy:
       fail-fast: false
       matrix:
@@ -294,6 +298,9 @@ jobs:
     name: hyprland-smoke-${{ matrix.name }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    # Informational rows (see docs/CI.md); keeps the run-level conclusion
+    # green. release-branch stays strict.
+    continue-on-error: ${{ matrix.name == 'main' || matrix.name == 'stable' }}
     strategy:
       fail-fast: false
       matrix:
@@ -357,7 +364,9 @@ jobs:
   # guard). Opens or updates a single labeled tracking issue instead of
   # spamming a new issue per failed schedule.
   alert:
-    if: always() && github.event_name == 'schedule' && needs.test.result == 'failure'
+    # `needs.test.result` is 'success' when only the continue-on-error `main`
+    # row failed, so gate on the rows' step conclusions in the run step below.
+    if: always() && github.event_name == 'schedule' && needs.test.result != 'skipped' && needs.test.result != 'cancelled'
     needs: [resolve, test]
     name: alert-on-schedule-failure
     runs-on: ubuntu-latest
@@ -401,7 +410,13 @@ jobs:
 
           run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           failed_jobs="$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs" --paginate \
-            --jq '.jobs[] | select(.conclusion=="failure") | .name')"
+            --jq '.jobs[] | select(.conclusion=="failure" or any(.steps[]?; .conclusion=="failure")) | .name')"
+          # Only the test rows trigger an alert (as before); a failed smoke
+          # or flake-check job is listed in the body but does not open one.
+          if ! grep -Eq '^hyprland-(stable|main|release-branch)$' <<<"$failed_jobs"; then
+            echo "no failed test rows; nothing to report"
+            exit 0
+          fi
 
           {
             echo "Scheduled run failed: ${run_url}"
