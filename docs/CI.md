@@ -251,6 +251,49 @@ Hyprland commit still exports what hyprtail needs; it does not prove the
 *specific LTO'd binary a user actually runs* does. Only running the script
 against `/usr/bin/Hyprland` proves that.
 
+## Formatting and linting (local, not in CI)
+
+`make format` and `make lint` are developer tools. The workflow does not run
+them and no build needs them, so they are not build requirements and nothing
+in `flake.nix` provides them.
+
+| Target | What it does | Tools |
+|---|---|---|
+| `make format` | `clang-format -i` over `src/` and `tests/` (`.clang-format`, copied from Hyprland). | `clang-format` |
+| `make lint` | `clang-tidy` (`.clang-tidy`) over every `src/*.cpp`, `tests/compat/compat.cpp` and `tests/unit/unit.cpp`. Exits non-zero if any check in `WarningsAsErrors` fires. | `compiledb`, `clang++`, `clang-tidy`, `run-clang-tidy` |
+
+`compiledb` is dev-only: `pip install compiledb`, in a venv if you like. If
+it isn't on `PATH`, pass it: `make lint COMPILEDB=/path/to/venv/bin/compiledb`.
+
+How `make lint` works, and why:
+
+- **Compile database from this Makefile.** It runs `compiledb -n make -B
+  CXX=clang++ all test-compat` (a dry run, nothing is built) into
+  `$(OUT)/lint/compile_commands.json`, so clang-tidy sees the real flags and
+  include paths of the selected build mode: `make lint` for pkg-config
+  headers, `make DEV=1 lint [HYPRLAND_DIR=...]` for a checkout. Both modes
+  were checked against the pin and give the same findings.
+- **`clang++`, whatever `CXX` is.** The Makefile adds `--no-gnu-unique` when
+  `CXX` is GCC, and clang-tidy chokes on that flag. Only the compile database
+  is generated with clang++; no object files come out of it.
+- **Header filter.** `.clang-tidy`'s `HeaderFilterRegex` is `.*\.hpp`, which
+  also matches Hyprland's headers. `make lint` overrides it on the command
+  line to this repo's `src/` and `tests/`.
+- **`tests/unit/unit.cpp` is analysed separately.** `test-unit` compiles it
+  with six sources in a single command. compiledb can't split that into
+  per-file entries: it files the whole command under the last source
+  (`src/CrashGuard.cpp`) and replaces that source's real entry. So the
+  database is made from `all` and `test-compat` only, and `unit.cpp` gets a
+  direct `clang-tidy` run with `-std=c++26`.
+
+`.clang-tidy` is Hyprland's, plus four disabled checks of hyprtail's own,
+explained in a comment above `Checks:` in the file:
+`cppcoreguidelines-pro-bounds-avoid-unchecked-container-access`,
+`readability-inconsistent-ifelse-braces`,
+`bugprone-throwing-static-initialization` and `performance-no-int-to-ptr`.
+Keep them to checks Hyprland's own list doesn't decide on; don't re-enable
+anything it disables.
+
 ## Re-pinning: `hyprpm.toml` `commit_pins`
 
 `hyprpm.toml`'s `commit_pins` field (see the comment already in that file,

@@ -45,28 +45,28 @@ namespace hyprtail::params {
         std::optional<double> min, max; // FLOAT, INT, VEC2 only
     };
 
-    const char*                           typeName(eType t);
-    const char*                           glslType(eType t);
+    const char* typeName(eType t);
+    const char* glslType(eType t);
 
     // Lowercase letter or '_' first, then letters, digits, '_'. Names starting
     // with ht_ or gl_ are reserved for the prelude and GLSL.
-    bool                                  validName(std::string_view name);
+    bool                               validName(std::string_view name);
 
-    std::expected<SValue, std::string>    parseValue(eType type, std::string_view text);
-    std::expected<void, std::string>      checkRange(const SDecl& decl, const SValue& v);
-    std::string                           format(const SValue& v);
+    std::expected<SValue, std::string> parseValue(eType type, std::string_view text);
+    std::expected<void, std::string>   checkRange(const SDecl& decl, const SValue& v);
+    std::string                        format(const SValue& v);
 
     // Window-rule effect value truthiness (SPEC §7): true/1/yes/on
     // (case-insensitive) suppress; anything else, including false, empty, or
     // unset, does not. Never fails, unlike parseValue(BOOL) -- a garbled or
     // missing rule value simply doesn't suppress, no warning.
-    bool                                   ruleTruthy(std::string_view text);
+    bool ruleTruthy(std::string_view text);
 
     // Arguments of a param pragma: "<type> <name> <default> [<min> <max>]".
-    std::expected<SDecl, std::string>     parseDecl(std::string_view args);
+    std::expected<SDecl, std::string> parseDecl(std::string_view args);
 
     // Scalar view of a value for padding expressions: FLOAT/INT/BOOL only.
-    std::optional<double>                 scalar(const SValue& v);
+    std::optional<double> scalar(const SValue& v);
 
     // One "<layer>:<name>=<value>" entry of a `params` config string
     // (SPEC §13.5), unparsed: only the layer/name/value are split out here,
@@ -91,7 +91,7 @@ namespace hyprtail::params {
     // A malformed token (missing ':' or '=', or an empty layer/name/value)
     // is added to `problems` instead of `entries`; it never fails the whole
     // string.
-    SParsedParams                         parseParamsString(std::string_view text);
+    SParsedParams parseParamsString(std::string_view text);
 
     class CExpr {
       public:
@@ -101,19 +101,19 @@ namespace hyprtail::params {
         std::expected<double, std::string> eval(const std::function<std::optional<double>(std::string_view)>& lookup) const;
 
         // Every parameter name the expression uses.
-        const std::vector<std::string>&    names() const;
-        const std::string&                 text() const;
+        const std::vector<std::string>& names() const;
+        const std::string&              text() const;
 
       private:
         struct SToken {
-            enum eKind : uint8_t {
+            enum class eKind : uint8_t {
                 NUMBER,
                 NAME,
                 ADD,
                 SUB,
                 MUL,
                 DIV,
-            } kind = NUMBER;
+            } kind             = eKind::NUMBER;
             double      number = 0.0;
             std::string name;
         };

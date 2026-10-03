@@ -50,12 +50,12 @@ static void testParams() {
 
     auto f = parseDecl("float width 8 0 512");
     CHECK(f && f->type == eType::FLOAT && f->name == "width" && f->def.x == 8.0 && f->min == 0.0 && f->max == 512.0);
-    CHECK(!parseDecl("float width 600 0 512"));  // default out of range
-    CHECK(!parseDecl("float ht_width 1"));       // reserved prefix
-    CHECK(!parseDecl("float Width 1"));          // uppercase first
-    CHECK(!parseDecl("colour c 0xff000000"));    // unknown type
+    CHECK(!parseDecl("float width 600 0 512"));      // default out of range
+    CHECK(!parseDecl("float ht_width 1"));           // reserved prefix
+    CHECK(!parseDecl("float Width 1"));              // uppercase first
+    CHECK(!parseDecl("colour c 0xff000000"));        // unknown type
     CHECK(!parseDecl("color c rgba(ff0000ff) 0 1")); // colors take no range
-    CHECK(!parseDecl("float a"));                // missing default
+    CHECK(!parseDecl("float a"));                    // missing default
 
     auto c = parseDecl("color tint rgba(11223344)");
     CHECK(c && c->def.argb == 0x44112233u);
@@ -94,8 +94,8 @@ static void testParams() {
     CHECK(*CExpr::parse("1 + 2 * 3")->eval(lookup) == 7.0);
     CHECK(*CExpr::parse("8 - 2 - 1")->eval(lookup) == 5.0); // left-associative
     CHECK(*CExpr::parse("8 / 4 / 2")->eval(lookup) == 1.0);
-    CHECK(!CExpr::parse("-1"));            // no unary minus
-    CHECK(!CExpr::parse("max(1, 2)"));     // no functions
+    CHECK(!CExpr::parse("-1"));        // no unary minus
+    CHECK(!CExpr::parse("max(1, 2)")); // no functions
     CHECK(!CExpr::parse("(1 + 2"));
     CHECK(!CExpr::parse("1 +"));
     CHECK(!CExpr::parse(""));
@@ -121,8 +121,8 @@ static void testShaderSource() {
         CHECK(v->params.size() == 1 && v->params[0].decl.name == "width");
         CHECK(v->padding.size() == 1);
         CHECK(v->text.contains("uniform float width;"));
-        CHECK(v->text.contains("ht_a_p0Pos"));           // path prelude injected
-        CHECK(v->sourceNames.size() == 2);                // main + prelude
+        CHECK(v->text.contains("ht_a_p0Pos")); // path prelude injected
+        CHECK(v->sourceNames.size() == 2);     // main + prelude
     }
 
     // Missing contract, contract not first, wrong version.
@@ -142,17 +142,19 @@ static void testShaderSource() {
 
     // Instanced topology (SPEC §13.3): K is a literal 1..64 or a param name.
     const std::string instHead = "#version 300 es\n#pragma hyprtail contract 2\n";
-    const auto        inst     = [&](const std::string& topology, const std::string& rest = "") { return pp(instHead + "#pragma hyprtail topology " + topology + "\n" + rest + "void main() {}\n", eStage::VERTEX); };
+    const auto        inst     = [&](const std::string& topology, const std::string& rest = "") {
+        return pp(instHead + "#pragma hyprtail topology " + topology + "\n" + rest + "void main() {}\n", eStage::VERTEX);
+    };
 
     auto i8 = inst("instanced 8");
     CHECK(i8 && i8->topology == eTopology::INSTANCED && i8->instances.literal == 8 && i8->instances.param.empty());
     CHECK(i8 && i8->text.contains("ht_a_pos") && i8->text.contains("ht_instance") && i8->text.contains("uniform int ht_K;") && !i8->text.contains("ht_a_p0Pos"));
     CHECK(inst("instanced 1") && inst("instanced 64"));
     CHECK(!inst("instanced 0") && !inst("instanced 65") && !inst("instanced 99999999999999999999")); // outside 1..64
-    CHECK(!inst("instanced"));                                                                        // K is required
-    CHECK(!inst("instanced -1") && !inst("instanced 1.5") && !inst("instanced Copies"));              // neither a count nor a param name
+    CHECK(!inst("instanced"));                                                                       // K is required
+    CHECK(!inst("instanced -1") && !inst("instanced 1.5") && !inst("instanced Copies"));             // neither a count nor a param name
     CHECK(!inst("instanced 8 9"));
-    CHECK(!inst("path 4") && !inst("quad 1"));                                                          // no options
+    CHECK(!inst("path 4") && !inst("quad 1")); // no options
     auto ip = inst("instanced copies", "#pragma hyprtail param int copies 4 1 64\n");
     CHECK(ip && ip->instances.param == "copies" && ip->instances.literal == 0);
     CHECK(shader::topologyText(eTopology::INSTANCED, i8->instances) == "instanced 8");
@@ -161,7 +163,7 @@ static void testShaderSource() {
 
     // K param: declared, int, with a range inside 1..64.
     const auto kProblem = [&](const std::string& decl) {
-        auto v = inst("instanced copies", decl);
+        auto                       v = inst("instanced copies", decl);
         std::vector<params::SDecl> declared;
         if (v)
             for (const auto& p : v->params)
@@ -170,12 +172,12 @@ static void testShaderSource() {
     };
     CHECK(!kProblem("#pragma hyprtail param int copies 4 1 64\n"));
     CHECK(!kProblem("#pragma hyprtail param int copies 4 2 16\n"));
-    CHECK(kProblem(""));                                                    // not declared
-    CHECK(kProblem("#pragma hyprtail param float copies 4 1 64\n"));       // not an int
-    CHECK(kProblem("#pragma hyprtail param int copies 4\n"));              // no range
-    CHECK(kProblem("#pragma hyprtail param int copies 4 0 64\n"));         // min below 1
-    CHECK(kProblem("#pragma hyprtail param int copies 4 1 65\n"));         // max above 64
-    CHECK(!shader::instanceCountProblem(*i8, {}));                         // a literal needs no param
+    CHECK(kProblem(""));                                             // not declared
+    CHECK(kProblem("#pragma hyprtail param float copies 4 1 64\n")); // not an int
+    CHECK(kProblem("#pragma hyprtail param int copies 4\n"));        // no range
+    CHECK(kProblem("#pragma hyprtail param int copies 4 0 64\n"));   // min below 1
+    CHECK(kProblem("#pragma hyprtail param int copies 4 1 65\n"));   // max above 64
+    CHECK(!shader::instanceCountProblem(*i8, {}));                   // a literal needs no param
 
     // expects: kinds path, quad, instanced; checked against the vertex shader.
     const auto frag = [&](const std::string& expects) { return pp(instHead + "#pragma hyprtail expects " + expects + "\nvoid main() {}\n", eStage::FRAGMENT); };
@@ -198,7 +200,7 @@ static void testShaderSource() {
     // The prelude's attributes are exactly the locations the loader says it
     // feeds (the program contract check refuses anything else).
     for (const auto t : {eTopology::PATH, eTopology::INSTANCED}) {
-        const auto  src = pp(instHead + "#pragma hyprtail topology " + (t == eTopology::PATH ? "path" : "instanced 2") + "\nvoid main() {}\n", eStage::VERTEX);
+        const auto       src = pp(instHead + "#pragma hyprtail topology " + (t == eTopology::PATH ? "path" : "instanced 2") + "\nvoid main() {}\n", eStage::VERTEX);
         std::vector<int> found;
         if (src) {
             static const std::regex RE{R"(layout\(location = (\d+)\) in )"};
@@ -260,9 +262,9 @@ static void testPresetManifests() {
     using Layers = std::map<std::string, std::map<std::string, std::string>>;
 
     int                                manifests = 0;
-    std::map<std::string, Layers>      byPreset;    // file stem -> layer -> key -> value
-    std::map<std::string, std::string> layerOrder;  // file stem -> its "layers = ..." value
-    std::map<std::string, std::string> sourceOf;    // file stem -> its "source = ..." value, if any
+    std::map<std::string, Layers>      byPreset;   // file stem -> layer -> key -> value
+    std::map<std::string, std::string> layerOrder; // file stem -> its "layers = ..." value
+    std::map<std::string, std::string> sourceOf;   // file stem -> its "source = ..." value, if any
     for (const auto& entry : fs::directory_iterator("presets")) {
         if (entry.path().extension() != ".conf")
             continue;
@@ -272,7 +274,7 @@ static void testPresetManifests() {
         std::ifstream in(entry.path());
         std::string   line;
         while (std::getline(in, line)) {
-            line = trim(line.substr(0, line.find('#')));
+            line          = trim(line.substr(0, line.find('#')));
             const auto eq = line.find('=');
             if (eq == std::string::npos)
                 continue;
@@ -369,7 +371,7 @@ static void testPresetManifests() {
             return {};
         return p->second.at(layer).at(key);
     };
-    const auto num   = [&](const std::string& preset, const std::string& layer, const std::string& key) { return std::atof(val(preset, layer, key).c_str()); };
+    const auto num   = [&](const std::string& preset, const std::string& layer, const std::string& key) { return std::strtod(val(preset, layer, key).c_str(), nullptr); };
     const auto alpha = [&](const std::string& preset, const std::string& layer, const std::string& key) {
         const auto c = params::parseValue(params::eType::COLOR, val(preset, layer, key));
         return c ? static_cast<int>(c->argb >> 24) : -1;
@@ -420,9 +422,9 @@ static void testCrashGuard() {
     CHECK(m && m->revision == key.revision && m->hyprlandHash == key.hyprlandHash && m->instanceSignature == "sig-1" && m->pid == 4242);
 
     CHECK(!parse(""));
-    CHECK(!parse("rev=a\nhyprland=b\ninstance=c\n"));                 // missing pid
-    CHECK(!parse("rev=a\nhyprland=b\ninstance=c\npid=abc\n"));        // pid not a number
-    CHECK(!parse("rev=a\nhyprland=b\ninstance=c\npid=-1\n"));         // pid not positive
+    CHECK(!parse("rev=a\nhyprland=b\ninstance=c\n"));          // missing pid
+    CHECK(!parse("rev=a\nhyprland=b\ninstance=c\npid=abc\n")); // pid not a number
+    CHECK(!parse("rev=a\nhyprland=b\ninstance=c\npid=-1\n"));  // pid not positive
     CHECK(!parse("rev=a\nhyprland=b\ninstance=c\npid=0\n"));
     CHECK(parse("rev=a\nhyprland=b\ninstance=c\npid=5\nextra=ignored\n").has_value());
 
@@ -473,9 +475,9 @@ static void testCrashGuard() {
 
 static void testRing() {
     CTrailRing ring(8, 42);
-    ring.insert({0, 0}, 0.0, false);  // first node: segment start
-    ring.insert({3, 4}, 10.0, false); // +5
-    ring.insert({6, 8}, 20.0, false); // +5
+    ring.insert({0, 0}, 0.0, false);     // first node: segment start
+    ring.insert({3, 4}, 10.0, false);    // +5
+    ring.insert({6, 8}, 20.0, false);    // +5
     ring.insert({100, 100}, 30.0, true); // break: distance restarts
     ring.insert({100, 110}, 40.0, false);
 
@@ -534,24 +536,46 @@ static void testRing() {
 // to exercise the continuous-upload half of the gate.
 namespace {
     struct SContinuousStub final : ISource {
-        std::string_view kind() const override { return "stub"; }
-        void     insert(const SVec2f&, double, bool) override {}
-        void     tick(double, double) override {}
-        void     configure(const std::map<std::string, double>&) override {}
-        void     resize(size_t) override {}
-        void     clear() override {}
-        size_t   size() const override { return 0; }
-        size_t   capacity() const override { return 0; }
-        const SCursorNode& newest() const override { return node_; }
-        void     orderedCopy(std::vector<SGpuNode>&, double) const override {}
-        bool     needsContinuousUpload() const override { return true; }
-        size_t   visibleCount(double, double) const override { return 0; }
-        std::optional<STrailBounds> visibleBounds(double, double, bool) const override { return std::nullopt; }
-        bool     isSettled(double, double) const override { return false; }
-        uint64_t generation() const override { return 7; }
-        bool     empty() const override { return empty_; }
-        double   newestBirthMs() const override { return 0.0; }
-        bool     empty_ = false;
+        std::string_view kind() const override {
+            return "stub";
+        }
+        void   insert(const SVec2f&, double, bool) override {}
+        void   tick(double, double) override {}
+        void   configure(const std::map<std::string, double>&) override {}
+        void   resize(size_t) override {}
+        void   clear() override {}
+        size_t size() const override {
+            return 0;
+        }
+        size_t capacity() const override {
+            return 0;
+        }
+        const SCursorNode& newest() const override {
+            return node_;
+        }
+        void orderedCopy(std::vector<SGpuNode>&, double) const override {}
+        bool needsContinuousUpload() const override {
+            return true;
+        }
+        size_t visibleCount(double, double) const override {
+            return 0;
+        }
+        std::optional<STrailBounds> visibleBounds(double, double, bool) const override {
+            return std::nullopt;
+        }
+        bool isSettled(double, double) const override {
+            return false;
+        }
+        uint64_t generation() const override {
+            return 7;
+        }
+        bool empty() const override {
+            return empty_;
+        }
+        double newestBirthMs() const override {
+            return 0.0;
+        }
+        bool        empty_ = false;
         SCursorNode node_{};
     };
 }
@@ -579,12 +603,12 @@ static void testSource() {
 
     // Upload gate: for the ring, identical to the condition it replaced,
     // upload unless empty or the generation is unchanged.
-    const auto old = [](const CTrailRing& r, uint64_t uploaded) { return !(r.empty() || r.generation() == uploaded); };
+    const auto old  = [](const CTrailRing& r, uint64_t uploaded) { return !(r.empty() || r.generation() == uploaded); };
     const auto same = [&](const CTrailRing& r, uint64_t uploaded) { return sourceNeedsUpload(r, uploaded) == old(r, uploaded); };
 
     CTrailRing fresh(4, 1);
-    CHECK(same(fresh, UINT64_MAX) && !sourceNeedsUpload(fresh, UINT64_MAX)); // empty: nothing to upload
-    CHECK(same(ring, UINT64_MAX) && sourceNeedsUpload(ring, UINT64_MAX));    // never uploaded
+    CHECK(same(fresh, UINT64_MAX) && !sourceNeedsUpload(fresh, UINT64_MAX));             // empty: nothing to upload
+    CHECK(same(ring, UINT64_MAX) && sourceNeedsUpload(ring, UINT64_MAX));                // never uploaded
     CHECK(same(ring, ring.generation()) && !sourceNeedsUpload(ring, ring.generation())); // up to date
     const auto uploaded = ring.generation();
     ring.insert({9, 12}, 30.0, false);
@@ -645,8 +669,8 @@ static void testSpringChain() {
     {
         CSpringChainSource c(1, 1);
         c.configure({{"mass", 1}, {"stiffness", 2500}, {"damping", 100}});
-        CHECK(c.empty() && c.size() == 0 && !c.needsContinuousUpload());
-        c.insert({0, 0}, 0.0, false); // seeds the chain
+        CHECK(c.empty() && c.size() == 0 && !c.needsContinuousUpload()); // NOLINT(readability-container-size-empty): asserts size() agrees with empty()
+        c.insert({0, 0}, 0.0, false);                                    // seeds the chain
         CHECK(!c.empty() && c.size() == 1 && !c.needsContinuousUpload());
         c.insert({100, 0}, 0.0, false);
         CHECK(c.needsContinuousUpload());
@@ -682,7 +706,7 @@ static void testSpringChain() {
         c.insert({300, 0}, 0.0, false);
         for (int i = 1; i <= 5; ++i)
             c.tick(i * 16.0, 16.0);
-        const auto out = copyOf(c); // tail first
+        const auto out     = copyOf(c); // tail first
         bool       ordered = out.size() == 6, inside = true;
         for (size_t i = 0; i + 1 < out.size(); ++i)
             ordered = ordered && out[i].posPx.x <= out[i + 1].posPx.x;
@@ -748,7 +772,7 @@ static void testSpringChain() {
         const auto moved = copyOf(c);
         CHECK(moved[0].distPx == 0.F && moved[0].distPx <= moved[1].distPx && moved[1].distPx <= moved[2].distPx && moved[2].distPx <= moved[3].distPx && moved[3].distPx > 0.F);
         for (size_t i = 0; i < 4; ++i)
-            CHECK((moved[i].bits >> 1) == (out[i].bits >> 1)); // seeds don't change
+            CHECK((moved[i].bits >> 1) == (out[i].bits >> 1));                        // seeds don't change
         CHECK(c.newest().posPx == SVec2f(30.F, 40.F) && c.newest().velocity.x > 0.F); // the last insert, not the head's position
 
         // Visibility follows the ages: the newest first, here once settled at t = 110.
@@ -788,8 +812,8 @@ static void testSpringChain() {
     // resize keeps the head end, clear empties, both bump the generation.
     {
         CSpringChainSource c(4, 3);
-        c.resize(6); // not seeded yet: just the capacity
-        CHECK(c.capacity() == 6 && c.size() == 0 && c.empty());
+        c.resize(6);                                            // not seeded yet: just the capacity
+        CHECK(c.capacity() == 6 && c.size() == 0 && c.empty()); // NOLINT(readability-container-size-empty): asserts size() agrees with empty()
         c.insert({10, 20}, 0.0, false);
         c.insert({60, 20}, 5.0, false);
         c.tick(20.0, 15.0);
@@ -804,6 +828,8 @@ static void testSpringChain() {
         CHECK(c.size() == 9 && c.generation() != gen && copyOf(c).back().posPx == head);
         gen = c.generation();
         c.clear();
+        // Asserts size() agrees with empty().
+        // NOLINTNEXTLINE(readability-container-size-empty)
         CHECK(c.empty() && c.size() == 0 && c.capacity() == 9 && c.generation() != gen && !c.needsContinuousUpload());
         c.tick(100.0, 16.0); // nothing to advance
         c.insert({1, 1}, 100.0, false);
@@ -813,7 +839,7 @@ static void testSpringChain() {
     // The pointer source satisfies the same contract without moving.
     {
         CTrailRing ring(8, 1);
-        CHECK(ring.kind() == "pointer" && ring.capacity() == 8 && ring.size() == 0);
+        CHECK(ring.kind() == "pointer" && ring.capacity() == 8 && ring.empty());
         ring.insert({1, 2}, 5.0, false);
         ring.configure({{"mass", 3.0}}); // nothing to configure
         ring.tick(10.0, 5.0);
@@ -901,6 +927,8 @@ static void testEmitConfig() {
     CHECK(resolveEmitOffset(500, 0, SPair{5.0, -7.0}) == SPair({5.0, -7.0}));
 }
 
+// A test that throws aborts the run, which is the failure signal.
+// NOLINTNEXTLINE(bugprone-exception-escape)
 int main() {
     testEmitConfig();
     testSpringChain();
@@ -915,13 +943,8 @@ int main() {
     if (const char* dir = std::getenv("OUT_DIR")) {
         std::filesystem::create_directories(dir);
         const std::pair<const char*, shader::eStage> builtins[] = {
-            {"ribbon.vert", shader::eStage::VERTEX},
-            {"ribbon.frag", shader::eStage::FRAGMENT},
-            {"ring.vert", shader::eStage::VERTEX},
-            {"ring.frag", shader::eStage::FRAGMENT},
-            {"jitter.vert", shader::eStage::VERTEX},
-            {"spray.vert", shader::eStage::VERTEX},
-            {"dots.frag", shader::eStage::FRAGMENT},
+            {"ribbon.vert", shader::eStage::VERTEX}, {"ribbon.frag", shader::eStage::FRAGMENT}, {"ring.vert", shader::eStage::VERTEX},   {"ring.frag", shader::eStage::FRAGMENT},
+            {"jitter.vert", shader::eStage::VERTEX}, {"spray.vert", shader::eStage::VERTEX},    {"dots.frag", shader::eStage::FRAGMENT},
         };
         for (const auto& [name, stage] : builtins) {
             auto src = shader::preprocess(shader::builtin(name), name, {}, stage);

@@ -31,13 +31,13 @@ namespace hyprtail {
         void shutdown();
 
       private:
-        static int                               onReadable(int fd, uint32_t mask, void* data);
-        void                                     drain();
+        static int                                   onReadable(int fd, uint32_t mask, void* data);
+        void                                         drain();
 
-        int                                      m_fd     = -1;
-        wl_event_source*                         m_source = nullptr;
-        std::function<void()>                    m_onChange;
-        std::map<int, std::string>               m_wdToDir;    // watch descriptor -> directory
-        std::map<std::string, std::set<std::string>> m_names;  // directory -> watched file names
+        int                                          m_fd     = -1;
+        wl_event_source*                             m_source = nullptr;
+        std::function<void()>                        m_onChange;
+        std::map<int, std::string>                   m_wdToDir; // watch descriptor -> directory
+        std::map<std::string, std::set<std::string>> m_names;   // directory -> watched file names
     };
 }

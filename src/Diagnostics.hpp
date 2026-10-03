@@ -34,10 +34,10 @@ namespace hyprtail::diag {
 
     // Call last thing in PLUGIN_EXIT. Cancels any pending deferred
     // notification, which would otherwise run code from the unloaded .so.
-    void        shutdown() noexcept;
+    void shutdown() noexcept;
 
-    void        report(eSeverity severity, std::string_view key, std::string_view message) noexcept;
-    void        resetKey(std::string_view key) noexcept;
+    void report(eSeverity severity, std::string_view key, std::string_view message) noexcept;
+    void resetKey(std::string_view key) noexcept;
 
     // Batched reporting (SPEC §13.11). While a batch is open, reports still
     // go to the log and the error file immediately, but instead of one
@@ -51,11 +51,11 @@ namespace hyprtail::diag {
 
     // For `hyprctl hyprtail`: reports that reached the error file this load.
     struct SStats {
-        size_t errors   = 0;
-        size_t warnings = 0;
+        size_t errors    = 0;
+        size_t warnings  = 0;
         bool   batchOpen = false;
     };
-    SStats      stats() noexcept;
+    SStats stats() noexcept;
 
     // Path of the per-session error file, empty if it couldn't be opened.
     std::string errorFilePath() noexcept;

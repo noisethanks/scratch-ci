@@ -58,8 +58,8 @@ namespace hyprtail::crashguard {
     std::optional<SMarker> parse(std::string_view text) {
         std::unordered_map<std::string, std::string> fields;
 
-        std::istringstream in{std::string{text}};
-        std::string        line;
+        std::istringstream                           in{std::string{text}};
+        std::string                                  line;
         while (std::getline(in, line)) {
             if (!line.empty() && line.back() == '\r')
                 line.pop_back();
@@ -69,9 +69,9 @@ namespace hyprtail::crashguard {
             fields.emplace(line.substr(0, eq), line.substr(eq + 1));
         }
 
-        const auto rev = fields.find("rev");
-        const auto hy  = fields.find("hyprland");
-        const auto ins = fields.find("instance");
+        const auto rev  = fields.find("rev");
+        const auto hy   = fields.find("hyprland");
+        const auto ins  = fields.find("instance");
         const auto pidF = fields.find("pid");
         if (rev == fields.end() || hy == fields.end() || ins == fields.end() || pidF == fields.end())
             return std::nullopt;
@@ -86,10 +86,7 @@ namespace hyprtail::crashguard {
 
     std::string format(const SKey& key, std::string_view instanceSignature, long long pid) {
         std::ostringstream out;
-        out << "rev=" << key.revision << '\n'
-            << "hyprland=" << key.hyprlandHash << '\n'
-            << "instance=" << instanceSignature << '\n'
-            << "pid=" << pid << '\n';
+        out << "rev=" << key.revision << '\n' << "hyprland=" << key.hyprlandHash << '\n' << "instance=" << instanceSignature << '\n' << "pid=" << pid << '\n';
         return out.str();
     }
 
@@ -98,7 +95,7 @@ namespace hyprtail::crashguard {
             return false; // malformed; never treat as dead
         errno = 0;
         if (::kill(static_cast<pid_t>(pid), 0) == 0)
-            return false; // alive
+            return false;      // alive
         return errno == ESRCH; // only a definite "no such process" counts as dead
     }
 

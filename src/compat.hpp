@@ -110,17 +110,17 @@ namespace hyprtail::compat {
 
     inline StatusCommand registerStatusCommand(HANDLE handle, const std::string& name, std::function<std::string(bool json)> reply) {
         using namespace IPC::Socket1;
-        return HyprlandAPI::registerHyprCtlCommand(
-            handle, SCommand{.name = name, .match = COMMAND_MATCH_EXACT, .handler = [reply = std::move(reply)](const SRequest& req) { return SResponse{reply(req.format == FORMAT_JSON)}; }});
+        return HyprlandAPI::registerHyprCtlCommand(handle, SCommand{.name = name, .match = COMMAND_MATCH_EXACT, .handler = [reply = std::move(reply)](const SRequest& req) {
+                                                                        return SResponse{reply(req.format == FORMAT_JSON)};
+                                                                    }});
     }
 #else
     using StatusCommand = SP<SHyprCtlCommand>;
 
     inline StatusCommand registerStatusCommand(HANDLE handle, const std::string& name, std::function<std::string(bool json)> reply) {
-        return HyprlandAPI::registerHyprCtlCommand(
-            handle, SHyprCtlCommand{.name = name, .exact = true, .fn = [reply = std::move(reply)](eHyprCtlOutputFormat format, std::string) {
-                                        return reply(format == eHyprCtlOutputFormat::FORMAT_JSON);
-                                    }});
+        return HyprlandAPI::registerHyprCtlCommand(handle, SHyprCtlCommand{.name = name, .exact = true, .fn = [reply = std::move(reply)](eHyprCtlOutputFormat format, std::string) {
+                                                                               return reply(format == eHyprCtlOutputFormat::FORMAT_JSON);
+                                                                           }});
     }
 #endif
 

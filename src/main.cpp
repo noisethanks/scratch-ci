@@ -54,11 +54,9 @@ using hyprtail::cfg::eWarpMode;
 
 static HANDLE s_handle = nullptr;
 
-
 typedef void (*origRenderSoftwareCursorsFor)(void*, PHLMONITOR, const Time::steady_tp&, CRegion&, std::optional<Vector2D>, bool, bool);
 typedef void (*origControllerWarpTo)(const void*, const Vector2D&, bool);
 typedef bool (*origSaveBufferForMirror)(void*, const CBox&);
-
 
 // Which render each monitor is in, and which render the cursor hook already
 // ran the lifecycle for. Keyed to a per-monitor serial bumped at RENDER_BEGIN
@@ -84,41 +82,41 @@ struct SMonitorFrame {
     double                  pendingCaptureNowMs = 0.0;
 };
 
-static uint64_t                                              s_frames = 0;
-static Time::steady_tp                                       s_epoch;
-static UP<SPreset>                                           s_preset;
-static wl_event_source*                                      s_idleTimer  = nullptr;
+static uint64_t         s_frames = 0;
+static Time::steady_tp  s_epoch;
+static UP<SPreset>      s_preset;
+static wl_event_source* s_idleTimer = nullptr;
 // Crash-loop guard (SPEC §2): armed only after we've written our own marker
 // (pluginInit()), so its existence alone tells teardown() the marker is ours
 // to remove -- never someone else's (e.g. a nested instance sharing the same
 // state directory) that we merely read and decided not to refuse over.
-static wl_event_source*                                      s_crashGuardTimer = nullptr;
-static CFunctionHook*                                        s_cursorHook  = nullptr;
-static CFunctionHook*                                        s_warpHook    = nullptr;
-static CFunctionHook*                                        s_captureHook = nullptr;
+static wl_event_source* s_crashGuardTimer = nullptr;
+static CFunctionHook*   s_cursorHook      = nullptr;
+static CFunctionHook*   s_warpHook        = nullptr;
+static CFunctionHook*   s_captureHook     = nullptr;
 // hyprtail:no_trail dynamic window-rule effect (SPEC §7). WINDOW_RULE_EFFECT_NONE
 // (0) doubles as "not registered": registerEffect() never returns 0 for a new
 // dynamic name, so this is a safe sentinel for teardown() to guard on.
 static Desktop::Rule::CWindowRuleEffectContainer::storageType s_noTrailEffectIdx = Desktop::Rule::WINDOW_RULE_EFFECT_NONE;
-static CHyprSignalListener                                   s_renderStageListener;
-static CHyprSignalListener                                   s_mouseMoveListener;
-static CHyprSignalListener                                   s_workspaceActiveListener;
-static CHyprSignalListener                                   s_specialActiveListener;
-static CHyprSignalListener                                   s_workspaceMovedListener;
-static CHyprSignalListener                                   s_configReloadListener;
-static CHyprSignalListener                                   s_monitorRemovedListener;
-static CHyprSignalListener                                   s_monitorDestroyListener;
-static CHyprSignalListener                                   s_layoutChangedListener;
-static CHyprSignalListener                                   s_cursorShapeListener;
+static CHyprSignalListener                                    s_renderStageListener;
+static CHyprSignalListener                                    s_mouseMoveListener;
+static CHyprSignalListener                                    s_workspaceActiveListener;
+static CHyprSignalListener                                    s_specialActiveListener;
+static CHyprSignalListener                                    s_workspaceMovedListener;
+static CHyprSignalListener                                    s_configReloadListener;
+static CHyprSignalListener                                    s_monitorRemovedListener;
+static CHyprSignalListener                                    s_monitorDestroyListener;
+static CHyprSignalListener                                    s_layoutChangedListener;
+static CHyprSignalListener                                    s_cursorShapeListener;
 static hyprtail::compat::StatusCommand                        s_statusCommand;
-static hyprtail::cfg::SValues                                s_config;
-static hyprtail::CFileWatch                                  s_fileWatch;
-static std::unordered_map<Monitor::CMonitor*, SMonitorFrame> s_monFrame;
+static hyprtail::cfg::SValues                                 s_config;
+static hyprtail::CFileWatch                                   s_fileWatch;
+static std::unordered_map<Monitor::CMonitor*, SMonitorFrame>  s_monFrame;
 // Each enabled monitor's logical box at the last layout check, to tell a real
 // layout change from an arrange() that changed nothing (onLayoutChanged).
-static std::unordered_map<Monitor::CMonitor*, CBox>          s_layout;
+static std::unordered_map<Monitor::CMonitor*, CBox> s_layout;
 
-static double                                                msSinceEpoch(const Time::steady_tp& tp) {
+static double                                       msSinceEpoch(const Time::steady_tp& tp) {
     return std::chrono::duration<double, std::milli>(tp - s_epoch).count();
 }
 
@@ -148,7 +146,7 @@ static bool appRuleSuppressed() {
     if (!w || !w->m_ruleApplicator)
         return false;
     const auto& props = w->m_ruleApplicator->m_otherProps.props;
-    const auto  it     = props.find(s_noTrailEffectIdx);
+    const auto  it    = props.find(s_noTrailEffectIdx);
     if (it == props.end() || !it->second)
         return false;
     return hyprtail::params::ruleTruthy(it->second->effect);
@@ -331,10 +329,10 @@ static void runLifecycle(const PHLMONITOR& pMonitor) {
     const Vector2D pos = Pointer::mgr()->position();
     noteMotion(pos, nowMs);
 
-    const bool                hidden      = cursorHidden();
-    auto&                     mf          = s_monFrame[pMonitor.get()];
-    std::vector<SLayerDraw>   draws;
-    bool                      skipped = false;
+    const bool              hidden = cursorHidden();
+    auto&                   mf     = s_monFrame[pMonitor.get()];
+    std::vector<SLayerDraw> draws;
+    bool                    skipped = false;
 
     for (auto& lp : p.layers) {
         auto& l      = *lp;
@@ -351,8 +349,7 @@ static void runLifecycle(const PHLMONITOR& pMonitor) {
                 // layer's fade: stopped moving, everything faded.
                 const bool olderNode = l.topology() == eTopology::PATH;
                 if (const auto b = (p.gpuFailed || p.source->isSettled(nowMs, l.res.fadeMs)) ? std::nullopt : p.source->visibleBounds(nowMs, l.res.fadeMs, olderNode))
-                    cur = CBox{b->x1 - extent - pMonitor->m_position.x, b->y1 - extent - pMonitor->m_position.y, (b->x2 - b->x1) + 2.0 * extent,
-                               (b->y2 - b->y1) + 2.0 * extent};
+                    cur = CBox{b->x1 - extent - pMonitor->m_position.x, b->y1 - extent - pMonitor->m_position.y, (b->x2 - b->x1) + 2.0 * extent, (b->y2 - b->y1) + 2.0 * extent};
             } else if (!suppressed() && quadInWindow(l, nowMs))
                 cur = quadBoxLocal(pos, extent, pMonitor->m_position);
         }
@@ -474,7 +471,7 @@ static void hkRenderSoftwareCursorsFor(void* thisptr, PHLMONITOR pMonitor, const
         });
     }
 
-    (*(origRenderSoftwareCursorsFor)s_cursorHook->m_original)(thisptr, pMonitor, now, damage, overridePos, screencopy, forceRender);
+    reinterpret_cast<origRenderSoftwareCursorsFor>(s_cursorHook->m_original)(thisptr, pMonitor, now, damage, overridePos, screencopy, forceRender);
 }
 
 // Bezier warp interpolation (SPEC §13.10, warp = "curve"): inserts nodes on
@@ -491,15 +488,15 @@ static void insertWarpCurve(SPreset& p, const Vector2D& to, double nowMs) {
     // A copy: insert() below replaces what newest() refers to. Stays the
     // pre-warp state through the whole loop.
     const SCursorNode prev = p.source->newest();
-    const SVec2f p0   = prev.posPx;
-    const SVec2f p2{sc<float>(to.x), sc<float>(to.y)};
-    const float  chord = std::hypot(p2.x - p0.x, p2.y - p0.y);
+    const SVec2f      p0   = prev.posPx;
+    const SVec2f      p2{sc<float>(to.x), sc<float>(to.y)};
+    const float       chord = std::hypot(p2.x - p0.x, p2.y - p0.y);
 
     // Control point along the incoming velocity, for tangent continuity at
     // p0. Zero velocity (a fresh segment) falls back to the chord's
     // midpoint, which makes the quadratic Bezier degenerate to a straight
     // line -- no special-casing needed.
-    SVec2f       p1 = {(p0.x + p2.x) / 2.F, (p0.y + p2.y) / 2.F};
+    SVec2f p1 = {(p0.x + p2.x) / 2.F, (p0.y + p2.y) / 2.F};
     if (const float speed = std::hypot(prev.velocity.x, prev.velocity.y); speed > 1e-6F)
         p1 = {p0.x + prev.velocity.x / speed * chord * 0.5F, p0.y + prev.velocity.y / speed * chord * 0.5F};
 
@@ -531,7 +528,7 @@ static void hkControllerWarpTo(const void* thisptr, const Vector2D& pos, bool fo
     Vector2D from;
     hyprtail::diag::guard("warp-hook-pre", [&] { from = Pointer::mgr()->position(); });
 
-    (*(origControllerWarpTo)s_warpHook->m_original)(thisptr, pos, force);
+    reinterpret_cast<origControllerWarpTo>(s_warpHook->m_original)(thisptr, pos, force);
 
     hyprtail::diag::guard("warp-hook", [&] {
         // Actual result, not the target: with cursor:no_warps nothing moves.
@@ -569,7 +566,7 @@ static void hkControllerWarpTo(const void* thisptr, const Vector2D& pos, bool fo
 // per-element region Pass.cpp:193-194 would normally compute. See NOTES
 // "Phase 7" for the full trace.
 static bool hkSaveBufferForMirror(void* thisptr, const CBox& box) {
-    const bool ok = (*(origSaveBufferForMirror)s_captureHook->m_original)(thisptr, box);
+    const bool ok = reinterpret_cast<origSaveBufferForMirror>(s_captureHook->m_original)(thisptr, box);
 
     if (!g_pHyprRenderer || !s_preset)
         return ok;
@@ -625,7 +622,7 @@ static void onRenderStageInternal(eRenderStage stage) {
             hyprtail::diag::report(
                 eSeverity::WARN, "hook:capture:" + pMonitor->m_name,
                 std::format("the screenshare-exclude hook didn't fire for {} this render; falling back to not drawing there while it needs a mirror/capture copy.",
-                           pMonitor->m_name));
+                            pMonitor->m_name));
         }
         return;
     }
@@ -772,7 +769,7 @@ static void onLayoutChanged() {
             const auto it = s_layout.find(entry.first);
             return it == s_layout.end() || !(it->second == entry.second);
         });
-        s_layout = std::move(now);
+        s_layout           = std::move(now);
 
         if (!changed || !s_preset)
             return;
@@ -885,7 +882,6 @@ static CFunctionHook* installHook(void* target, void* detour) {
     return nullptr;
 }
 
-
 // Hooks degrade instead of refusing to load: each failure is reported with
 // what stops working.
 static void installHooks() {
@@ -900,16 +896,16 @@ static void installHooks() {
     // (straight sweep).
     s_warpHook = installHook(pmf_address(&Pointer::CPointerController::warpTo), reinterpret_cast<void*>(&hkControllerWarpTo));
     if (!s_warpHook)
-        hyprtail::diag::report(eSeverity::WARN, "hook:warp",
-                               "could not hook CPointerController::warpTo. Warps will draw a connecting line instead of breaking the trail.");
+        hyprtail::diag::report(eSeverity::WARN, "hook:warp", "could not hook CPointerController::warpTo. Warps will draw a connecting line instead of breaking the trail.");
 
     // Screenshare exclude (SPEC §13.12). Without it exclude mode degrades to
     // not drawing on any monitor that needs a mirror/capture copy, same as
     // the RENDER_POST self-check's own fallback (onRenderStageInternal).
     s_captureHook = installHook(pmf_address(&Render::GL::CHyprOpenGLImpl::saveBufferForMirror), reinterpret_cast<void*>(&hkSaveBufferForMirror));
     if (!s_captureHook)
-        hyprtail::diag::report(eSeverity::WARN, "hook:capture",
-                               "could not hook CHyprOpenGLImpl::saveBufferForMirror. screenshare = \"exclude\" degrades to not drawing on monitors that need a mirror/capture copy.");
+        hyprtail::diag::report(
+            eSeverity::WARN, "hook:capture",
+            "could not hook CHyprOpenGLImpl::saveBufferForMirror. screenshare = \"exclude\" degrades to not drawing on monitors that need a mirror/capture copy.");
 }
 
 // Make a render happen soon, so a pending shader compiles (GL is only
@@ -945,7 +941,7 @@ static std::pair<std::string, std::string> layerShaderPaths(size_t index) {
 static void reloadShaders() {
     std::vector<std::filesystem::path> watch;
     for (size_t i = 0; i < s_preset->layers.size(); ++i) {
-        auto&      l            = s_preset->layers[i];
+        auto& l                 = s_preset->layers[i];
         const auto [vert, frag] = layerShaderPaths(i);
         l->slot.reload(vert, frag, watch);
     }
@@ -1016,10 +1012,10 @@ static void applyPendingState() {
     // unknown layer are one batched warning; entries for a known layer are
     // validated per-name/type/range in CLayer::resolve().
     {
-        auto        parsed = hyprtail::params::parseParamsString(s_config.params);
-        std::string unknownLayers;
+        auto                                            parsed = hyprtail::params::parseParamsString(s_config.params);
+        std::string                                     unknownLayers;
         std::vector<std::map<std::string, std::string>> perLayer(p.layers.size());
-        std::map<std::string, std::string>               sourceParams; // "source:<name>=<value>", the source's own
+        std::map<std::string, std::string>              sourceParams; // "source:<name>=<value>", the source's own
         for (const auto& e : parsed.entries) {
             if (e.layer == hyprtail::source::KEY_PREFIX) {
                 sourceParams[e.name] = e.value;
@@ -1027,7 +1023,7 @@ static void applyPendingState() {
             }
             const auto it = std::ranges::find_if(p.layers, [&](const auto& l) { return l->name() == e.layer; });
             if (it == p.layers.end()) {
-                if (unknownLayers.find(std::format(" \"{}\"", e.layer)) == std::string::npos)
+                if (!unknownLayers.contains(std::format(" \"{}\"", e.layer)))
                     unknownLayers += std::format(" \"{}\"", e.layer);
                 continue;
             }
@@ -1116,12 +1112,12 @@ static hyprtail::status::SSnapshot statusSnapshot() {
     const double nowMs = msSinceEpoch(Time::steadyNow());
 
     if (s_preset) {
-        const auto& p             = *s_preset;
-        s.source.kind             = std::string{p.source->kind()};
-        s.source.nodes            = p.source->size();
-        s.source.capacity         = p.source->capacity();
-        s.source.generation       = p.source->generation();
-        s.source.moving           = p.source->needsContinuousUpload();
+        const auto& p         = *s_preset;
+        s.source.kind         = std::string{p.source->kind()};
+        s.source.nodes        = p.source->size();
+        s.source.capacity     = p.source->capacity();
+        s.source.generation   = p.source->generation();
+        s.source.moving       = p.source->needsContinuousUpload();
         s.source.pendingBreak = p.pendingBreak;
         s.source.warpMode     = hyprtail::cfg::warpModeName(p.warpMode);
         s.source.gpuFailed    = p.gpuFailed;
@@ -1152,12 +1148,12 @@ static hyprtail::status::SSnapshot statusSnapshot() {
             continue;
         hyprtail::status::SMonitor out{.name = m->m_name, .needsCopyFB = m->needsACopyFB()};
         if (const auto it = s_monFrame.find(m.get()); it != s_monFrame.end()) {
-            const auto& mf     = it->second;
-            out.renders        = mf.renderSerial;
-            out.hookRuns       = mf.hookRuns;
-            out.fallbackRuns   = mf.fallbackRuns;
-            out.draws          = mf.draws;
-            out.emptySkips     = mf.emptySkips;
+            const auto& mf      = it->second;
+            out.renders         = mf.renderSerial;
+            out.hookRuns        = mf.hookRuns;
+            out.fallbackRuns    = mf.fallbackRuns;
+            out.draws           = mf.draws;
+            out.emptySkips      = mf.emptySkips;
             out.captureFallback = mf.captureHookUnavailable;
         }
         if (s_preset) {
@@ -1211,7 +1207,7 @@ static PLUGIN_DESCRIPTION_INFO pluginInit() {
     // preset (default "prefab:subtle"), and the first prepareLayers() (the first
     // render, GL current) builds it -- the same path a later preset switch
     // takes, see applyPendingState().
-    s_preset = makeUnique<SPreset>(s_config.capacity, seedBase);
+    s_preset                        = makeUnique<SPreset>(s_config.capacity, seedBase);
     s_preset->lastPos               = Pointer::mgr()->position();
     s_preset->lastMotionMs          = 0.0;
     s_preset->lastCursorHotspot     = Pointer::mgr()->hotspot();
@@ -1353,6 +1349,9 @@ static bool loadedFromLuaConfig(HANDLE self) {
     const CPlugin* me = g_pPluginSystem->getPluginByHandle(self);
     if (!me)
         return false;
+    // The type() == CONFIG_LUA check above is what makes this downcast valid
+    // (IConfigManager::type, ConfigManager.hpp:41).
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-static-cast-downcast)
     const auto& list = static_cast<Config::Lua::CConfigManager*>(Config::mgr().get())->m_registeredPlugins;
     return std::ranges::find(list, me->m_path) != list.end();
 }
@@ -1366,10 +1365,9 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     // which is how a plugin refuses to load (Hyprland catches it and ejects
     // the plugin, PluginSystem.cpp:113-126).
     if (const CPlugin* other = findOtherInstance(handle)) {
-        const bool  viaHyprpm = other->m_path.starts_with("/var/cache/hyprpm/");
-        const auto  msg       = std::format("another hyprtail ({} {}) is already loaded from {}. Unload it first ({}), then load this one.", other->m_name,
-                                            other->m_version, other->m_path,
-                                            viaHyprpm ? "hyprpm disable hyprtail, or hyprctl plugin unload " + other->m_path : "hyprctl plugin unload " + other->m_path);
+        const bool viaHyprpm = other->m_path.starts_with("/var/cache/hyprpm/");
+        const auto msg = std::format("another hyprtail ({} {}) is already loaded from {}. Unload it first ({}), then load this one.", other->m_name, other->m_version,
+                                     other->m_path, viaHyprpm ? "hyprpm disable hyprtail, or hyprctl plugin unload " + other->m_path : "hyprctl plugin unload " + other->m_path);
         // Exactly one notification: Hyprland's own for config loads, ours
         // otherwise.
         if (!loadedFromLuaConfig(handle))
@@ -1387,11 +1385,10 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     // other instance sharing the same state directory (e.g. a nested one)
     // is still in its own run, not a crash: ignored, not refused.
     const std::string compositorHash = __hyprland_api_get_hash();
-    if (const auto marker = hyprtail::crashguard::readMarker();
-        marker && hyprtail::crashguard::indicatesEarlyDeath(*marker, {HYPRTAIL_REV, compositorHash})) {
+    if (const auto marker = hyprtail::crashguard::readMarker(); marker && hyprtail::crashguard::indicatesEarlyDeath(*marker, {HYPRTAIL_REV, compositorHash})) {
         const auto errLog = hyprtail::stateDir() / "errors.log";
-        const auto msg     = std::format("refusing to load: the previous session (pid {}, instance {}) of this build never reached a clean unload. See {}. Delete {} to load anyway.",
-                                          marker->pid, marker->instanceSignature, errLog.string(), hyprtail::crashguard::markerPath().string());
+        const auto msg = std::format("refusing to load: the previous session (pid {}, instance {}) of this build never reached a clean unload. See {}. Delete {} to load anyway.",
+                                     marker->pid, marker->instanceSignature, errLog.string(), hyprtail::crashguard::markerPath().string());
         HyprlandAPI::addNotification(handle, "[hyprtail] " + msg, CHyprColor{1.0f, 0.2f, 0.2f, 1.0f}, 15000);
         throw std::runtime_error("[hyprtail] " + msg);
     }

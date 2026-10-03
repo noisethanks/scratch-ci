@@ -139,7 +139,7 @@ class ISource {
     virtual void resize(size_t capacity) = 0;
 
     // Drop every node (capacity unchanged). Bumps the generation.
-    virtual void clear() = 0;
+    virtual void   clear() = 0;
 
     virtual size_t size() const     = 0;
     virtual size_t capacity() const = 0;
@@ -197,21 +197,21 @@ class CTrailRing final : public ISource {
     // counter.
     CTrailRing(size_t capacity, uint64_t seedBase);
 
-    std::string_view   kind() const override;
+    std::string_view kind() const override;
 
     // segmentStart: don't connect to the previous node (no segment drawn
     // between them, no velocity or distance across the gap).
-    void               insert(const SVec2f& pos, double nowMs, bool segmentStart) override;
+    void insert(const SVec2f& pos, double nowMs, bool segmentStart) override;
 
     // Points only change on insert, so there is nothing to advance.
-    void               tick(double nowMs, double dt) override;
+    void tick(double nowMs, double dt) override;
 
     // The ring has no settings.
-    void               configure(const std::map<std::string, double>& values) override;
+    void configure(const std::map<std::string, double>& values) override;
 
     // New capacity, keeping the newest min(size(), capacity) nodes in order.
     // Bumps the generation.
-    void               resize(size_t capacity) override;
+    void resize(size_t capacity) override;
 
     // Bumps the generation.
     void               clear() override;
@@ -234,7 +234,7 @@ class CTrailRing final : public ISource {
     // Birth times are monotonic in insertion order, so the visible nodes are
     // a suffix of the ring: walks newest -> oldest and stops at the first
     // faded node.
-    size_t visibleCount(double nowMs, double fadeMs) const override;
+    size_t                      visibleCount(double nowMs, double fadeMs) const override;
 
     std::optional<STrailBounds> visibleBounds(double nowMs, double fadeMs, bool includeOlderNode = true) const override;
 
@@ -244,7 +244,7 @@ class CTrailRing final : public ISource {
 
   private:
     // i-th newest node.
-    const SCursorNode& at(size_t i) const;
+    const SCursorNode&       at(size_t i) const;
 
     std::vector<SCursorNode> m_nodes;
     size_t                   m_head       = 0; // next write index

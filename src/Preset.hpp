@@ -47,13 +47,13 @@ namespace hyprtail::preset {
     // (a built-in name lookup, or a compiled program's declared params) and
     // are checked one level up, in load() and CLayer::resolve() respectively.
     struct SManifest {
-        std::string                                                description;
-        std::vector<std::string>                                   layers; // draw order, first = bottom
-        std::map<std::string, std::map<std::string, std::string>>  layerKeys; // layer name -> (key -> raw value text, incl. "vertex"/"fragment")
-        std::string                                                sourceKind{source::DEFAULT_KIND};
-        std::map<std::string, std::string>                         sourceKeys; // "source:<name>" -> raw value text
+        std::string                                               description;
+        std::vector<std::string>                                  layers;    // draw order, first = bottom
+        std::map<std::string, std::map<std::string, std::string>> layerKeys; // layer name -> (key -> raw value text, incl. "vertex"/"fragment")
+        std::string                                               sourceKind{source::DEFAULT_KIND};
+        std::map<std::string, std::string>                        sourceKeys; // "source:<name>" -> raw value text
 
-        bool operator==(const SManifest&) const = default;
+        bool                                                      operator==(const SManifest&) const = default;
     };
 
     std::expected<SManifest, std::string> parse(std::string_view text);
@@ -67,7 +67,7 @@ namespace hyprtail::preset {
         std::string                        sourceKind{source::DEFAULT_KIND};
         std::map<std::string, std::string> sourceDefaults; // source settings from the manifest
 
-        bool operator==(const SResolved&) const = default;
+        bool                               operator==(const SResolved&) const = default;
     };
 
     // Resolves `name` ("prefab:<name>" or a bare "<name>", see above). A

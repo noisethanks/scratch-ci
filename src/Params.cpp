@@ -101,7 +101,7 @@ namespace hyprtail::params {
             return false;
         if (!std::ranges::all_of(name, [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; }))
             return false;
-        return !name.starts_with("ht_") && !name.starts_with("gl_") && name.find("__") == std::string_view::npos;
+        return !name.starts_with("ht_") && !name.starts_with("gl_") && !name.contains("__");
     }
 
     std::expected<SValue, std::string> parseValue(eType type, std::string_view text) {
@@ -297,7 +297,7 @@ namespace hyprtail::params {
                 const auto n = parseNumber(std::string_view{s}.substr(i, j - i));
                 if (!n)
                     return std::unexpected(std::format("bad number \"{}\"", s.substr(i, j - i)));
-                toks.push_back({.op = 0, .operand = {.kind = SToken::NUMBER, .number = *n}});
+                toks.push_back({.op = 0, .operand = {.kind = SToken::eKind::NUMBER, .number = *n}});
                 i = j;
                 continue;
             }
@@ -305,7 +305,7 @@ namespace hyprtail::params {
                 size_t j = i;
                 while (j < s.size() && (std::isalnum(static_cast<unsigned char>(s[j])) || s[j] == '_'))
                     ++j;
-                toks.push_back({.op = 0, .operand = {.kind = SToken::NAME, .name = s.substr(i, j - i)}});
+                toks.push_back({.op = 0, .operand = {.kind = SToken::eKind::NAME, .name = s.substr(i, j - i)}});
                 i = j;
                 continue;
             }
@@ -319,10 +319,10 @@ namespace hyprtail::params {
         const auto prec = [](char op) { return op == '*' || op == '/' ? 2 : 1; };
         const auto kind = [](char op) {
             switch (op) {
-                case '+': return SToken::ADD;
-                case '-': return SToken::SUB;
-                case '*': return SToken::MUL;
-                default: return SToken::DIV;
+                case '+': return SToken::eKind::ADD;
+                case '-': return SToken::eKind::SUB;
+                case '*': return SToken::eKind::MUL;
+                default: return SToken::eKind::DIV;
             }
         };
         std::vector<char> ops;
@@ -331,7 +331,7 @@ namespace hyprtail::params {
             if (t.op == 0) {
                 if (!expectOperand)
                     return std::unexpected("missing operator between operands");
-                if (t.operand.kind == SToken::NAME && std::ranges::find(e.m_names, t.operand.name) == e.m_names.end())
+                if (t.operand.kind == SToken::eKind::NAME && std::ranges::find(e.m_names, t.operand.name) == e.m_names.end())
                     e.m_names.push_back(t.operand.name);
                 e.m_rpn.push_back(t.operand);
                 expectOperand = false;
@@ -374,11 +374,11 @@ namespace hyprtail::params {
     std::expected<double, std::string> CExpr::eval(const std::function<std::optional<double>(std::string_view)>& lookup) const {
         std::vector<double> stack;
         for (const auto& t : m_rpn) {
-            if (t.kind == SToken::NUMBER) {
+            if (t.kind == SToken::eKind::NUMBER) {
                 stack.push_back(t.number);
                 continue;
             }
-            if (t.kind == SToken::NAME) {
+            if (t.kind == SToken::eKind::NAME) {
                 const auto v = lookup(t.name);
                 if (!v)
                     return std::unexpected(std::format("unknown parameter \"{}\" (or not a float, int or bool)", t.name));
@@ -392,10 +392,10 @@ namespace hyprtail::params {
             const double a = stack.back();
             stack.pop_back();
             switch (t.kind) {
-                case SToken::ADD: stack.push_back(a + b); break;
-                case SToken::SUB: stack.push_back(a - b); break;
-                case SToken::MUL: stack.push_back(a * b); break;
-                case SToken::DIV:
+                case SToken::eKind::ADD: stack.push_back(a + b); break;
+                case SToken::eKind::SUB: stack.push_back(a - b); break;
+                case SToken::eKind::MUL: stack.push_back(a * b); break;
+                case SToken::eKind::DIV:
                     if (b == 0.0)
                         return std::unexpected("division by zero");
                     stack.push_back(a / b);

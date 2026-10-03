@@ -40,10 +40,10 @@ namespace hyprtail::status {
     struct SSnapshot {
         std::string rev, builtHash, runningHash, preset, screenshare;
         bool        cursorHook = false, warpHook = false, captureHook = false;
-        uint64_t    renders    = 0;
+        uint64_t    renders = 0;
 
         struct {
-            std::string kind = "pointer"; // the preset's `source`
+            std::string kind  = "pointer"; // the preset's `source`
             size_t      nodes = 0, capacity = 0;
             uint64_t    generation   = 0;
             bool        moving       = false; // the source's points are still moving (spring)

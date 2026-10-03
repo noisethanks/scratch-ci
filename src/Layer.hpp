@@ -18,15 +18,15 @@ namespace hyprtail {
         std::string                        vertPath, fragPath;       // preset's own per-stage override, absolute path, "" = use *Builtin above (SPEC §13.7)
         std::map<std::string, std::string> defaults;                 // param name -> value text, from the preset manifest
 
-        bool operator==(const SLayerSpec&) const = default;
+        bool                               operator==(const SLayerSpec&) const = default;
     };
 
     // Values for the active program, recomputed when the program or the
     // overrides change.
     struct SResolved {
-        uint64_t                                            generation = UINT64_MAX; // slot generation resolved for
-        uint64_t                                            overrides  = UINT64_MAX; // overrides version resolved for
-        std::vector<std::pair<params::SDecl, params::SValue>> values;                // the program's params
+        uint64_t                                              generation = UINT64_MAX; // slot generation resolved for
+        uint64_t                                              overrides  = UINT64_MAX; // overrides version resolved for
+        std::vector<std::pair<params::SDecl, params::SValue>> values;                  // the program's params
 
         // Reserved lifecycle parameters.
         bool   enabled        = true;
@@ -36,11 +36,11 @@ namespace hyprtail {
         double durationMs     = 1500.0;
 
         // Largest padding expression of the program, px (without damage_padding).
-        float  paddingPx = 0.F;
+        float paddingPx = 0.F;
 
         // Instanced topology: copies drawn per node (K, SPEC §13.3), 1..64.
         // 0 for other topologies.
-        int    instances = 0;
+        int instances = 0;
     };
 
     class CLayer {
@@ -57,27 +57,27 @@ namespace hyprtail {
         // unknown name is reported (params:<layer>) and ignored, matching
         // the manifest's own "is an error" language (SPEC §13.7/§13.5) for
         // both tiers.
-        void               setParamOverrides(std::map<std::string, std::string> overrides);
+        void setParamOverrides(std::map<std::string, std::string> overrides);
 
         // Recompute res if the program or the overrides changed. Reports bad
         // values (params:<layer>) and keeps the declared default for them.
-        void               resolve();
-        bool               resolved() const; // res matches the active program
+        void resolve();
+        bool resolved() const; // res matches the active program
 
         // "enabled" from the overrides alone, usable before any program is
         // active (a disabled layer isn't compiled).
-        bool               enabledSetting() const;
+        bool              enabledSetting() const;
 
-        shader::eTopology  topology() const;
+        shader::eTopology topology() const;
 
-        CShaderSlot        slot;
-        CMonitorDamage     damage;
-        SResolved          res;
+        CShaderSlot       slot;
+        CMonitorDamage    damage;
+        SResolved         res;
 
         // Set after an unrecoverable failure (built-in shader, GL,
         // exception): the layer clears its last box once and stays off
         // until the plugin is reloaded.
-        bool               disabled = false;
+        bool disabled = false;
 
       private:
         std::string                        m_name;

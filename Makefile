@@ -77,7 +77,7 @@ CXXFLAGS   += -I$(OUT)
 # DEV value out/ was built with, see its rule.
 BUILD_MODE := $(OUT)/build-mode
 
-.PHONY: all clean load unload smoke test-unit test-compat check-pin check-headers check-log FORCE
+.PHONY: all clean load unload smoke test-unit test-compat format lint check-pin check-headers check-log FORCE
 
 all: $(OUTPUT)
 
@@ -204,6 +204,41 @@ test-unit:
 test-compat: | $(HEADER_CHECK)
 	@mkdir -p $(OUT)/compat
 	$(CXX) $(CXXFLAGS) -c tests/compat/compat.cpp -o $(OUT)/compat/compat.o
+
+# Formatting and static analysis (.clang-format, .clang-tidy). Dev-only tools,
+# none of them is needed to build: clang-format, clang-tidy (with
+# run-clang-tidy) and compiledb (`pip install compiledb`, ideally in a venv).
+#
+# `make format` rewrites the sources in place.
+#
+# `make lint` follows the selected build mode (`make lint`, `make DEV=1 lint
+# [HYPRLAND_DIR=...]`). The compile database comes from a dry run of this
+# Makefile (compiledb -n), so it carries the real flags. It runs with
+# CXX=clang++ whatever CXX is: the gcc-only flags (--no-gnu-unique) would break
+# clang-tidy. Headers are filtered to this repo's: .clang-tidy's
+# HeaderFilterRegex also matches Hyprland's .hpp files. tests/unit/unit.cpp is
+# analysed separately: test-unit compiles it together with six sources in one
+# command, which compiledb can't turn into per-file entries (it files the whole
+# command under the last source, replacing that source's real entry).
+FORMAT_FILES := $(wildcard src/*.cpp src/*.hpp tests/*/*.cpp tests/*/*.hpp)
+COMPILEDB    ?= compiledb
+LINT_DB      := $(OUT)/lint
+LINT_HEADERS := ^$(CURDIR)/(src|tests)/
+
+format:
+	@command -v clang-format >/dev/null || { echo "error: clang-format not found" >&2; exit 1; }
+	clang-format -i $(FORMAT_FILES)
+
+lint: $(REV_HEADER) | $(HEADER_CHECK)
+	@for t in $(COMPILEDB) clang++ clang-tidy run-clang-tidy; do \
+		command -v $$t >/dev/null || { echo "error: $$t not found (dev-only tool; compiledb: pip install compiledb, or COMPILEDB=/path/to/compiledb)" >&2; exit 1; }; \
+	done
+	@mkdir -p $(LINT_DB)
+	$(COMPILEDB) -n -o $(LINT_DB)/compile_commands.json $(MAKE) -B CXX=clang++ all test-compat
+	@status=0; \
+	run-clang-tidy -p $(LINT_DB) -quiet -header-filter='$(LINT_HEADERS)' '(src|tests)/.*\.cpp$$' || status=1; \
+	clang-tidy -quiet -header-filter='$(LINT_HEADERS)' tests/unit/unit.cpp -- -std=c++26 $$(pkg-config --cflags hyprutils 2>/dev/null) || status=1; \
+	exit $$status
 
 # Lifecycle smoke test (SPEC §10): load, duplicate refusal, monitor hotplug,
 # unload and reload of the plugin in a headless Hyprland started from the

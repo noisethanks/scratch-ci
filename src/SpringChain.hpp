@@ -35,24 +35,24 @@ class CSpringChainSource final : public ISource {
   public:
     CSpringChainSource(size_t capacity, uint64_t seedBase);
 
-    std::string_view   kind() const override;
-    void               insert(const SVec2f& pos, double nowMs, bool segmentStart) override;
-    void               tick(double nowMs, double dt) override;
-    void               configure(const std::map<std::string, double>& values) override;
-    void               resize(size_t capacity) override;
-    void               clear() override;
+    std::string_view            kind() const override;
+    void                        insert(const SVec2f& pos, double nowMs, bool segmentStart) override;
+    void                        tick(double nowMs, double dt) override;
+    void                        configure(const std::map<std::string, double>& values) override;
+    void                        resize(size_t capacity) override;
+    void                        clear() override;
 
-    size_t             size() const override;
-    size_t             capacity() const override;
-    bool               empty() const override;
-    const SCursorNode& newest() const override;
-    uint64_t           generation() const override;
-    double             newestBirthMs() const override;
-    void               orderedCopy(std::vector<SGpuNode>& out, double refMs) const override;
-    bool               needsContinuousUpload() const override;
-    size_t             visibleCount(double nowMs, double fadeMs) const override;
+    size_t                      size() const override;
+    size_t                      capacity() const override;
+    bool                        empty() const override;
+    const SCursorNode&          newest() const override;
+    uint64_t                    generation() const override;
+    double                      newestBirthMs() const override;
+    void                        orderedCopy(std::vector<SGpuNode>& out, double refMs) const override;
+    bool                        needsContinuousUpload() const override;
+    size_t                      visibleCount(double nowMs, double fadeMs) const override;
     std::optional<STrailBounds> visibleBounds(double nowMs, double fadeMs, bool includeOlderNode = true) const override;
-    bool               isSettled(double nowMs, double fadeMs) const override;
+    bool                        isSettled(double nowMs, double fadeMs) const override;
 
   private:
     struct SPoint {
@@ -64,7 +64,7 @@ class CSpringChainSource final : public ISource {
     void reseed(const SVec2f& pos, double nowMs);
 
     // Rebuilds m_nodes from the points and activeMs, and bumps the generation.
-    void rebuild();
+    void                               rebuild();
 
     size_t                             m_capacity = 0;
     uint64_t                           m_seedBase = 0;
@@ -73,8 +73,8 @@ class CSpringChainSource final : public ISource {
     std::vector<SCursorNode>           m_nodes;            // head first, derived from m_points
     SVec2f                             m_target;           // where the head is chasing
     SCursorNode                        m_last{};           // the last insert, newest()
-    double                             m_activeMs = 0.0;
-    bool                               m_unsettled = false; // a point is still moving, or chasing a target it hasn't reached
+    double                             m_activeMs   = 0.0;
+    bool                               m_unsettled  = false; // a point is still moving, or chasing a target it hasn't reached
     uint64_t                           m_generation = 0;
     Hyprutils::Animation::SSpringCurve m_curve;
     float                              m_ageStepMs = spring::AGE_STEP_MS;

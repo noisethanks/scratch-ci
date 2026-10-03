@@ -31,7 +31,7 @@ namespace hyprtail::diag {
         // The error file holds the current session (started fresh in init; the
         // previous session's file is kept as errors.log.1) and stops growing
         // at this size.
-        constexpr size_t   ERROR_FILE_CAP_BYTES = 256 * 1024;
+        constexpr size_t   ERROR_FILE_CAP_BYTES = 256uz * 1024;
 
         constexpr size_t   NOTIFY_MAX_LINES = 8;
         constexpr size_t   NOTIFY_MAX_CHARS = 600;
@@ -40,9 +40,9 @@ namespace hyprtail::diag {
 
         // A batch nobody ends (e.g. no monitor renders, so a pending shader
         // never compiles) ends after this.
-        constexpr int      BATCH_TIMEOUT_MS = 2000;
+        constexpr int BATCH_TIMEOUT_MS = 2000;
         // Headlines listed in a batch summary before "... and N more".
-        constexpr size_t   BATCH_MAX_LISTED = 3;
+        constexpr size_t BATCH_MAX_LISTED = 3;
 
         struct SPending {
             eSeverity   severity;
@@ -163,11 +163,11 @@ namespace hyprtail::diag {
 
             const bool       ok = HyprlandAPI::addNotificationV2(st.handle,
                                                                  {
-                                                               {"text", p.text},
-                                                               {"time", time},
-                                                               {"color", col},
-                                                               {"icon", err ? ICON_ERROR : ICON_WARNING},
-                                                           });
+                                                                     {"text", p.text},
+                                                                     {"time", time},
+                                                                     {"color", col},
+                                                                     {"icon", err ? ICON_ERROR : ICON_WARNING},
+                                                                 });
             if (!ok)
                 HyprlandAPI::addNotification(st.handle, p.text, col, sc<float>(time));
         }

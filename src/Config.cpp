@@ -53,7 +53,7 @@ namespace hyprtail::cfg {
 
         const SValues DEFAULTS{};
 
-        bool add(HANDLE handle, const SP<IValue>& v) {
+        bool          add(HANDLE handle, const SP<IValue>& v) {
             if (HyprlandAPI::addConfigValueV2(handle, v))
                 return true;
             diag::report(eSeverity::WARN, std::format("config:{}", v->name()), std::format("could not register config value {}; using its built-in default", v->name()));
@@ -77,7 +77,7 @@ namespace hyprtail::cfg {
         std::string checkEnum(const SP<CStringValue>& v, std::initializer_list<std::string_view> allowed, const std::string& fallback) {
             if (!v)
                 return fallback;
-            const auto val = v->value();
+            auto val = v->value();
             if (std::ranges::find(allowed, std::string_view{val}) != allowed.end()) {
                 diag::resetKey(std::format("config:{}", v->name()));
                 return val;
@@ -85,7 +85,7 @@ namespace hyprtail::cfg {
             std::string list;
             for (const auto& a : allowed)
                 list += (list.empty() ? "" : ", ") + std::string{a};
-            diag::report(eSeverity::WARN, std::format("config:{}", v->name()), std::format("{} = \"{}\" isn't one of {}; keeping \"{}\"", v->name(), val, list, fallback));
+            diag::report(eSeverity::WARN, std::format("config:{}", v->name()), std::format(R"({} = "{}" isn't one of {}; keeping "{}")", v->name(), val, list, fallback));
             return fallback;
         }
 
@@ -97,19 +97,23 @@ namespace hyprtail::cfg {
         // Ranges: see SPEC section 9.
         r.capacity =
             makeShared<CIntValue>("plugin:hyprtail:capacity", "max number of trail points kept", sc<Config::INTEGER>(DEFAULTS.capacity), SIntValueOptions{.min = 2, .max = 4096});
-        r.minSpacing = makeShared<CFloatValue>("plugin:hyprtail:min_spacing", "min pointer travel between trail points, logical px", DEFAULTS.minSpacingPx,
-                                               SFloatValueOptions{.min = 0.F, .max = 256.F});
-        r.warp = makeShared<CStringValue>("plugin:hyprtail:warp", "how the trail crosses a pointer warp: \"break\" (default), \"line\", or \"curve\" (SPEC section 13.10)",
-                                          warpModeName(DEFAULTS.warp));
+        r.minSpacing    = makeShared<CFloatValue>("plugin:hyprtail:min_spacing", "min pointer travel between trail points, logical px", DEFAULTS.minSpacingPx,
+                                                  SFloatValueOptions{.min = 0.F, .max = 256.F});
+        r.warp          = makeShared<CStringValue>("plugin:hyprtail:warp", R"(how the trail crosses a pointer warp: "break" (default), "line", or "curve" (SPEC section 13.10))",
+                                                   warpModeName(DEFAULTS.warp));
         r.damagePadding = makeShared<CFloatValue>("plugin:hyprtail:damage_padding", "extra damage padding on top of the stock extent and shader-declared padding, px",
                                                   DEFAULTS.damagePaddingPx, SFloatValueOptions{.min = 0.F, .max = 4096.F});
-        r.preset        = makeShared<CStringValue>("plugin:hyprtail:preset", "which preset to use (SPEC section 13.7): \"prefab:<name>\" (built-in: subtle, classic, jitter, spray, vivid, comet, embers, spring) or a bare \"<name>\" for <hyprtail root>/presets/<name>.conf", DEFAULTS.preset.c_str());
-        r.emitFrom      = makeShared<CStringValue>("plugin:hyprtail:emit_from",
-                                                    "where on the cursor image trail points are emitted from: \"hotspot\" (default), or a normalized \"x y\" position in "
-                                                    "the cursor image box, each in 0..1 (0 0 = top-left, 0.5 0.5 = center) (SPEC section 13.9)",
-                                                    "hotspot");
-        r.emitOffset    = makeShared<CVec2Value>("plugin:hyprtail:emit_offset", "fixed pixel offset added after emit_from, logical px, each component within +-128 (SPEC section 13.9)",
-                                               Config::VEC2{sc<float>(DEFAULTS.emitOffsetPx.x), sc<float>(DEFAULTS.emitOffsetPx.y)});
+        r.preset   = makeShared<CStringValue>("plugin:hyprtail:preset",
+                                              "which preset to use (SPEC section 13.7): \"prefab:<name>\" (built-in: subtle, classic, jitter, spray, vivid, comet, embers, spring) "
+                                              "or a bare \"<name>\" for <hyprtail root>/presets/<name>.conf",
+                                              DEFAULTS.preset.c_str());
+        r.emitFrom = makeShared<CStringValue>("plugin:hyprtail:emit_from",
+                                              "where on the cursor image trail points are emitted from: \"hotspot\" (default), or a normalized \"x y\" position in "
+                                              "the cursor image box, each in 0..1 (0 0 = top-left, 0.5 0.5 = center) (SPEC section 13.9)",
+                                              "hotspot");
+        r.emitOffset =
+            makeShared<CVec2Value>("plugin:hyprtail:emit_offset", "fixed pixel offset added after emit_from, logical px, each component within +-128 (SPEC section 13.9)",
+                                   Config::VEC2{sc<float>(DEFAULTS.emitOffsetPx.x), sc<float>(DEFAULTS.emitOffsetPx.y)});
         // No SVec2ValueOptions::validator: at the pin neither provider applies
         // a CVec2Value validator (LuaConfigUtils.cpp:41-42, legacy
         // ConfigManager.cpp:501-502 take only defaultVal()), so the bound is
@@ -120,17 +124,16 @@ namespace hyprtail::cfg {
         // literals (see the SRegistered comment above), so these are
         // spelled out rather than built with std::format.
         static constexpr std::array<const char*, 4> LAYER_VERT_KEYS{"plugin:hyprtail:layer1_vertex", "plugin:hyprtail:layer2_vertex", "plugin:hyprtail:layer3_vertex",
-                                                                     "plugin:hyprtail:layer4_vertex"};
+                                                                    "plugin:hyprtail:layer4_vertex"};
         static constexpr std::array<const char*, 4> LAYER_FRAG_KEYS{"plugin:hyprtail:layer1_fragment", "plugin:hyprtail:layer2_fragment", "plugin:hyprtail:layer3_fragment",
-                                                                     "plugin:hyprtail:layer4_fragment"};
+                                                                    "plugin:hyprtail:layer4_fragment"};
         for (size_t i = 0; i < 4; ++i) {
             r.layerVertex[i]   = makeShared<CStringValue>(LAYER_VERT_KEYS[i], "vertex shader override for this layer of the preset, empty uses the preset's own shader", "");
             r.layerFragment[i] = makeShared<CStringValue>(LAYER_FRAG_KEYS[i], "fragment shader override for this layer of the preset, empty uses the preset's own shader", "");
         }
-        r.params = makeShared<CStringValue>("plugin:hyprtail:params", R"(per-layer parameter overrides: "<layer>:<name>=<value> ..." (SPEC section 13.5))", "");
-        r.screenshare =
-            makeShared<CStringValue>("plugin:hyprtail:screenshare", "\"exclude\" (default) to keep the trail out of monitor/region captures and mirrors, or \"include\"",
-                                     DEFAULTS.screenshare.c_str());
+        r.params      = makeShared<CStringValue>("plugin:hyprtail:params", R"(per-layer parameter overrides: "<layer>:<name>=<value> ..." (SPEC section 13.5))", "");
+        r.screenshare = makeShared<CStringValue>("plugin:hyprtail:screenshare", R"("exclude" (default) to keep the trail out of monitor/region captures and mirrors, or "include")",
+                                                 DEFAULTS.screenshare.c_str());
 
         bool ok = true;
         for (const SP<IValue>& v :
@@ -165,7 +168,7 @@ namespace hyprtail::cfg {
 
         {
             const auto text = checkEnum(r.warp, {"break", "line", "curve"}, warpModeName(previous.warp));
-            v.warp           = text == "line" ? eWarpMode::LINE : text == "curve" ? eWarpMode::CURVE : eWarpMode::BREAK;
+            v.warp          = text == "line" ? eWarpMode::LINE : text == "curve" ? eWarpMode::CURVE : eWarpMode::BREAK;
         }
         if (r.preset)
             v.preset = r.preset->value();
@@ -177,30 +180,30 @@ namespace hyprtail::cfg {
                 v.emitFromNorm = std::nullopt;
                 diag::resetKey(key);
             } else {
-                const auto  parsed = parseTwoFloats(text);
-                const auto  kept   = previous.emitFromNorm ? std::format("\"{} {}\"", previous.emitFromNorm->x, previous.emitFromNorm->y) : std::string{"\"hotspot\""};
+                const auto parsed = parseTwoFloats(text);
+                const auto kept   = previous.emitFromNorm ? std::format("\"{} {}\"", previous.emitFromNorm->x, previous.emitFromNorm->y) : std::string{"\"hotspot\""};
                 if (parsed && emitFromInRange(*parsed)) {
                     v.emitFromNorm = Vector2D{parsed->x, parsed->y};
                     diag::resetKey(key);
                 } else {
-                    diag::report(eSeverity::WARN, key,
-                                 std::format("plugin:hyprtail:emit_from = \"{}\" {}; keeping {}", text,
-                                             parsed ? "has a component outside 0..1" : "isn't \"hotspot\" or \"x y\"", kept));
+                    diag::report(
+                        eSeverity::WARN, key,
+                        std::format("plugin:hyprtail:emit_from = \"{}\" {}; keeping {}", text, parsed ? "has a component outside 0..1" : R"(isn't "hotspot" or "x y")", kept));
                     v.emitFromNorm = previous.emitFromNorm;
                 }
             }
         }
         if (r.emitOffset) {
-            const auto  vec = r.emitOffset->value();
-            const char* key = "config:plugin:hyprtail:emit_offset";
+            const auto  vec  = r.emitOffset->value();
+            const char* key  = "config:plugin:hyprtail:emit_offset";
             const auto  next = resolveEmitOffset(vec.x, vec.y, SPair{previous.emitOffsetPx.x, previous.emitOffsetPx.y});
             v.emitOffsetPx   = {next.x, next.y};
             if (emitOffsetInRange(vec.x, vec.y))
                 diag::resetKey(key);
             else
                 diag::report(eSeverity::WARN, key,
-                             std::format("plugin:hyprtail:emit_offset = {} {} is outside +-{} on an axis; keeping {} {}", vec.x, vec.y, EMIT_OFFSET_MAX_PX,
-                                         previous.emitOffsetPx.x, previous.emitOffsetPx.y));
+                             std::format("plugin:hyprtail:emit_offset = {} {} is outside +-{} on an axis; keeping {} {}", vec.x, vec.y, EMIT_OFFSET_MAX_PX, previous.emitOffsetPx.x,
+                                         previous.emitOffsetPx.y));
         }
 
         for (size_t i = 0; i < 4; ++i) {

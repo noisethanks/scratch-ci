@@ -23,13 +23,13 @@ static constexpr GLsizei NODE_STRIDE = sizeof(SGpuNode);
 // (GLES 3.0), which the shader reads as uint without conversion.
 static void attribFloats(GLuint loc, GLint components, size_t byteOffset, GLuint divisor) {
     glEnableVertexAttribArray(loc);
-    glVertexAttribPointer(loc, components, GL_FLOAT, GL_FALSE, NODE_STRIDE, (void*)byteOffset);
+    glVertexAttribPointer(loc, components, GL_FLOAT, GL_FALSE, NODE_STRIDE, reinterpret_cast<void*>(byteOffset));
     glVertexAttribDivisor(loc, divisor);
 }
 
 static void attribBits(GLuint loc, size_t byteOffset, GLuint divisor) {
     glEnableVertexAttribArray(loc);
-    glVertexAttribIPointer(loc, 1, GL_UNSIGNED_INT, NODE_STRIDE, (void*)byteOffset);
+    glVertexAttribIPointer(loc, 1, GL_UNSIGNED_INT, NODE_STRIDE, reinterpret_cast<void*>(byteOffset));
     glVertexAttribDivisor(loc, divisor);
 }
 
@@ -75,10 +75,8 @@ bool CNodeBuffer::ensure(size_t ringCapacity, std::string& error) {
 
     // One per-instance attribute (divisor 1): a field of the node
     // `nodeOffset` nodes into the VBO.
-    const auto floats = [](GLuint loc, GLint components, size_t nodeOffset, size_t fieldOffset) {
-        attribFloats(loc, components, nodeOffset * NODE_STRIDE + fieldOffset, 1);
-    };
-    const auto bits = [](GLuint loc, size_t nodeOffset) { attribBits(loc, nodeOffset * NODE_STRIDE + offsetof(SGpuNode, bits), 1); };
+    const auto floats = [](GLuint loc, GLint components, size_t nodeOffset, size_t fieldOffset) { attribFloats(loc, components, nodeOffset * NODE_STRIDE + fieldOffset, 1); };
+    const auto bits   = [](GLuint loc, size_t nodeOffset) { attribBits(loc, nodeOffset * NODE_STRIDE + offsetof(SGpuNode, bits), 1); };
 
     // prev = n(i-1), p0 = n(i), p1 = n(i+1), next = n(i+2); see header.
     floats(0, 2, 0, offsetof(SGpuNode, posPx));

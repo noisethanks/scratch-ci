@@ -60,7 +60,7 @@ namespace hyprtail {
         // cleared, nullopt if never rendered there.
         std::optional<CBox> prev(const Monitor::CMonitor* pMonitor) const;
 
-        void clear();
+        void                clear();
 
       private:
         std::unordered_map<Monitor::CMonitor*, CBox> m_prev; // logical, monitor-local

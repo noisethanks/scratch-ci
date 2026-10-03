@@ -43,11 +43,11 @@ class CNodeBuffer {
     // current. Creates VAOs/VBO sized for ringCapacity, recreating them if
     // the capacity changed. On failure returns false with a description in
     // error, and leaves nothing allocated.
-    bool   ensure(size_t ringCapacity, std::string& error);
+    bool ensure(size_t ringCapacity, std::string& error);
     // Uploads src when sourceNeedsUpload() says so: a new generation, or
     // every frame for a source that needs continuous upload.
-    void   upload(const ISource& src);
-    void   destroy();
+    void upload(const ISource& src);
+    void destroy();
 
     // Forget what was uploaded, so the next upload happens whatever the
     // source's generation is. A source's generation counts its own changes,
@@ -56,13 +56,13 @@ class CNodeBuffer {
 
     GLuint vao() const;          // path layers
     GLuint instancedVao() const; // instanced layers, see pointInstanced()
-    double refMs() const; // reference time of the uploaded birthMs values
+    double refMs() const;        // reference time of the uploaded birthMs values
 
     // Instanced layers: leaves the instanced VAO bound, its attributes
     // starting at ring node `firstNode` (0 = oldest, counted in the last
     // upload) with divisor `copies`. Draw copies x (nodes from firstNode to
     // the newest) instances.
-    void   pointInstanced(size_t firstNode, GLuint copies);
+    void pointInstanced(size_t firstNode, GLuint copies);
 
   private:
     GLuint                m_vao         = 0;
@@ -81,11 +81,11 @@ struct SPreset {
     // (SPEC §13.7), see applyPendingState().
     SPreset(size_t capacity, uint64_t seedBase) : source(std::make_unique<CTrailRing>(capacity, seedBase)), seedBase(seedBase) {}
 
-    std::unique_ptr<ISource>       source;
-    uint64_t                       seedBase = 0; // for a replacement source
-    CNodeBuffer                    gpu;
+    std::unique_ptr<ISource>          source;
+    uint64_t                          seedBase = 0; // for a replacement source
+    CNodeBuffer                       gpu;
     std::vector<UP<hyprtail::CLayer>> layers;
-    GLuint                         quadVao = 0; // empty: quad layers use gl_VertexID only
+    GLuint                            quadVao = 0; // empty: quad layers use gl_VertexID only
 
     // The active preset (SPEC §13.7): which layers exist and their built-in/
     // path shader identity and defaults. `pendingPreset` is queued by
@@ -105,22 +105,22 @@ struct SPreset {
     // When the source was last ticked (ms since plugin load), and whether it
     // was still moving then. A source that was at rest has no elapsed time to
     // integrate: the gap since the last tick is idle time, not motion.
-    double                   lastTickMs = 0.0;
-    bool                     animating  = false;
+    double lastTickMs = 0.0;
+    bool   animating  = false;
 
     // Source settings.
     float                    minSpacingPx    = 2.F;
     hyprtail::cfg::eWarpMode warpMode        = hyprtail::cfg::eWarpMode::BREAK; // SPEC §13.10
-    float                    damagePaddingPx = 0.F;                            // config, added to every layer's reach
+    float                    damagePaddingPx = 0.F;                             // config, added to every layer's reach
 
     // Emit offset (SPEC §13.9): nullopt = hotspot. Applied at insert only;
     // quad layers don't use it (they anchor to lastPos below).
-    std::optional<Vector2D>  emitFromNorm;
-    Vector2D                 emitOffsetPx{0.0, 0.0};
+    std::optional<Vector2D> emitFromNorm;
+    Vector2D                emitOffsetPx{0.0, 0.0};
 
     // Next insert starts a new segment: workspace changes, lock, pointer
     // constraints, and warps when warpMode == BREAK.
-    bool   pendingBreak = false;
+    bool pendingBreak = false;
 
     // Pointer stillness, for quad layers: last position seen and when it
     // changed (ms since plugin load).
@@ -136,7 +136,7 @@ struct SPreset {
     Vector2D lastCursorSizeLogical;
 
     // The node buffer couldn't be created: path layers are off until reload.
-    bool     gpuFailed = false;
+    bool gpuFailed = false;
 };
 
 // A layer's reach this render: its padding expression plus damage_padding.

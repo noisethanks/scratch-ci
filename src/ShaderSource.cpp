@@ -84,18 +84,18 @@ namespace hyprtail::shader {
             return m;
         }
 
-        constexpr int    MAX_DEPTH      = 16;
-        constexpr size_t MAX_FILE_BYTES = 1024 * 1024;
+        constexpr int         MAX_DEPTH      = 16;
+        constexpr size_t      MAX_FILE_BYTES = 1024uz * 1024;
 
-        const std::regex RE_INCLUDE{R"re(^\s*#\s*include\s+"([^"]+)"\s*$)re"};
-        const std::regex RE_INCLUDE_ANY{R"re(^\s*#\s*include\b)re"};
-        const std::regex RE_CONTRACT{R"re(^\s*#\s*pragma\s+hyprtail\s+contract\s+(\S+)\s*$)re"};
-        const std::regex RE_TOPOLOGY{R"re(^\s*#\s*pragma\s+hyprtail\s+topology\s+(\S+)(?:\s+(\S+))?\s*$)re"};
-        const std::regex RE_EXPECTS{R"re(^\s*#\s*pragma\s+hyprtail\s+expects\s+(\S+)\s*$)re"};
-        const std::regex RE_PARAM{R"re(^\s*#\s*pragma\s+hyprtail\s+param\s+(.*)$)re"};
-        const std::regex RE_PADDING{R"re(^\s*#\s*pragma\s+hyprtail\s+padding\s+(.*)$)re"};
-        const std::regex RE_PRAGMA_HT{R"re(^\s*#\s*pragma\s+hyprtail\b)re"};
-        const std::regex RE_VERSION{R"re(^\s*#\s*version\b)re"};
+        const std::regex      RE_INCLUDE{R"re(^\s*#\s*include\s+"([^"]+)"\s*$)re"};
+        const std::regex      RE_INCLUDE_ANY{R"re(^\s*#\s*include\b)re"};
+        const std::regex      RE_CONTRACT{R"re(^\s*#\s*pragma\s+hyprtail\s+contract\s+(\S+)\s*$)re"};
+        const std::regex      RE_TOPOLOGY{R"re(^\s*#\s*pragma\s+hyprtail\s+topology\s+(\S+)(?:\s+(\S+))?\s*$)re"};
+        const std::regex      RE_EXPECTS{R"re(^\s*#\s*pragma\s+hyprtail\s+expects\s+(\S+)\s*$)re"};
+        const std::regex      RE_PARAM{R"re(^\s*#\s*pragma\s+hyprtail\s+param\s+(.*)$)re"};
+        const std::regex      RE_PADDING{R"re(^\s*#\s*pragma\s+hyprtail\s+padding\s+(.*)$)re"};
+        const std::regex      RE_PRAGMA_HT{R"re(^\s*#\s*pragma\s+hyprtail\b)re"};
+        const std::regex      RE_VERSION{R"re(^\s*#\s*version\b)re"};
 
         std::filesystem::path expandHome(const std::string& p) {
             if (p == "~" || p.starts_with("~/")) {
@@ -127,9 +127,9 @@ namespace hyprtail::shader {
             SSource               out;
             std::set<std::string> done;       // include-once keys
             std::set<std::string> inProgress; // cycle detection
-            eStage                stage         = eStage::VERTEX;
-            bool                  contractSeen  = false;
-            bool                  topologySeen  = false;
+            eStage                stage        = eStage::VERTEX;
+            bool                  contractSeen = false;
+            bool                  topologySeen = false;
         };
 
         std::string preludeText(eStage stage, std::optional<eTopology> topology) {
@@ -222,7 +222,7 @@ namespace hyprtail::shader {
             std::filesystem::path path; // empty for built-ins
         };
 
-        std::expected<void, std::string> process(SState& st, const SUnit& unit, int sourceId, int depth, bool isMain);
+        std::expected<void, std::string>  process(SState& st, const SUnit& unit, int sourceId, int depth, bool isMain);
 
         std::expected<SUnit, std::string> resolveInclude(const std::string& target, const SUnit& parent, std::string& storage) {
             if (target.starts_with("helpers/")) {
@@ -269,7 +269,7 @@ namespace hyprtail::shader {
                 if (!line.empty() && line.back() == '\r')
                     line.pop_back();
 
-                const auto where = std::format("{}:{}", unit.displayName, lineNo);
+                const auto  where = std::format("{}:{}", unit.displayName, lineNo);
                 std::smatch m;
 
                 if (!isMain && std::regex_search(line, RE_VERSION))
@@ -295,8 +295,8 @@ namespace hyprtail::shader {
 
                 const bool htPragma = std::regex_search(line, RE_PRAGMA_HT);
                 if ((htPragma || std::regex_search(line, RE_INCLUDE_ANY)) && isMain && !st.contractSeen)
-                    return std::unexpected(std::format("{}: \"#pragma hyprtail contract {}\" must come first, right after #version (it brings in the prelude)", where,
-                                                       CONTRACT_VERSION));
+                    return std::unexpected(
+                        std::format("{}: \"#pragma hyprtail contract {}\" must come first, right after #version (it brings in the prelude)", where, CONTRACT_VERSION));
 
                 if (std::regex_match(line, m, RE_TOPOLOGY)) {
                     // Already read by the pre-scan in preprocess(); only its
@@ -398,13 +398,8 @@ namespace hyprtail::shader {
 
     std::string_view builtin(std::string_view name) {
         static const std::map<std::string, std::string_view, std::less<>> m{
-            {"ribbon.vert", view(CLASSIC_RIBBON_VERT)},
-            {"ribbon.frag", view(CLASSIC_RIBBON_FRAG)},
-            {"ring.vert", view(CLASSIC_RING_VERT)},
-            {"ring.frag", view(CLASSIC_RING_FRAG)},
-            {"jitter.vert", view(PREFAB_JITTER_VERT)},
-            {"spray.vert", view(PREFAB_SPRAY_VERT)},
-            {"dots.frag", view(PREFAB_DOTS_FRAG)},
+            {"ribbon.vert", view(CLASSIC_RIBBON_VERT)}, {"ribbon.frag", view(CLASSIC_RIBBON_FRAG)}, {"ring.vert", view(CLASSIC_RING_VERT)}, {"ring.frag", view(CLASSIC_RING_FRAG)},
+            {"jitter.vert", view(PREFAB_JITTER_VERT)},  {"spray.vert", view(PREFAB_SPRAY_VERT)},    {"dots.frag", view(PREFAB_DOTS_FRAG)},
         };
         const auto it = m.find(name);
         return it == m.end() ? std::string_view{} : it->second;
@@ -433,8 +428,8 @@ namespace hyprtail::shader {
         if (it->type != params::eType::INT)
             return std::format("{}: instanced K names \"{}\", which is a {} param; it must be int", vert.sourceNames.front(), name, params::typeName(it->type));
         if (!it->min || !it->max || *it->min < 1.0 || *it->max > MAX_INSTANCES)
-            return std::format("{}: instanced K param \"{}\" must declare a range inside 1..{} (#pragma hyprtail param int {} <default> <min> <max>)", vert.sourceNames.front(), name,
-                               MAX_INSTANCES, name);
+            return std::format("{}: instanced K param \"{}\" must declare a range inside 1..{} (#pragma hyprtail param int {} <default> <min> <max>)", vert.sourceNames.front(),
+                               name, MAX_INSTANCES, name);
         return std::nullopt;
     }
 
@@ -477,7 +472,7 @@ namespace hyprtail::shader {
 
     std::expected<SSource, std::string> preprocess(std::string_view mainText, const std::string& name, const std::filesystem::path& path, eStage stage) {
         try {
-            SState     st;
+            SState st;
             st.stage           = stage;
             const bool builtin = path.empty();
             st.out.sourceNames.push_back(builtin ? "<" + name + ">" : path.string());
@@ -534,7 +529,7 @@ namespace hyprtail::shader {
                                                    "porting; the classic preset's shaders are the reference",
                                                    displayName, CONTRACT_VERSION));
             if (stage == eStage::VERTEX && !st.out.topology)
-                return std::unexpected(std::format("{}: geometry (vertex) shaders need \"#pragma hyprtail topology path\", \"quad\" or \"instanced <K>\"", displayName));
+                return std::unexpected(std::format(R"({}: geometry (vertex) shaders need "#pragma hyprtail topology path", "quad" or "instanced <K>")", displayName));
 
             return std::move(st.out);
         } catch (const std::exception& e) { return std::unexpected(std::format("{}: preprocessing failed: {}", name, e.what())); }
@@ -551,9 +546,9 @@ namespace hyprtail::shader {
         // Mesa "0:12(5): error", ANGLE-style "ERROR: 0:12:", NVIDIA "0(12) :".
         static const std::regex RE_REF{R"re((^|[\s:])(\d+)(?::(\d+)|\((\d+)\)))re", std::regex::ECMAScript | std::regex::multiline};
 
-        std::string out;
-        auto        begin = log.cbegin();
-        std::smatch m;
+        std::string             out;
+        auto                    begin = log.cbegin();
+        std::smatch             m;
         // After the first match, the text before `begin` is real context:
         // don't let ^ match mid-line there.
         auto flags = std::regex_constants::match_default;

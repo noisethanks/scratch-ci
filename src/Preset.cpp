@@ -51,12 +51,12 @@ namespace hyprtail::preset {
         } raw;
         std::map<std::string, std::map<std::string, std::string>> layerKeys;
 
-        std::istringstream in{std::string{text}};
-        std::string        rawLine;
-        int                lineNo = 0;
+        std::istringstream                                        in{std::string{text}};
+        std::string                                               rawLine;
+        int                                                       lineNo = 0;
         while (std::getline(in, rawLine)) {
             ++lineNo;
-            const auto where = std::format("preset.conf:{}", lineNo);
+            const auto       where = std::format("preset.conf:{}", lineNo);
 
             std::string_view line = rawLine;
             if (const auto hash = line.find('#'); hash != std::string_view::npos)
@@ -67,7 +67,7 @@ namespace hyprtail::preset {
 
             const auto eq = line.find('=');
             if (eq == std::string_view::npos)
-                return std::unexpected(std::format("{}: malformed line, expected \"key = value\": \"{}\"", where, line));
+                return std::unexpected(std::format(R"({}: malformed line, expected "key = value": "{}")", where, line));
             const auto key   = trim(line.substr(0, eq));
             const auto value = trim(line.substr(eq + 1));
             if (key.empty())
@@ -94,7 +94,7 @@ namespace hyprtail::preset {
                         return std::unexpected(std::format("{}: unknown source \"{}\" ({})", where, value, source::kindList()));
                     raw.sourceKind = std::string{value};
                 } else
-                    return std::unexpected(std::format("{}: unknown key \"{}\" (contract, description, layers, source, or \"<layer>:<name>\")", where, key));
+                    return std::unexpected(std::format(R"({}: unknown key "{}" (contract, description, layers, source, or "<layer>:<name>"))", where, key));
                 continue;
             }
 
@@ -123,7 +123,7 @@ namespace hyprtail::preset {
                 if (l == source::KEY_PREFIX)
                     return std::unexpected(std::format("\"{}\" is reserved for the source's settings and can't be a layer name", l));
                 if (!seen.insert(l).second)
-                    return std::unexpected(std::format("\"layers\" lists \"{}\" twice", l));
+                    return std::unexpected(std::format(R"("layers" lists "{}" twice)", l));
             }
         }
 
@@ -135,7 +135,7 @@ namespace hyprtail::preset {
         }
         for (const auto& [layer, keys] : layerKeys) {
             if (std::ranges::find(*raw.layers, layer) == raw.layers->end())
-                return std::unexpected(std::format("\"{}:...\" keys given, but \"{}\" isn't in \"layers\"", layer, layer));
+                return std::unexpected(std::format(R"("{}:..." keys given, but "{}" isn't in "layers")", layer, layer));
         }
 
         return SManifest{.description = raw.description.value_or(""),
@@ -178,14 +178,8 @@ namespace hyprtail::preset {
 
         std::string_view builtinManifest(std::string_view name) {
             static const std::map<std::string, std::string_view, std::less<>> m{
-                {"subtle", view(SUBTLE_CONF)},
-                {"classic", view(CLASSIC_CONF)},
-                {"jitter", view(JITTER_CONF)},
-                {"spray", view(SPRAY_CONF)},
-                {"vivid", view(VIVID_CONF)},
-                {"comet", view(COMET_CONF)},
-                {"embers", view(EMBERS_CONF)},
-                {"spring", view(SPRING_CONF)},
+                {"subtle", view(SUBTLE_CONF)}, {"classic", view(CLASSIC_CONF)}, {"jitter", view(JITTER_CONF)}, {"spray", view(SPRAY_CONF)},
+                {"vivid", view(VIVID_CONF)},   {"comet", view(COMET_CONF)},     {"embers", view(EMBERS_CONF)}, {"spring", view(SPRING_CONF)},
             };
             const auto it = m.find(name);
             return it == m.end() ? std::string_view{} : it->second;
@@ -196,7 +190,7 @@ namespace hyprtail::preset {
         // built-in, never a file; a bare "<name>" is the user's own, never a
         // built-in. (Shader includes follow the same rule: "helpers/<name>"
         // is the embedded helper, a path is a file. See ShaderSource.cpp.)
-        constexpr std::string_view PREFAB_PREFIX = "prefab:";
+        constexpr std::string_view              PREFAB_PREFIX = "prefab:";
 
         std::expected<std::string, std::string> readFile(const std::filesystem::path& path) {
             std::ifstream in(path, std::ios::binary);
@@ -216,28 +210,28 @@ namespace hyprtail::preset {
         // looks up the built-in text -- never sees an unresolvable name (a
         // bad prefab reference is instead caught structurally, right here,
         // before any CLayer/CShaderSlot exists).
-        std::expected<std::pair<std::string, std::string>, std::string> resolveStage(const std::string& layerName, const std::map<std::string, std::string>& keys,
-                                                                                     bool allowPaths, const char* stageKey, const char* safeBuiltin) {
+        std::expected<std::pair<std::string, std::string>, std::string> resolveStage(const std::string& layerName, const std::map<std::string, std::string>& keys, bool allowPaths,
+                                                                                     const char* stageKey, const char* safeBuiltin) {
             const auto it = keys.find(stageKey);
             if (it == keys.end())
-                return std::unexpected(std::format("layer \"{}\" needs \"{}:{}\"", layerName, layerName, stageKey));
+                return std::unexpected(std::format(R"(layer "{}" needs "{}:{}")", layerName, layerName, stageKey));
             const std::string& value = it->second;
 
             if (value.starts_with(PREFAB_PREFIX)) {
                 const auto name = value.substr(PREFAB_PREFIX.size());
                 if (shader::builtin(name).empty())
-                    return std::unexpected(std::format("layer \"{}\": \"{}\" isn't a built-in shader", layerName, value));
+                    return std::unexpected(std::format(R"(layer "{}": "{}" isn't a built-in shader)", layerName, value));
                 return std::pair<std::string, std::string>{name, ""};
             }
 
             if (!allowPaths)
-                return std::unexpected(std::format("layer \"{}\": \"{}\": a prefab preset can only use \"prefab:<name>\" shaders", layerName, value));
+                return std::unexpected(std::format(R"(layer "{}": "{}": a prefab preset can only use "prefab:<name>" shaders)", layerName, value));
             if (value.empty())
                 return std::unexpected(std::format("layer \"{}:{}\" is empty", layerName, stageKey));
 
             std::filesystem::path p = cfg::resolveShaderPath(value);
             if (!p.is_absolute())
-                return std::unexpected(std::format("layer \"{}\": can't resolve \"{}\" (no usable HOME or XDG_CONFIG_HOME)", layerName, value));
+                return std::unexpected(std::format(R"(layer "{}": can't resolve "{}" (no usable HOME or XDG_CONFIG_HOME))", layerName, value));
             std::error_code ec;
             if (const auto canon = std::filesystem::weakly_canonical(p, ec); !ec)
                 p = canon;
@@ -274,18 +268,21 @@ namespace hyprtail::preset {
                 prefab             = true;
                 const auto builtin = builtinManifest(std::string_view{name}.substr(PREFAB_PREFIX.size()));
                 if (builtin.empty())
-                    return std::unexpected(std::format("unknown prefab preset \"{}\" (built-in: prefab:subtle, prefab:classic, prefab:jitter, prefab:spray, prefab:vivid, prefab:comet, prefab:embers, prefab:spring)", name));
+                    return std::unexpected(std::format("unknown prefab preset \"{}\" (built-in: prefab:subtle, prefab:classic, prefab:jitter, prefab:spray, prefab:vivid, "
+                                                       "prefab:comet, prefab:embers, prefab:spring)",
+                                                       name));
                 text = std::string{builtin};
             } else {
                 if (name.empty() || name.contains('/'))
-                    return std::unexpected(std::format("\"{}\" isn't a bare preset name; use \"prefab:<name>\" for a built-in, or a file name without '/' for <hyprtail root>/presets/<name>.conf", name));
+                    return std::unexpected(std::format(
+                        R"("{}" isn't a bare preset name; use "prefab:<name>" for a built-in, or a file name without '/' for <hyprtail root>/presets/<name>.conf)", name));
                 const auto root = cfg::hyprtailRoot();
                 if (root.empty())
                     return std::unexpected("can't locate the hyprtail config directory (no usable HOME or XDG_CONFIG_HOME)");
                 const auto file = root / "presets" / (name + ".conf");
                 if (!std::filesystem::exists(file))
-                    return std::unexpected(std::format("no such file: {}{}", file.string(),
-                                                       builtinManifest(name).empty() ? "" : std::format(" (for the built-in, use \"prefab:{}\")", name)));
+                    return std::unexpected(
+                        std::format("no such file: {}{}", file.string(), builtinManifest(name).empty() ? "" : std::format(" (for the built-in, use \"prefab:{}\")", name)));
                 auto read = readFile(file);
                 if (!read)
                     return std::unexpected(read.error());
@@ -297,9 +294,9 @@ namespace hyprtail::preset {
                 return std::unexpected(manifest.error());
 
             SResolved out;
-            out.name        = name;
-            out.description = manifest->description;
-            out.sourceKind  = manifest->sourceKind;
+            out.name           = name;
+            out.description    = manifest->description;
+            out.sourceKind     = manifest->sourceKind;
             out.sourceDefaults = manifest->sourceKeys;
             static const std::map<std::string, std::string> empty;
             for (const auto& layerName : manifest->layers) {

@@ -56,7 +56,7 @@ namespace {
     // Marker of our entry in `/plugin list` (HyprCtl.cpp dispatchPlugin).
     constexpr const char* LISTED = "Plugin hyprtail ";
 
-    void sleepMs(int ms) {
+    void                  sleepMs(int ms) {
         std::this_thread::sleep_for(std::chrono::milliseconds(ms));
     }
 
@@ -154,7 +154,7 @@ namespace {
 #define HYPRTAIL_ALIVE(step)                                                                                                                                                       \
     do {                                                                                                                                                                           \
         if (!alive())                                                                                                                                                              \
-            FAIL_TEST("compositor died or stopped responding: {}", step);                                                                                                        \
+            FAIL_TEST("compositor died or stopped responding: {}", step);                                                                                                          \
         LOG_OK("compositor alive: {}", step);                                                                                                                                      \
     } while (0)
 
@@ -182,7 +182,7 @@ namespace {
     do {                                                                                                                                                                           \
         OK(moveAlong(700, 400, 1200, 700, 20));                                                                                                                                    \
         if (!waitFor([&] { return statusHas(needle); }, 3000))                                                                                                                     \
-            FAIL_TEST("{}: `hyprctl hyprtail` never showed \"{}\":\n{}", step, needle, status());                                                                                 \
+            FAIL_TEST("{}: `hyprctl hyprtail` never showed \"{}\":\n{}", step, needle, status());                                                                                  \
         LOG_OK("status shows {}: {}", needle, step);                                                                                                                               \
     } while (0)
 
@@ -499,7 +499,7 @@ TEST_CASE(hyprtailLifecycle) {
     // instead of deriving the expected values ourselves, and only tamper
     // with the pid.
     {
-        const auto markerPath = std::filesystem::path{env("XDG_STATE_HOME")} / "hyprtail" / "crash-guard.marker";
+        const auto  markerPath = std::filesystem::path{env("XDG_STATE_HOME")} / "hyprtail" / "crash-guard.marker";
         std::string realMarker;
         {
             std::ifstream in(markerPath);

@@ -26,9 +26,9 @@ namespace hyprtail {
     // What a compiled program declares (contract 2): its topology, the
     // parameters of both stages (merged) and its padding expressions.
     struct SProgramInfo {
-        shader::eTopology            topology = shader::eTopology::PATH;
-        shader::SInstanceCount       instances; // instanced topology: K, a literal or a param name
-        std::vector<params::SDecl>   params;
+        shader::eTopology             topology = shader::eTopology::PATH;
+        shader::SInstanceCount        instances; // instanced topology: K, a literal or a param name
+        std::vector<params::SDecl>    params;
         std::vector<shader::SPadding> padding;
     };
 
@@ -68,7 +68,7 @@ namespace hyprtail {
         void                release();
 
         const SP<CShader>&  shader() const;
-        const SProgramInfo& info() const; // of the active program
+        const SProgramInfo& info() const;       // of the active program
         uint64_t            generation() const; // bumped on every activation
 
         // Uniform location in the active program, cached until the next
@@ -80,8 +80,8 @@ namespace hyprtail {
         SSlotStatus        status() const;
 
       private:
-        const SShaderPair&         builtin();
-        std::optional<std::string> compileAndActivate(const SShaderPair& pair);
+        const SShaderPair&                     builtin();
+        std::optional<std::string>             compileAndActivate(const SShaderPair& pair);
 
         std::string                            m_name, m_vertBuiltin, m_fragBuiltin;
         std::string                            m_activeOrigin; // vertOrigin + '\n' + fragOrigin of the active program

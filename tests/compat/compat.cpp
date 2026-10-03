@@ -45,6 +45,6 @@ static_assert(!hyprtail::compat::detail::logTakesLoc<Log::CLogger>, "CLogger::lo
     [[maybe_unused]] const std::string& cls   = hyprtail::compat::windowClass(window);
     [[maybe_unused]] const std::string& title = hyprtail::compat::windowTitle(window);
 
-    hyprtail::compat::StatusCommand command = hyprtail::compat::registerStatusCommand(handle, "x", [](bool json) { return std::string{json ? "{}" : ""}; });
+    hyprtail::compat::StatusCommand     command = hyprtail::compat::registerStatusCommand(handle, "x", [](bool json) { return std::string{json ? "{}" : ""}; });
     HyprlandAPI::unregisterHyprCtlCommand(handle, command);
 }

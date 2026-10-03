@@ -11,8 +11,8 @@ namespace {
     // the same rule core applies to its own springs (hyprutils
     // AnimatedVariable.cpp:129-137), at a scale of pixels: a hundredth of a
     // pixel is invisible.
-    constexpr float  SETTLE_POS_PX   = 0.05F;
-    constexpr float  SETTLE_VEL_PXS  = 2.F;
+    constexpr float SETTLE_POS_PX  = 0.05F;
+    constexpr float SETTLE_VEL_PXS = 2.F;
 
     // Longest step one tick integrates. advanceSpring is exact for a fixed
     // target, so this isn't about stability: after a gap with no renders the

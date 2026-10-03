@@ -47,9 +47,9 @@ namespace hyprtail {
         if (!slot.shader() || (res.generation == slot.generation() && res.overrides == m_overridesVersion))
             return;
 
-        const auto&  info = slot.info();
-        const auto   key  = "params:" + m_name;
-        std::string  problems;
+        const auto& info = slot.info();
+        const auto  key  = "params:" + m_name;
+        std::string problems;
 
         // Declarations: reserved first, then the program's own.
         std::vector<std::pair<params::SDecl, params::SValue>> all;
@@ -78,7 +78,7 @@ namespace hyprtail {
         };
         const auto get = [&](std::string_view n) { return lookup(n).value_or(0.0); };
 
-        SResolved r;
+        SResolved  r;
         r.generation     = slot.generation();
         r.overrides      = m_overridesVersion;
         r.enabled        = get("enabled") != 0.0;

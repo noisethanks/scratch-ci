@@ -85,8 +85,8 @@ namespace hyprtail::shader {
         std::vector<std::string>           sourceNames; // index = GLSL source-string number
         std::vector<std::filesystem::path> files;       // real files read, for watching
 
-        std::optional<eTopology>           topology;  // vertex stage only
-        SInstanceCount                     instances; // vertex stage, instanced topology only
+        std::optional<eTopology>           topology;     // vertex stage only
+        SInstanceCount                     instances;    // vertex stage, instanced topology only
         std::vector<eTopology>             expects;      // fragment stage only; empty = accepts any
         std::string                        expectsWhere; // file:line, for messages
         std::vector<SParamWhere>           params;
