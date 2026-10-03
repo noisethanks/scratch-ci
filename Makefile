@@ -115,6 +115,17 @@ check-headers:
 		echo "       Install your distribution's Hyprland development headers, build with hyprpm, or use 'make DEV=1'." >&2; \
 		exit 1; \
 	fi
+	@api=""; \
+	for d in $$(pkg-config --cflags-only-I hyprland | sed 's/-I//g'); do \
+		if [ -f "$$d/plugins/PluginAPI.hpp" ]; then api=1; break; fi; \
+	done; \
+	if [ -z "$$api" ]; then \
+		echo "error: <plugins/PluginAPI.hpp> is not under any -I from 'pkg-config --cflags hyprland'." >&2; \
+		echo "       hyprland.pc before Hyprland v0.55.0 has no -I<prefix>/hyprland/src, which hyprtail's" >&2; \
+		echo "       includes need. hyprtail needs Hyprland >= v0.55.0 (developed against v0.56.2)." >&2; \
+		echo "       Otherwise the development headers are incomplete: reinstall them or use 'make DEV=1'." >&2; \
+		exit 1; \
+	fi
 	@found=""; \
 	for d in $$(pkg-config --cflags-only-I hyprland | sed 's/-I//g'); do \
 		if [ -f "$$d/version.h" ]; then found=$$(sed -n 's/^#define GIT_COMMIT_HASH *"\(.*\)"/\1/p' "$$d/version.h"); break; fi; \

@@ -282,6 +282,38 @@ jobs:
       - run: nix flake check -L
       - run: nix build .#hyprtail -L
 
+  # --------------------------------------------------------- overlay-consumer
+  # The path a downstream flake takes: `overlays.default` applied to its own
+  # pkgs (nix/consumer/flake.nix), not `packages.<system>.hyprtail`, which
+  # the test job already builds. The consumer flake fails evaluation unless
+  # the overlay put the flake's own Hyprland in place of nixpkgs' `hyprland`,
+  # then builds the plugin against it. Same row overrides as the test job:
+  # the consumer's `hyprland` input (which hyprtail follows) is the row's
+  # ref, and `hyprtail` is this checkout.
+  overlay-consumer:
+    needs: resolve
+    name: overlay-consumer-${{ matrix.name }}
+    runs-on: ubuntu-latest
+    # Same informational rows as `test`.
+    continue-on-error: ${{ matrix.name == 'main' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.resolve.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/nix-setup
+        with:
+          cache-key-suffix: ${{ matrix.name }}
+      - name: Build hyprtail through overlays.default (Hyprland ${{ matrix.ref }})
+        env:
+          OVERRIDES: ${{ matrix.overrides }}
+        run: |
+          set -euo pipefail
+          read -ra ov <<<"$OVERRIDES"
+          nix build ./nix/consumer -L "${ov[@]}" \
+            --override-input hyprtail "git+file://$GITHUB_WORKSPACE"
+
   # ----------------------------------------------------------------- smoke
   # hyprtail's lifecycle smoke test (tests/hyprtester/hyprtail_smoke.cpp)
   # inside Hyprland's own kind of NixOS VM test, one VM per matrix row. Same

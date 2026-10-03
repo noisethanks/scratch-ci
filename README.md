@@ -25,6 +25,52 @@ hyprpm add https://github.com/noisethanks/hyprtail
 hyprpm enable hyprtail
 ```
 
+### Nix
+
+hyprtail needs Hyprland v0.55.0 or newer (it is developed against v0.56.2) and
+a GCC 16 toolchain. Older Hyprland headers do not put `hyprland/src` on the
+include path, so the build stops at `#include <plugins/PluginAPI.hpp>` not
+found (`make` now says so up front). nixpkgs' own `hyprland` package can be
+older than that.
+
+hyprtail's flake takes Hyprland from upstream's flake, as hyprland-plugins
+does: its `hyprland` input is `github:hyprwm/Hyprland`, and its `nixpkgs` and
+`systems` inputs follow that one. The repository commits no `flake.lock`, so
+without a lock of your own the input is upstream's current default branch.
+Hyprland from your system's nixpkgs is never used unless you wire it in
+yourself, so point hyprtail at the Hyprland your compositor runs:
+
+```nix
+inputs = {
+  hyprland.url = "github:hyprwm/Hyprland";
+  # Hyprland's own nixpkgs: the set it is tested with.
+  nixpkgs.follows = "hyprland/nixpkgs";
+  hyprtail = {
+    url = "github:noisethanks/hyprtail";
+    inputs.hyprland.follows = "hyprland";
+  };
+};
+```
+
+A plugin must be built against the same Hyprland revision that loads it, so
+`inputs.hyprtail.inputs.hyprland.follows` should name the Hyprland input you
+actually run. A complete example is `nix/consumer/flake.nix`.
+
+Two ways to get the plugin, both built against hyprtail's `hyprland` input
+(your `follows`, if you set one):
+
+- `inputs.hyprtail.packages.${system}.hyprtail`: the plugin only. Nothing in
+  your package set changes. `lib/libhyprtail.so` is the plugin to load.
+- `inputs.hyprtail.overlays.default`: adds `pkgs.hyprlandPlugins.hyprtail`.
+  **This overlay replaces your `hyprland` package**, and Hyprland's
+  dependency packages (hyprutils, aquamarine and the rest) with the ones from
+  that input, in every package set it is applied to. It does so to guarantee
+  the plugin is built against that Hyprland and its GCC 16 stdenv rather than
+  whatever your nixpkgs has. Your nixpkgs must provide `gcc16Stdenv`, which
+  Hyprland's overlay uses, and Hyprland's dependencies (glaze, for one) then
+  come from your nixpkgs, so `nixpkgs.follows = "hyprland/nixpkgs"` above is
+  the safe choice. If you don't want your `hyprland` replaced, use the package.
+
 
 ## Configuring
 

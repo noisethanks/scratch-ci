@@ -27,6 +27,43 @@ overridden to the row's ref (`overrides` in the matrix, computed once in the
 `hyprland-with-tests` is only used by the smoke job (`nix/smoke.nix`), which
 needs its compiled-in test binary.
 
+## Overlay consumer job
+
+`overlay-consumer-<row>` builds hyprtail the way a downstream flake does:
+`overlays.default` applied to the consumer's own pkgs, not
+`packages.<system>.hyprtail` (which the test rows build). `nix/consumer/flake.nix`
+is that consumer: `hyprland` as its own input, `nixpkgs` and hyprtail's
+`hyprland` both following it, as the README's Nix section recommends. CI runs
+`nix build ./nix/consumer` with the row's `overrides` (the consumer's
+`hyprland` input, so the row's ref, plus the stable row's nixpkgs pin) and
+`--override-input hyprtail git+file://$GITHUB_WORKSPACE`.
+
+- **What it proves:** evaluation fails unless `overlays.default` replaced the
+  consumer's `hyprland` with the flake's own (same `version` as
+  `legacyPackages.<system>.hyprland`), then the plugin builds against it.
+  That catches an overlay that falls back to nixpkgs' Hyprland (older
+  `hyprland.pc` without `-I<prefix>/hyprland/src`, older stdenv).
+- **What it does not prove:** that a consumer with its own, unrelated
+  `nixpkgs` builds. And on the stable row, **a green
+  `overlay-consumer-stable` does not exercise the glaze conflict the stable
+  nixpkgs pin works around** (see "Stable row: pinned nixpkgs"). Under the
+  overlay, Hyprland's dependencies, glaze included, come from the *consumer's*
+  nixpkgs, not from Hyprland's. The job only gets the pin because the consumer
+  flake follows `hyprland/nixpkgs` and CI overrides that input; a real
+  consumer on its own nixpkgs that ships glaze 8 would hit it against
+  v0.56.2's `glaze 7...<8` requirement. Do not read a green row as proof that conflict
+  cannot resurface through the overlay path. The job validates overlay
+  mechanics only: the right Hyprland version is pulled in, and the plugin
+  builds against it. The follow also keeps the closure the same as the test
+  row's, which keeps the job cheap. A consumer on its own `nixpkgs` also needs
+  one that provides `gcc16Stdenv`.
+- **Not required yet**, same reason as the other newer jobs: it has not run
+  cleanly a few times. `overlay-consumer-main` sets `continue-on-error` like
+  `hyprland-main`. The `alert` job does not open an issue for it.
+- **Reading a red row:** an evaluation error (`overlays.default left hyprland
+  at ...`) means the overlay no longer carries Hyprland's overlay. A compile
+  error is the same as a `Build hyprtail` failure on the test row.
+
 ## Stable row: pinned nixpkgs
 
 Hyprland v0.56.2's `CMakeLists.txt:133` requires `glaze 7...<8`, but its
@@ -62,6 +99,7 @@ Run on every PR but **not required yet**, each on purpose:
 | Check | Why not required | Promotion criteria |
 |---|---|---|
 | `hyprland-main` | `main` moves under us: an upstream break would turn a required check red and block every unrelated PR. | See "Promoting `hyprland-main`" below. |
+| `overlay-consumer-stable`, `overlay-consumer-main` | New; no clean runs on record yet (see "Overlay consumer job"). `-main` has the `main` problem above. | Clean on the stable row for a few consecutive runs, including scheduled ones. `-release-branch` exists only when that row does and is never required. |
 | `hyprland-smoke-stable` | Not enough clean runs yet (`SMOKE_ENABLED` is on; the count starts at zero, see "Promoting the smoke rows"). | See "Promoting the smoke rows" below. |
 | `hyprland-smoke-main` | Same, plus the `main` problem above. | See "Promoting the smoke rows" below. |
 

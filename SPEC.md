@@ -35,9 +35,11 @@ this file states the decision and marks what's still a placeholder.
   - `make` (default, users and hyprpm): Hyprland headers from
     `pkg-config --cflags hyprland`. Under hyprpm that resolves to the headers
     hyprpm built for the running Hyprland; otherwise to the installed
-    package's. Fails with a clear message if `hyprland.pc` isn't found; warns
-    (doesn't fail) if the headers' commit isn't the pin. Doesn't need
-    `external/`.
+    package's. Fails with a clear message if `hyprland.pc` isn't found, or if
+    `<plugins/PluginAPI.hpp>` is not under any of its `-I` paths (`hyprland.pc`
+    gained `-I<prefix>/hyprland/src` in commit `030e8921`, first in v0.55.0;
+    v0.52.1's lacks it); warns (doesn't fail) if the headers' commit isn't the
+    pin. Doesn't need `external/`.
   - `make DEV=1` (development): headers from the `external/Hyprland`
     checkout, after its build generates `version.h` and protocol headers.
     `check-pin` fails the build if the checkout isn't at the pin or isn't
