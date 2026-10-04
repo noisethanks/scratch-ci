@@ -1,8 +1,8 @@
-# hyprtail lifecycle smoke test in a NixOS VM (SPEC §10).
+# hyprtail lifecycle smoke test in a NixOS VM (SPEC section 10).
 #
 # Adapted from Hyprland's own hyprtester VM test (nix/tests/default.nix
 # upstream, run by .github/workflows/nix-test.yml): same machine shape and
-# environment, same `hyprtester -b … -c … -p …` invocation as an unprivileged
+# environment, same `hyprtester -b ... -c ... -p ...` invocation as an unprivileged
 # user on a virtio-gpu DRM backend. Differences: no gtests and no client
 # programs, hyprtester carries tests/hyprtester/hyprtail_smoke.cpp, and
 # hyprtail is loaded by that test through HYPRTAIL_SO.
@@ -33,7 +33,7 @@ let
   # hyprtestplugin.so against the source tree's headers, which is why the
   # generated protocol headers come first). The config is test.lua with
   # smoke.lua appended, next to lua-require/: test.lua requires
-  # config_dir() .. "/lua-require/…", so both have to sit in one directory.
+  # config_dir() .. "/lua-require/...", so both have to sit in one directory.
   #
   # If building just these targets ever breaks, dropping the buildPhase and
   # installPhase overrides gives back the complete (slow) build.

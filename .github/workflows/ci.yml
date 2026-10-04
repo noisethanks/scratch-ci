@@ -18,6 +18,9 @@ concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Every job runs on ubuntu-24.04, not ubuntu-latest: the label moves to Ubuntu
+# 26.04 from 2026-10-19 (runner-images #14748) and 26.04 changes /tmp. See
+# docs/CI.md "Runner image".
 jobs:
   # ---------------------------------------------------------------- resolve
   # Computes the matrix dynamically: the latest stable Hyprland release tag,
@@ -26,9 +29,12 @@ jobs:
   # calls with the default token: no secret needed, safe on fork PRs.
   resolve:
     name: resolve-hyprland-refs
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       matrix: ${{ steps.build-matrix.outputs.matrix }}
+      # The stable row's `nix ... --override-input` flags, for jobs that run
+      # against one Hyprland only (flake-check).
+      stable_overrides: ${{ steps.build-matrix.outputs.stable_overrides }}
     steps:
       - name: Resolve stable tag, main, and release branch
         id: build-matrix
@@ -80,6 +86,7 @@ jobs:
           fi
 
           echo "matrix=$rows" >> "$GITHUB_OUTPUT"
+          echo "stable_overrides=$(jq -r '.[] | select(.name == "stable") | .overrides' <<<"$rows")" >> "$GITHUB_OUTPUT"
 
           {
             echo "### Hyprland refs this run"
@@ -97,11 +104,13 @@ jobs:
   test:
     needs: resolve
     name: hyprland-${{ matrix.name }}
-    runs-on: ubuntu-latest
-    # Informational row: keeps the run-level conclusion (and the status
-    # badge) green. It also hides the failure from `needs.test.result` and
-    # the jobs API's job `conclusion`; `alert` reads step conclusions instead.
-    continue-on-error: ${{ matrix.name == 'main' }}
+    runs-on: ubuntu-24.04
+    # Informational rows (main, release-branch): keep the run-level conclusion
+    # (and the status badge) green. They also keep their failure out of
+    # `needs.test.result`, which is then the stable row's result alone, so
+    # `ci-gate` can read it. (The jobs API still reports such a job as
+    # `failure`, and so do its steps: `alert` reads step conclusions.)
+    continue-on-error: ${{ matrix.name == 'main' || matrix.name == 'release-branch' }}
     strategy:
       fail-fast: false
       matrix:
@@ -109,7 +118,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: ./.github/actions/nix-setup
+      - id: nix
+        uses: ./.github/actions/nix-setup
         with:
           cache-key-suffix: ${{ matrix.name }}
 
@@ -268,19 +278,51 @@ jobs:
           path: current-sha.txt
           retention-days: 14
 
+      # Explicit save, same condition the combined action's post step used
+      # (nix-setup only restores).
+      - name: Save Nix store
+        if: success()
+        uses: nix-community/cache-nix-action/save@v7
+        with:
+          primary-key: ${{ steps.nix.outputs.cache-key }}
+          gc-max-store-size-linux: 5G
+
   # ------------------------------------------------------------ flake-check
   # Sanity-checks the packaging story (flake.nix) independently of the test
-  # matrix above, against whatever single Hyprland rev flake.lock pins.
+  # matrix above, against one Hyprland: the stable row's (same overrides as
+  # the hyprland-stable job, including its nixpkgs pin). The repo commits no
+  # flake.lock, so without the overrides this would build against Hyprland
+  # main and fail whenever main breaks hyprtail.
   flake-check:
+    needs: resolve
     name: flake-check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/nix-setup
+      - id: nix
+        uses: ./.github/actions/nix-setup
         with:
           cache-key-suffix: flake-check
-      - run: nix flake check -L
-      - run: nix build .#hyprtail -L
+      - name: nix flake check (stable row)
+        env:
+          OVERRIDES: ${{ needs.resolve.outputs.stable_overrides }}
+        run: |
+          set -euo pipefail
+          read -ra ov <<<"$OVERRIDES"
+          nix flake check -L "${ov[@]}"
+      - name: nix build .#hyprtail (stable row)
+        env:
+          OVERRIDES: ${{ needs.resolve.outputs.stable_overrides }}
+        run: |
+          set -euo pipefail
+          read -ra ov <<<"$OVERRIDES"
+          nix build .#hyprtail -L "${ov[@]}"
+      - name: Save Nix store
+        if: success()
+        uses: nix-community/cache-nix-action/save@v7
+        with:
+          primary-key: ${{ steps.nix.outputs.cache-key }}
+          gc-max-store-size-linux: 5G
 
   # --------------------------------------------------------- overlay-consumer
   # The path a downstream flake takes: `overlays.default` applied to its own
@@ -293,16 +335,22 @@ jobs:
   overlay-consumer:
     needs: resolve
     name: overlay-consumer-${{ matrix.name }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Same informational rows as `test`.
-    continue-on-error: ${{ matrix.name == 'main' }}
+    continue-on-error: ${{ matrix.name == 'main' || matrix.name == 'release-branch' }}
     strategy:
       fail-fast: false
       matrix:
         include: ${{ fromJson(needs.resolve.outputs.matrix) }}
     steps:
+      # Full history: `nix build ./nix/consumer` locks the consumer flake as a
+      # git+file ref and needs its revCount, which Nix refuses on a shallow
+      # clone ("is a shallow Git repository, so 'revCount' is not available").
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/nix-setup
+        with:
+          fetch-depth: 0
+      - id: nix
+        uses: ./.github/actions/nix-setup
         with:
           cache-key-suffix: ${{ matrix.name }}
       - name: Build hyprtail through overlays.default (Hyprland ${{ matrix.ref }})
@@ -313,6 +361,13 @@ jobs:
           read -ra ov <<<"$OVERRIDES"
           nix build ./nix/consumer -L "${ov[@]}" \
             --override-input hyprtail "git+file://$GITHUB_WORKSPACE"
+
+      - name: Save Nix store
+        if: success()
+        uses: nix-community/cache-nix-action/save@v7
+        with:
+          primary-key: ${{ steps.nix.outputs.cache-key }}
+          gc-max-store-size-linux: 5G
 
   # ----------------------------------------------------------------- smoke
   # hyprtail's lifecycle smoke test (tests/hyprtester/hyprtail_smoke.cpp)
@@ -328,11 +383,15 @@ jobs:
     if: ${{ !cancelled() && vars.SMOKE_ENABLED == 'true' }}
     needs: resolve
     name: hyprland-smoke-${{ matrix.name }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
+    runs-on: ubuntu-24.04
+    # A cold cache needs far more than 60 minutes (it builds Hyprland more than
+    # once, see NOTES "Smoke job: the triple Hyprland build"), and a job that
+    # times out saves nothing. Manual runs get a long budget so one of them can
+    # warm the cache; scheduled and PR runs keep 60. See docs/CI.md "Smoke job".
+    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && 150 || 60 }}
     # Informational rows (see docs/CI.md); keeps the run-level conclusion
-    # green. release-branch stays strict.
-    continue-on-error: ${{ matrix.name == 'main' || matrix.name == 'stable' }}
+    # green. Every row is informational for now.
+    continue-on-error: ${{ matrix.name == 'main' || matrix.name == 'stable' || matrix.name == 'release-branch' }}
     strategy:
       fail-fast: false
       matrix:
@@ -357,11 +416,15 @@ jobs:
           fi
           ls -l /dev/kvm
 
-      - uses: ./.github/actions/nix-setup
+      - id: nix
+        uses: ./.github/actions/nix-setup
         with:
           cache-key-suffix: smoke-${{ matrix.name }}
 
       - name: Build and run the smoke VM (Hyprland ${{ matrix.ref }})
+        # 10 minutes under the job's, so the cache save below can finish
+        # before the job-level timeout cancels it.
+        timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && 140 || 50 }}
         env:
           OVERRIDES: ${{ matrix.overrides }}
         run: |
@@ -390,18 +453,69 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+      # Save even when the build step timed out or the test failed: finished
+      # derivations are in the store, so the next run starts from them.
+      - name: Save Nix store
+        if: always()
+        uses: nix-community/cache-nix-action/save@v7
+        with:
+          primary-key: ${{ steps.nix.outputs.cache-key }}
+          gc-max-store-size-linux: 5G
+
+  # ------------------------------------------------------------------ gate
+  # The single required check. GitHub counts a skipped job as passing for a
+  # required check, and a job whose `needs` failed is skipped, so a failed
+  # `resolve` would otherwise skip `flake-check` and read green. This job runs
+  # always() and fails explicitly unless every job it gates succeeded.
+  #
+  # `needs.test.result` is one aggregate for the whole matrix. The main and
+  # release-branch rows set continue-on-error, which makes their job result
+  # `success` whatever happened, so the aggregate is the stable row's result
+  # alone. The matrix is also checked for a stable row, because a matrix
+  # without one would leave `test` green with nothing gated.
+  #
+  # Not gated yet: overlay-consumer and smoke (docs/CI.md "Required check
+  # names"). Add them to `needs` and to the loop when they are promoted.
+  ci-gate:
+    name: ci-gate
+    if: always()
+    needs: [resolve, test, flake-check]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every gated job to succeed
+        env:
+          RESOLVE: ${{ needs.resolve.result }}
+          TEST: ${{ needs.test.result }}
+          FLAKE_CHECK: ${{ needs.flake-check.result }}
+          MATRIX: ${{ needs.resolve.outputs.matrix }}
+        run: |
+          set -euo pipefail
+          fail=0
+          for pair in "resolve-hyprland-refs=$RESOLVE" "test (hyprland-stable)=$TEST" "flake-check=$FLAKE_CHECK"; do
+            if [ "${pair#*=}" != "success" ]; then
+              echo "::error::${pair%%=*} result is '${pair#*=}', not 'success'"
+              fail=1
+            fi
+          done
+          if ! printf '%s' "$MATRIX" | jq -e 'any(.[]; .name == "stable")' >/dev/null 2>&1; then
+            echo "::error::the resolved matrix has no stable row"
+            fail=1
+          fi
+          exit "$fail"
+
   # ----------------------------------------------------------------- alert
   # Scheduled runs only (never on pull_request, including forks - no
   # secrets are involved either way, but the event-type check is the actual
   # guard). Opens or updates a single labeled tracking issue instead of
   # spamming a new issue per failed schedule.
   alert:
-    # `needs.test.result` is 'success' when only the continue-on-error `main`
-    # row failed, so gate on the rows' step conclusions in the run step below.
+    # `needs.test.result` is 'success' when only a continue-on-error row (main
+    # or release-branch) failed, so gate on the rows' step conclusions in the
+    # run step below.
     if: always() && github.event_name == 'schedule' && needs.test.result != 'skipped' && needs.test.result != 'cancelled'
     needs: [resolve, test]
     name: alert-on-schedule-failure
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       issues: write
       actions: read
@@ -436,9 +550,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          repo="${{ github.repository }}"
           label="ci-hyprland-regression"
-          gh label create "$label" --color d73a4a \
-            --description "Scheduled Hyprland CI caught a regression" 2>/dev/null || true
+          # This job has no checkout, so gh needs --repo. --force makes the
+          # create idempotent. If it fails anyway (permissions), file the
+          # issue without the label rather than failing the alert.
+          label_args=(--label "$label")
+          if ! gh label create "$label" --repo "$repo" --force --color d73a4a \
+                --description "Scheduled Hyprland CI caught a regression"; then
+            echo "::warning::could not create label $label; filing the issue without it"
+            label_args=()
+          fi
 
           run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           failed_jobs="$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs" --paginate \
@@ -471,10 +593,16 @@ jobs:
             done
           } > issue-body.txt
 
-          issue="$(gh issue list --repo "${{ github.repository }}" --label "$label" --state open --json number --jq '.[0].number // empty')"
-          if [ -n "$issue" ]; then
-            gh issue comment "$issue" --repo "${{ github.repository }}" --body-file issue-body.txt
+          title="Scheduled Hyprland CI regression"
+          if [ "${#label_args[@]}" -gt 0 ]; then
+            issue="$(gh issue list --repo "$repo" --label "$label" --state open --json number --jq '.[0].number // empty')"
           else
-            gh issue create --repo "${{ github.repository }}" --title "Scheduled Hyprland CI regression" \
-              --label "$label" --body-file issue-body.txt
+            # No label to find the tracking issue by: match its title.
+            issue="$(gh issue list --repo "$repo" --state open --search "\"$title\" in:title" --json number --jq '.[0].number // empty')"
+          fi
+          if [ -n "$issue" ]; then
+            gh issue comment "$issue" --repo "$repo" --body-file issue-body.txt
+          else
+            gh issue create --repo "$repo" --title "$title" \
+              "${label_args[@]}" --body-file issue-body.txt
           fi

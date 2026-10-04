@@ -19,3 +19,8 @@ Also in force from earlier sessions:
   pinned commit (SPEC §2). If a dependency's source isn't available to read,
   say so instead of describing what it probably does.
 - SPEC.md is the design authority; NOTES.md holds reasoning and citations.
+
+- Workflow, YAML and Nix files must be pure ASCII, no em dashes: a stray
+  byte makes GitHub silently drop the workflow. `make check-ascii` enforces
+  this on `.github/`, `flake.nix`, `nix/` and the Makefile, and the
+  `.githooks/pre-push` hook runs it (enable with `make install-hooks`).

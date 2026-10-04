@@ -57,9 +57,12 @@ is that consumer: `hyprland` as its own input, `nixpkgs` and hyprtail's
   builds against it. The follow also keeps the closure the same as the test
   row's, which keeps the job cheap. A consumer on its own `nixpkgs` also needs
   one that provides `gcc16Stdenv`.
+- **Full checkout:** the job's `actions/checkout` uses `fetch-depth: 0`.
+  `nix build ./nix/consumer` locks the consumer as a `git+file` flake and
+  needs its `revCount`, which Nix refuses on a shallow clone.
 - **Not required yet**, same reason as the other newer jobs: it has not run
-  cleanly a few times. `overlay-consumer-main` sets `continue-on-error` like
-  `hyprland-main`. The `alert` job does not open an issue for it.
+  cleanly a few times. `overlay-consumer-main` and `-release-branch` set
+  `continue-on-error` like `hyprland-main`. The `alert` job does not open an issue for it.
 - **Reading a red row:** an evaluation error (`overlays.default left hyprland
   at ...`) means the overlay no longer carries Hyprland's overlay. A compile
   error is the same as a `Build hyprtail` failure on the test row.
@@ -86,15 +89,79 @@ v0.56.1's `flake.lock` uses: glaze 7.9.0, and v0.56.1's `nix/default.nix` and
   succeeds against an unsupported glaze is worse than an honest failure.
 - The `release-branch` row is deliberately not pinned.
 
+## Runner image
+
+Every job runs on `ubuntu-24.04`, not `ubuntu-latest`. GitHub starts moving
+`ubuntu-latest` to Ubuntu 26.04 on 2026-10-19 and finishes on 2026-11-19
+(runner-images #14748).
+
+Ubuntu 26.04 makes `/tmp` a RAM-backed tmpfs: 50% of RAM (about 7.8G on a
+standard runner) with a per-user quota that bites near 6.3G
+(runner-images #14777, open). Builds that write large temporary files there
+fail with `disk quota exceeded`, and a Hyprland build or the NixOS VM test may
+be one of them. We have not checked where the Nix daemon puts its build
+directories on that image.
+
+When 26.04 is worth trying, add it deliberately: a copy of the test and smoke
+rows on `ubuntu-26.04`, not required and `continue-on-error`, so a failure is
+information and does not block merges. Do not move the required rows until
+that copy has run clean for a while.
+
+Also check the cache. `nix-community/cache-nix-action` calls
+`lsb_release -i -r -s` (in its `dist/` bundles). We have not confirmed whether
+that feeds the cache key, but it may: caches saved on 24.04 might not restore
+on 26.04, which would start every job cold.
+
+The `Enable KVM` step in the smoke job duplicates the udev rule that
+`cachix/install-nix-action` already writes (`install-nix.sh`). It stays for its
+`/dev/kvm` existence check. Whether `/dev/kvm` exists depends on the runner
+host, not on the image version.
+
+## Nix store cache
+
+`.github/actions/nix-setup` restores the job's Nix store cache and exposes its
+key as the `cache-key` output. It does not save it: `cache-nix-action` saves in
+a post step that only runs when the job succeeded, so a job that times out or
+fails saves nothing and every later run starts cold. Each job instead has an
+explicit `Save Nix store` step (`nix-community/cache-nix-action/save@v7`):
+
+- `test`, `flake-check` and `overlay-consumer`: `if: success()`, the same
+  condition as before.
+- `smoke`: `if: always()`. Finished derivations are in the store even when the
+  build step timed out or the VM test failed, so the next run starts from them.
+
 ## Required check names
 
-Currently required status checks on `master` (Settings → Rules →
-Rulesets, or the legacy branch protection UI):
+The one required status check on `master` (Settings → Rules → Rulesets, or
+the legacy branch protection UI) is:
 
-- `hyprland-stable`
-- `flake-check`
+- `ci-gate`
 
-Run on every PR but **not required yet**, each on purpose:
+`ci-gate` is a fan-in job (`ci.yml`) that runs `always()` and fails explicitly
+unless `resolve-hyprland-refs`, the `hyprland-stable` row of `test`, and
+`flake-check` all succeeded. It exists because GitHub counts a skipped job as
+passing for a required check, and a job whose `needs` failed is skipped: with
+`flake-check` depending on `resolve`, a failed `resolve` would otherwise read
+green. (A skipped matrix job should be different, from GitHub's documented
+behavior, not from a run here: the matrix never expands, so no check gets the
+row's name and a required `hyprland-stable` would just stay pending.) The gate reads
+only `needs.resolve.result`, `needs.test.result` and `needs.flake-check.result`,
+and fails if the resolved matrix has no `stable` row.
+
+`needs.test.result` is one aggregate for the whole matrix. The `main` and
+`release-branch` rows set `continue-on-error`, which keeps their failure out
+of that aggregate (the jobs API and the job's steps still report `failure`),
+so the aggregate is the stable row's result alone. The `release-branch` row is
+informational, like `main`: it can be red without blocking merges, and `alert`
+still reports it, because `alert` reads step conclusions.
+
+`hyprland-stable` and `flake-check` still run and still show on every PR, but
+they are no longer individually required: `ci-gate` is. Changing the ruleset:
+add `ci-gate` first and remove `hyprland-stable` and `flake-check` after it
+has reported on a PR, so no PR is ever unguarded. To gate another job later,
+add it to `ci-gate`'s `needs` and to its loop; do not require it on its own.
+
+Run on every PR but **not gated yet**, each on purpose:
 
 | Check | Why not required | Promotion criteria |
 |---|---|---|
@@ -103,14 +170,14 @@ Run on every PR but **not required yet**, each on purpose:
 | `hyprland-smoke-stable` | Not enough clean runs yet (`SMOKE_ENABLED` is on; the count starts at zero, see "Promoting the smoke rows"). | See "Promoting the smoke rows" below. |
 | `hyprland-smoke-main` | Same, plus the `main` problem above. | See "Promoting the smoke rows" below. |
 
-The non-required rows `hyprland-main`, `hyprland-smoke-stable` and
-`hyprland-smoke-main` set `continue-on-error` in `ci.yml` (the
-`release-branch` rows stay strict), so a red one does not turn the run (or the
-status badge) red. This does not change which checks are required. It does
-make the job `conclusion` read `success`, so `alert` detects failures from
+The non-gated rows `hyprland-main`, `hyprland-release-branch`, the
+`overlay-consumer-main` and `-release-branch` rows, and every smoke row set
+`continue-on-error` in `ci.yml`, so a red one does not turn the run (or the
+status badge) red. This does not change what `ci-gate` requires. It keeps
+their failure out of `needs.<job>.result`, so `alert` detects failures from
 step conclusions, not from `needs.test.result`.
 
-Never require `hyprland-release-branch` or `hyprland-smoke-release-branch`:
+Never gate or require `hyprland-release-branch` or `hyprland-smoke-release-branch`:
 they only exist in the matrix (and therefore only report a check) on runs
 where the release branch is actually ahead of the latest tag. A required
 check that sometimes never runs blocks every merge — see "how to read a red
@@ -163,8 +230,8 @@ testing what will actually ship.
 ## Ruleset settings for `master`
 
 - Require a pull request before merging.
-- Require status checks to pass: `hyprland-stable` and `flake-check` (see
-  "Required check names" for what is deliberately left out).
+- Require status checks to pass: `ci-gate` only (see "Required check names"
+  for what it gates and what is deliberately left out).
 - Require branches to be up to date before merging. Trade-off: every PR
   re-runs CI after a rebase onto a moved `master`, which is what you want
   for a required check, but means a stack of PRs re-verifies at each merge.
@@ -178,7 +245,7 @@ testing what will actually ship.
 | `Build hyprtail` (`nix build .#hyprtail`) fails (compile error) | hyprtail's own source references something the pinned headers changed. Update `SPEC.md` §2's pin, fix the break, re-run. |
 | `nm import check` fails | The build succeeded but a symbol hyprtail calls into (or hooks by address) is no longer exported the same way by the built Hyprland binary — a silent ABI break that would only otherwise show up when a user runs `hyprpm update` and loads the plugin. The failure output lists the missing (demangled) symbol names. |
 | `make test-unit` fails | A real regression in the Hyprland-free logic (params, shader preprocessing, the node ring) — same as a local `make test-unit` failure. `devShells.ci` provides `glslangValidator`, so the GLSL syntax/link checks run in CI (locally they skip if the tool is missing). |
-| `flake-check` fails | `flake.nix` itself, independent of the matrix — check it still matches `hyprlandPlugins.mkHyprlandPlugin`'s current shape in nixpkgs. |
+| `flake-check` fails | `flake.nix` itself. It is built with the stable row's overrides (pinned nixpkgs included), so a red `hyprland-stable` usually means a red `flake-check`: compare them first. It no longer builds against `main`. Independent of the matrix otherwise — check it still matches `hyprlandPlugins.mkHyprlandPlugin`'s current shape in nixpkgs. |
 
 The job summary on every run (pass or fail) lists files changed in
 `src/render/`, `src/pointer/`, `Monitor.cpp`, or anything matching `damage`
@@ -212,8 +279,17 @@ upstream). It never runs a Hyprland on the runner itself, only inside the VM.
   status (test failure: read `smoke-logs-<row>/testerlog`, `hyprlog` and
   `errors.log`); a failure in the `nix build` step is the VM or the
   derivation (no `result`, read the `-L` output; a Hyprland row whose
-  hyprtester no longer builds with the test looks like this). Timeouts are
-  60 minutes.
+  hyprtester no longer builds with the test looks like this).
+- **Timeouts and the cold cache:** scheduled and PR runs time out at 60
+  minutes (the build step at 50, so the cache save has 10 minutes). A cold
+  cache needs much more: the smoke job builds Hyprland more than once (NOTES
+  "Smoke job: the triple Hyprland build"), and a scratch-ci run was still at
+  84% of `hyprland_lib` when it hit 60 minutes. To warm it, start CI by hand
+  (`workflow_dispatch`), which gets 150 minutes for the job and 140 for the
+  build step, and let `smoke-stable` and `smoke-main` finish. The `Save Nix
+  store` step runs with `if: always()`, so even a failed VM test leaves the
+  cache. Later runs restore it and stay well under 60 minutes. Until a cache
+  exists, every scheduled smoke run is expected to time out.
 - **Promoting it to a required check:** not yet; the criteria are under
   "Promoting the smoke rows" in "Required check names". Watch for flakiness
   (the test uses fixed sleeps), the `stable` row (the test has only been
@@ -308,14 +384,40 @@ when that stops being true.
 
 ## Release procedure
 
-1. Confirm `hyprland-stable` and `hyprland-main` are both green on `master`.
+1. Confirm `ci-gate` is green on `master`. `hyprland-main` is expected to be
+   red until the 1.1 port: building against Hyprland main is unsupported at
+   launch and fails to compile by design (NOTES "Main 579829f").
 2. Advance the pin in `SPEC.md` §2 and the Makefile's `HYPRLAND_PIN` if the
    host's installed Hyprland version has moved (deliberate re-pin, not
    automatic — SPEC §2's own reasoning).
-3. Tag.
+3. When a new Hyprland minor ships (for example v0.57.0), update the tag in
+   the README's Nix example (`?ref=v0.56.2`). CI follows the latest release
+   by itself (`resolve`), but the README does not. Drop the README example's
+   `inputs.nixpkgs.url` pin, and `pin_tag`/`pin_nixpkgs` in `ci.yml`, once
+   the glaze constraint no longer applies: the stable row builds green
+   without the pin (CI already unpins the row when the latest release is not
+   `pin_tag`; see "Stable row: pinned nixpkgs"). While it still fails with
+   `could not find git for clone of glaze`, keep the pin.
+4. Tag.
 
 (Nothing about tagging or publishing is automated by this workflow — it's a
 test gate, not a release pipeline.)
+
+## Planned for 1.1
+
+- **Port to Hyprland main.** Building against main is unsupported at launch
+  and fails to compile by design; NOTES "Main 579829f" has what changed and
+  the fix shape.
+- **Pin the `flake.nix` input defaults to the tested release.** Set
+  `hyprland.url` in `flake.nix` (and `nix/consumer/flake.nix`) to
+  `?ref=v0.56.2` and add the nixpkgs pin, so a consumer who pins nothing gets
+  a Hyprland that builds instead of `main`. Deferred because CI cannot
+  evaluate the committed defaults: every job passes `--override-input
+  hyprland ...` (and `hyprland/nixpkgs` on the stable row), so a wrong default
+  URL or pin would pass CI and only fail for a user. The Nix path is also not
+  yet confirmed on a persistent NixOS system. The defaults would also have to
+  move with each release, which the CI stable row does by itself and a
+  committed default does not.
 
 ## Scheduled-run limitations
 

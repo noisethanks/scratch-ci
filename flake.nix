@@ -64,7 +64,7 @@
               version = "git";
               src = ./.;
 
-              # hyprtail's own Makefile has no `install` target (SPEC §2: it's
+              # hyprtail's own Makefile has no `install` target (SPEC section 2: it's
               # built via `make all`, the same entry point hyprpm uses); the
               # default stdenv buildPhase already runs `make` unmodified, so
               # only the install step needs to be supplied here.

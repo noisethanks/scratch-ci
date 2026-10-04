@@ -1,7 +1,7 @@
 name: Nix setup (hyprtail)
 description: >
-  Installs Nix, restores/saves a GitHub Actions cache of the local Nix
-  store, and registers Hyprland's public Cachix cache (hyprland.cachix.org)
+  Installs Nix, restores a GitHub Actions cache of the local Nix store
+  (saving is left to the calling job), and registers Hyprland's public Cachix cache (hyprland.cachix.org)
   as a substituter so Hyprland/aquamarine/hyprutils/hyprlang/hyprcursor/
   hyprgraphics are pulled prebuilt instead of rebuilt from source. Read-only:
   no token is configured or required, so this step behaves identically on
@@ -18,6 +18,11 @@ inputs:
     required: false
     default: ""
 
+outputs:
+  cache-key:
+    description: Primary key of the Nix store cache, for the save step.
+    value: ${{ steps.restore.outputs.primary-key }}
+
 runs:
   using: composite
   steps:
@@ -28,14 +33,18 @@ runs:
           keep-env-derivations = true
           keep-outputs = true
 
-    # Restore/save this job's own Nix store (hyprtail's build inputs and
-    # anything not already covered by the hyprland Cachix pull below).
-    - name: Restore and save Nix store
-      uses: nix-community/cache-nix-action@v7
+    # Restore this job's own Nix store (hyprtail's build inputs and anything
+    # not already covered by the hyprland Cachix pull below). Restore only:
+    # the combined action saves in a post step that only runs when the job
+    # succeeded (`post-if: success()`), so each job saves explicitly with
+    # nix-community/cache-nix-action/save@v7 and the `cache-key` output, with
+    # the condition it needs.
+    - name: Restore Nix store
+      id: restore
+      uses: nix-community/cache-nix-action/restore@v7
       with:
         primary-key: nix-${{ runner.os }}-${{ github.job }}-${{ inputs.cache-key-suffix }}
         restore-prefixes-first-match: nix-${{ runner.os }}-${{ github.job }}
-        gc-max-store-size-linux: 5G
 
     # Registers hyprland.cachix.org as a substituter (read-only: no
     # authToken input, so nothing is pushed and no secret is needed).

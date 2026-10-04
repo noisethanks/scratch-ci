@@ -167,6 +167,8 @@ Not yet reached, environment/fixture work has been the focus so far (see Environ
 
 ## Compatibility with Hyprland main (cited at main 4bb6844b, v0.56.0-209, 2026-09-27; pin efb5099)
 
+**Status: building against Hyprland main is unsupported at launch and fails to compile by design (its render API now takes a `Render::CRenderContext&`, see "Main 579829f" below); the port is planned for 1.1.**
+
 - **Setup:** second checkout `external/Hyprland-main` (built with `make clear && make debug`), the pin untouched. `make DEV=1 HYPRLAND_DIR=external/Hyprland-main` builds into `out/Hyprland-main/`; the pin stays in `out/`. `make test-compat` is a compile-only check of `src/compat.hpp` against the selected headers. Main is not a newer pin: v0.56.2 is a release branch, main is 209 commits past v0.56.0.
 - **Compile breaks (all now behind `src/compat.hpp`):** `desktop/view/Window.hpp` moved to `desktop/view/window/Window.hpp`; `SHyprCtlCommand`/`eHyprCtlOutputFormat` replaced by `IPC::Socket1::SCommand{name, match, handler(const SRequest&)}` (`ipc/s1/S1.hpp:51-55`, `PluginAPI.cpp:351`); `CWindow::m_class`/`m_title` became `metadata().appID()`/`title()` (`WindowMetadata.hpp:16-17`); `CLogger::log` takes a location (`Logger.hpp:41,45`, `LOG` at `:10`).
 - **Silent one:** `log(level, "fmt {}", runtimeString)` and `log(level, "fmt {}", "literal")` compile against main's `(level, string_view loc, string_view str)` overload and print the format string as the `[loc]`. Found at `Diagnostics.cpp` (error file write) and `main.cpp` (loaded line). `make check-log` fails the build on any `logger->log(` outside `compat.hpp`.
@@ -178,6 +180,52 @@ Not yet reached, environment/fixture work has been the focus so far (see Environ
 - **Smaller:** `Pointer::mgr()->position()` returns the transformed position when a plugin registered a pointer transformer (`PointerManager.hpp:68-71`); `damageBox(box, skipFrameSchedule)` skips the damage when the flag is set (`Renderer.cpp:2870-2877`), the plugin doesn't call it.
 - **Not read:** the `Monitor.cpp` diff beyond `addDamage`/`scheduleFrame` (`Monitor.cpp:1096-1107`, same logic as the pin), Lua config provider behavior, workspace event semantics.
 - **Symbol check:** `scripts/ci/check-imports.sh` passes for the pin build against `external/Hyprland/build/Hyprland`, the main build against `external/Hyprland-main/build/Hyprland`, and a pkg-config build against the host's `/usr/bin/Hyprland` (LTO). The script needed its exec bit (`git` had mode 100644; CI ran it after a `chmod`).
+
+### Main 579829f: render context refactor (2026-10-04)
+
+Source: `hyprwm/Hyprland` at `579829f065b425f7b4e850915054f2dd472b27c8`, the commit the scratch-ci `main` row and `flake-check` built against (62 commits past 4bb6844b by the compare API). Read through the GitHub contents API, not from a checkout: `external/Hyprland-main` is still at 4bb6844b and gives the "before" lines. Line numbers below are at 579829f unless marked "4bb6844b". The range adds `src/render/Context.{hpp,cpp}` and `SceneResources.*`; I did not identify the commit that introduced `Context.hpp` (the latest one touching it is ca539d4f, "render: select scene resources per render session", 2026-10-04).
+
+**The change:** per-render state moved from `g_pHyprRenderer` into a `Render::CRenderContext` (`Context.hpp:33`) that is passed down. `IHyprRenderer::context()` returns the session's one (`Renderer.hpp:132`, `Renderer.cpp:1934-1936`).
+
+**The three compile errors in `LayerPassElement`** (CI log, `LayerPassElement.o`, the first translation unit to fail; make stopped there):
+
+- **`IPassElement` virtuals take the context.** `draw`, `needsLiveBlur`, `needsPrecomputeBlur`, `boundingBox` and the other virtuals now take `Render::CRenderContext& ctx` (`PassElement.hpp:32,34,35,38-43`); at 4bb6844b they take nothing (`PassElement.hpp:28-39`). `passName()` and `type()` are unchanged (`:36-37`). Our no-argument overrides (`LayerPassElement.hpp:163,165,168,172`) no longer override anything, hence "marked 'override', but does not override". Core's own elements show the new shape (`RectPassElement.cpp:8,12,16`, using `ctx.m_data.pMonitor` at `:17`).
+- **`IHyprRenderer::m_renderData` is gone.** It was `Renderer.hpp:150` at 4bb6844b. The data is `CRenderContext::m_data` (`Context.hpp:52`), reached through the `ctx` parameter. The fields we read are still there: `pMonitor`, `damage`, `transformDamage` (`types.hpp:93,101,118`; `transformDamage` was `types.hpp:105` at 4bb6844b). `LayerPassElement.cpp:230`.
+- **`CHyprOpenGLImpl::scissor` takes the context first** (`OpenGL.hpp:222-224`; `:237-239` at 4bb6844b, definitions `OpenGL.cpp:1100,1129,1142`). `scissor(ctx, nullptr)` still means "disable `GL_SCISSOR_TEST`" (`OpenGL.cpp:1132-1135`) and it asserts that `ctx.m_data.pMonitor` is set (`:1130`). `LayerPassElement.cpp:324,331`.
+
+**Not compile errors yet, found by reading** (make never reached these files, which sort after `LayerPassElement.cpp`; unverified until a build gets there):
+
+- `g_pHyprRenderer->m_renderData` in `main.cpp:580,605` and `RenderUtil.cpp:44,66`.
+- `g_pHyprRenderer->m_renderPass` in `main.cpp:397,869`. It is not in `Renderer.hpp` at 579829f (it was `:136` at 4bb6844b). The pass is `CRenderContext::m_pass` (`Context.hpp:53`); elements are added with `IHyprRenderer::addPassElement(ctx, element)` (`Renderer.hpp:156`, `Renderer.cpp:571-573`).
+- `m_mostHzMonitor` is still there (`Renderer.hpp:135`).
+
+**Hooked functions: two of three changed, and the compiler cannot see it.** The plugin hooks three functions (`installHooks`), each through `pmf_address(&Class::fn)` and a `reinterpret_cast<void*>` detour, called back through `m_original` with a hand-written typedef. Nothing compares those signatures with the target's, so a changed target **compiles and then misreads every argument**. At 579829f:
+
+- `CPointerManager::renderSoftwareCursorsFor` gained a leading `Render::CRenderContext& ctx` (`PointerManager.hpp:67-68`; `:61` at 4bb6844b without it). Changed.
+- `CHyprOpenGLImpl::saveBufferForMirror` is now `(CRenderContext& ctx, const CBox&)` (`OpenGL.hpp:228`; `:243` at 4bb6844b and `:231` at the pin, `(const CBox&)`). Changed.
+- `CPointerController::warpTo(const Vector2D&, bool) const` is unchanged (`PointerController.hpp:9`, same at 4bb6844b and the pin). `CPointerManager::warpTo` is unchanged too (`PointerManager.hpp:52`).
+
+**Guard:** `src/compat.hpp` (namespace `hooks`) now holds the signature each detour is written for and static-asserts that the target has exactly it, with a message naming the detour; `main.cpp` asserts each detour and its `orig*` typedef are that signature (`DetourT`). `tests/compat/compat.cpp` checks the guards against stand-in classes with the 579829f signatures (they must be rejected) and with the expected ones. Checked: `make test-compat` and `make DEV=1 test-compat` pass at the pin, and `make DEV=1 HYPRLAND_DIR=external/Hyprland-main test-compat` passes at 4bb6844b (all three signatures were still the old ones there). No checkout at 579829f exists locally, so the real failure was shown on a copy of the pin's `src/` with each header patched to the 579829f signature: each of the three patched copies stops at the matching `static_assert`, and nothing else fails.
+
+**Fix shape, not applied (the port is planned for 1.1):** the pin and main need different signatures for the same override, so the override signatures, the hook aliases in `hooks` and the `ctx` plumbing have to sit behind `src/compat.hpp` (for example a type that is empty on the pin and `CRenderContext&` on main). Open: how the `RENDER_LAST_MOMENT` listener and the cursor hook get a `ctx` (`context()` is the candidate; the event payload at 579829f was not read), and whether `removeAllOfType` still exists on `CRenderPass` (not read). The rest of the 62-commit range (blur providers, decorations, `ElementRenderer`) was not read.
+
+## Smoke job: the triple Hyprland build
+
+Why the smoke job is slow, from the scratch-ci run 37207041600 log. `nix build .#legacyPackages.x86_64-linux.smoke` printed "these 44 derivations will be built". Three of them are Hyprland trees:
+
+1. `hyprland-with-tests` (`flake.nix:101`): `hyprland.override { withTests = true; }` (`nix/overlays.nix:67` at the pin). It is the VM's `programs.hyprland.package`. A full build, plus the test clients and gtests.
+2. Plain `hyprland`: what `hyprtail` is built against (`flake.nix:108`, the overlay's `hyprland`). A second full `hyprland_lib` build: `Compositor.cpp.o` is compiled twice in the log (13:59:37 and 14:05:09).
+3. `hyprtester-hyprtail` (`nix/smoke.nix`, `hyprland.overrideAttrs` of the with-tests derivation): builds only `generate-protocol-headers` and `hyprtester`, so much smaller than the other two.
+
+The test job builds only the plain `hyprland`: 9 derivations, Hyprland in about 15 minutes. In the smoke job the first two compile at the same time on one runner, which is why it was still at 84% of `hyprland_lib` after 52 minutes. Its Hyprland libraries (hyprutils, aquamarine and the rest) are also built from source: on the stable row nothing upstream built the pinned-nixpkgs combination, so Cachix has no hit (docs/CI.md "Stable row: pinned nixpkgs").
+
+**Collapsing it (not done).** Build `hyprtail` against `hyprland-with-tests` instead of the plain `hyprland`, so tree 2 disappears. In `flake.nix`, that means a second package set whose overlay sets `hyprland` to `hyprland-with-tests` (the plugin helper `mkHyprlandPlugin` takes `hyprland` from the same pkgs, `flake.nix:42-45`), used only by `legacyPackages.smoke`. Points to check before doing it:
+
+- The headers and `GIT_COMMIT_HASH` are identical, so the plugin's ABI hash should be too. `WITH_TESTS` adds targets but should not change the library. Confirm by comparing the built `hyprland.pc` and `version.h`, and keep `scripts/ci/check-imports.sh` against the plain build in the test job.
+- The smoke VM would then test a plugin built against the with-tests variant, not against the shipped `hyprland`. That is a small loss of fidelity. The test job still builds against the plain one.
+- `nix/smoke.nix` takes `hyprtail` as an argument already, so only `flake.nix` changes.
+
+**Estimated saving: about 20-25 minutes of wall time on a cold cache, nothing on a warm one.** This is an estimate. The measured numbers: Hyprland alone is about 15 minutes (test job); two trees at once ran at roughly a third of that speed each. Removing one should bring the cold smoke run from over 80 minutes to about 55-60, near the timeout, so the warm-up run in docs/CI.md is still needed first.
 
 ## Draw order and hardware cursors (cited at efb5099)
 

@@ -39,10 +39,10 @@ OUTPUT := $(OUT)/$(PLUGIN_NAME).so
 #                 built for the running Hyprland; otherwise the installed
 #                 package's (e.g. /usr/include/hyprland).
 #   make DEV=1    Development. Headers from the external/Hyprland checkout,
-#                 which must be at the pinned commit and built (SPEC §2), or
+#                 which must be at the pinned commit and built (SPEC section 2), or
 #                 from another built checkout given as HYPRLAND_DIR (above).
 
-# Pinned Hyprland commit (SPEC §2). Tracks the host package: v0.56.2.
+# Pinned Hyprland commit (SPEC section 2). Tracks the host package: v0.56.2.
 HYPRLAND_PIN   := efb50993780079460b0cbed1363e2166a2de1d9f
 HOST_VERSION_H := /usr/include/hyprland/src/version.h
 
@@ -77,7 +77,7 @@ CXXFLAGS   += -I$(OUT)
 # DEV value out/ was built with, see its rule.
 BUILD_MODE := $(OUT)/build-mode
 
-.PHONY: all clean load unload smoke test-unit test-compat format lint check-pin check-headers check-log FORCE
+.PHONY: all clean load unload smoke test-unit test-compat format lint check-pin check-headers check-log check-ascii install-hooks FORCE
 
 all: $(OUTPUT)
 
@@ -143,7 +143,7 @@ check-headers:
 check-pin:
 	@head=$$(git -C $(HYPRLAND_SRC) rev-parse HEAD 2>/dev/null); \
 	if [ "$(HYPRLAND_SRC)" = "$(PINNED_DIR)" ] && [ "$$head" != "$(HYPRLAND_PIN)" ]; then \
-		echo "error: external/Hyprland is at '$$head', pin is $(HYPRLAND_PIN) (SPEC §2)" >&2; exit 1; \
+		echo "error: external/Hyprland is at '$$head', pin is $(HYPRLAND_PIN) (SPEC section 2)" >&2; exit 1; \
 	fi; \
 	if [ "$(HYPRLAND_SRC)" != "$(PINNED_DIR)" ]; then \
 		echo "note: building against $(HYPRLAND_SRC) at '$$head', not the pin $(HYPRLAND_PIN)" >&2; \
@@ -161,6 +161,23 @@ check-log:
 	@if grep -n 'logger->log(' $(filter-out src/compat.hpp,$(SOURCE_FILES) $(HEADER_FILES)); then \
 		echo "error: call hyprtail::compat::log(), not Log::logger->log() (src/compat.hpp)" >&2; exit 1; \
 	fi
+
+# Workflow, YAML and Nix files must be pure ASCII: a stray byte (an em dash
+# pasted into a workflow) makes GitHub silently drop the workflow. Allowed:
+# printable ASCII, tab and newline. Anything else, CR included, fails. grep
+# exits 1 for "no match" (pass), 0 for a match and 2 for an error such as a
+# missing path (both fail).
+ASCII_PATHS ?= .github flake.nix nix Makefile
+
+check-ascii:
+	@LC_ALL=C grep -rnP '[^\x09\x0A\x20-\x7E]' $(ASCII_PATHS); rc=$$?; \
+	if [ $$rc -eq 1 ]; then exit 0; fi; \
+	if [ $$rc -eq 0 ]; then echo "error: non-ASCII byte or control character in $(ASCII_PATHS) (lines above)" >&2; fi; \
+	exit 1
+
+# Use the hooks shipped in .githooks/ (pre-push runs check-ascii).
+install-hooks:
+	git config core.hooksPath .githooks
 
 clean:
 	$(RM) -r out/ $(OUT)
@@ -240,7 +257,7 @@ lint: $(REV_HEADER) | $(HEADER_CHECK)
 	clang-tidy -quiet -header-filter='$(LINT_HEADERS)' tests/unit/unit.cpp -- -std=c++26 $$(pkg-config --cflags hyprutils 2>/dev/null) || status=1; \
 	exit $$status
 
-# Lifecycle smoke test (SPEC §10): load, duplicate refusal, monitor hotplug,
+# Lifecycle smoke test (SPEC section 10): load, duplicate refusal, monitor hotplug,
 # unload and reload of the plugin in a headless Hyprland started from the
 # external/Hyprland checkout, which must be built with tests (`make clear &&
 # make debug` there). Run it at every re-pin, from a terminal in a Wayland

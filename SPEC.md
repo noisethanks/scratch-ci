@@ -57,6 +57,11 @@ this file states the decision and marks what's still a placeholder.
     compiles it against the selected headers; `make check-log` rejects raw
     `Log::logger->log()` calls elsewhere. NOTES "Compatibility with Hyprland
     main".
+  - **Hyprland main is unsupported at launch.** Building against it fails to
+    compile by design (its render API now takes a `Render::CRenderContext&`,
+    and two hooked functions changed signature; `src/compat.hpp` asserts each
+    hooked signature so a port cannot silently misbehave). The port is planned
+    for 1.1. NOTES "Main 579829f".
   - Both append to `CXXFLAGS` (hyprpm passes extra flags through the
     environment) and add `--no-gnu-unique` whenever the compiler is GCC.
   - Needs a C++26 compiler with `#embed` (GCC 15+; built and tested with

@@ -9,6 +9,7 @@
 #include <random>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <unistd.h>
 #include <unordered_map>
 
@@ -54,9 +55,12 @@ using hyprtail::cfg::eWarpMode;
 
 static HANDLE s_handle = nullptr;
 
-typedef void (*origRenderSoftwareCursorsFor)(void*, PHLMONITOR, const Time::steady_tp&, CRegion&, std::optional<Vector2D>, bool, bool);
-typedef void (*origControllerWarpTo)(const void*, const Vector2D&, bool);
-typedef bool (*origSaveBufferForMirror)(void*, const CBox&);
+// The type of each detour and of the original it calls, derived from the
+// signature compat.hpp checks the hook target against. Each detour below
+// asserts it has this type.
+using origRenderSoftwareCursorsFor = hyprtail::compat::hooks::DetourT<hyprtail::compat::hooks::RenderSoftwareCursorsFor>;
+using origControllerWarpTo         = hyprtail::compat::hooks::DetourT<hyprtail::compat::hooks::ControllerWarpTo>;
+using origSaveBufferForMirror      = hyprtail::compat::hooks::DetourT<hyprtail::compat::hooks::SaveBufferForMirror>;
 
 // Which render each monitor is in, and which render the cursor hook already
 // ran the lifecycle for. Keyed to a per-monitor serial bumped at RENDER_BEGIN
@@ -473,6 +477,8 @@ static void hkRenderSoftwareCursorsFor(void* thisptr, PHLMONITOR pMonitor, const
 
     reinterpret_cast<origRenderSoftwareCursorsFor>(s_cursorHook->m_original)(thisptr, pMonitor, now, damage, overridePos, screencopy, forceRender);
 }
+static_assert(std::is_same_v<decltype(&hkRenderSoftwareCursorsFor), origRenderSoftwareCursorsFor>,
+              "hkRenderSoftwareCursorsFor does not match hooks::RenderSoftwareCursorsFor in compat.hpp; change them together");
 
 // Bezier warp interpolation (SPEC §13.10, warp = "curve"): inserts nodes on
 // the CPU along a quadratic Bezier from the trail's current end to the warp
@@ -546,6 +552,7 @@ static void hkControllerWarpTo(const void* thisptr, const Vector2D& pos, bool fo
         }
     });
 }
+static_assert(std::is_same_v<decltype(&hkControllerWarpTo), origControllerWarpTo>, "hkControllerWarpTo does not match hooks::ControllerWarpTo in compat.hpp; change them together");
 
 // Screenshare exclude (SPEC §13.12). Called from CHyprOpenGLImpl::end()
 // (OpenGL.cpp:801-802) exactly when this monitor needsACopyFB(): the
@@ -588,6 +595,8 @@ static bool hkSaveBufferForMirror(void* thisptr, const CBox& box) {
 
     return ok;
 }
+static_assert(std::is_same_v<decltype(&hkSaveBufferForMirror), origSaveBufferForMirror>,
+              "hkSaveBufferForMirror does not match hooks::SaveBufferForMirror in compat.hpp; change them together");
 
 static void onRenderStageInternal(eRenderStage stage) {
     if ((stage != RENDER_BEGIN && stage != RENDER_LAST_MOMENT && stage != RENDER_POST) || !g_pHyprRenderer || !s_preset)
