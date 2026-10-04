@@ -25,16 +25,14 @@
 #
 # Usage: check-imports.sh <plugin.so> [hyprland-binary]
 #
-# <hyprland-binary> defaults to /usr/bin/Hyprland. CI always passes both
-# args explicitly (the row's own Nix-built .Hyprland-wrapped ELF; bin/Hyprland
-# is a wrapper script there). Run this
-# manually with just <plugin.so> after a host Hyprland package upgrade, as
-# a ground-truth check CI can't give you: CI's Hyprland is a Nix build
-# (gcc16Stdenv, no LTO); the host's is Arch's package, built with LTO
-# (SPEC §2 pin note). LTO can inline or dedupe a symbol CI's non-LTO build
-# still exports as a distinct dynamic symbol, so a green CI run does not
-# prove the host binary still exports everything hyprtail needs -- only
-# running this against the real /usr/bin/Hyprland does. See docs/CI.md.
+# <hyprland-binary> defaults to /usr/bin/Hyprland. CI runs it against Arch's
+# packaged (LTO) /usr/bin/Hyprland (scripts/ci/arch.sh) and, in the upstream
+# Nix rows, against the row's non-LTO .Hyprland-wrapped ELF (bin/Hyprland is
+# a wrapper script there). LTO can inline or dedupe a symbol a non-LTO build
+# still exports, so only a distro binary is ground truth. The host is
+# CachyOS, a different LTO build from Arch's: after a host Hyprland upgrade,
+# run this with just <plugin.so> against the real /usr/bin/Hyprland. See
+# docs/CI.md "Arch jobs and the LTO gap".
 
 set -euo pipefail
 

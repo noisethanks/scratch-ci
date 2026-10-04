@@ -727,10 +727,10 @@ this file states the decision and marks what's still a placeholder.
   connects to the session's Wayland socket as a client for its GPU
   allocator (NOTES "Smoke test environment"). Uses the same GPU. Workspace
   changes are not covered.
-  - **In CI** (off unless the repository variable `SMOKE_ENABLED` is
-    `true`): the same test in a NixOS VM with a DRM backend, one per Hyprland
-    row, `nix/smoke.nix` (adapted from Hyprland's `nix/tests/default.nix`);
-    docs/CI.md "Smoke job", NOTES "Smoke test in CI".
+  - **In CI** (`smoke.yml`, weekly and by hand, never required): the same
+    test in a NixOS VM with a DRM backend against the pinned Hyprland,
+    `nix/smoke.nix` (adapted from Hyprland's `nix/tests/default.nix`);
+    docs/CI.md "smoke.yml", NOTES "Smoke test in CI".
 - **Unit tests: `make test-unit`** (`tests/unit/unit.cpp`, `SANITIZE=1` for
   AddressSanitizer and UBSan). No compositor, no GL: parameter pragmas and
   values, padding expressions, shader preprocessing (contract 2 rules), the

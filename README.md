@@ -68,12 +68,12 @@ inputs = {
 
 This is the wiring in `nix/consumer/flake.nix`, with the two pinned values
 filled in. That file leaves `hyprland.url` open, because CI supplies the
-values itself: its stable row builds the consumer with
+values itself: its `nix-pin` job builds the consumer with
 `--override-input hyprland github:hyprwm/Hyprland?ref=v0.56.2` and
 `--override-input hyprland/nixpkgs github:NixOS/nixpkgs/61b7c44c4073f0b827768aff0049561b5110ea5a`.
 Writing them in the file as above is equivalent, but CI does not build that
 exact text. The nixpkgs pin is only needed while v0.56.2 is the release you
-build against; docs/CI.md ("Stable row: pinned nixpkgs") says when CI drops it.
+build against; docs/CI.md ("Nix: pinned nixpkgs") says when CI drops it.
 
 A plugin must be built against the same Hyprland revision that loads it, so
 `inputs.hyprtail.inputs.hyprland.follows` should name the Hyprland input you

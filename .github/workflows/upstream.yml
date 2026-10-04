@@ -1,0 +1,245 @@
+name: Upstream
+
+# "Did upstream Hyprland break hyprtail?" Builds the unchanged master against
+# Hyprland refs that move: Arch's current package, the latest release tag,
+# the release branch when it is ahead of that tag, and main. Never on PRs and
+# never required: a PR can't fix upstream drift. A red row means re-pin, add
+# a hyprpm.toml commit_pins entry, or port (docs/CI.md "upstream.yml: drift watch").
+on:
+  schedule:
+    - cron: "37 5 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upstream
+  cancel-in-progress: false
+
+jobs:
+  # ---------------------------------------------------------------- resolve
+  # The Nix rows: latest release tag, main, and the release branch head if it
+  # is ahead of the tag. Read-only GitHub API calls with the default token.
+  resolve:
+    name: resolve-hyprland-refs
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.build-matrix.outputs.matrix }}
+    steps:
+      - name: Resolve stable tag, main, and release branch
+        id: build-matrix
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          # v0.56.2 only builds under Nix with v0.56.1's nixpkgs (glaze
+          # 7.9.0; docs/CI.md "Nix: pinned nixpkgs"). Only for this tag: a
+          # newer release gets its own lock, unpinned, and the other rows are
+          # never pinned (an honest failure there is information).
+          pin_tag="v0.56.2"
+          pin_nixpkgs="github:NixOS/nixpkgs/61b7c44c4073f0b827768aff0049561b5110ea5a"
+
+          row() { # name ref [nixpkgs]
+            local ov="--override-input hyprland github:hyprwm/Hyprland?ref=$2 --no-write-lock-file"
+            if [ -n "${3:-}" ]; then
+              ov="$ov --override-input hyprland/nixpkgs $3"
+            fi
+            jq -nc --arg name "$1" --arg ref "$2" --arg overrides "$ov" \
+              '{name: $name, ref: $ref, overrides: $overrides}'
+          }
+
+          stable="$(gh api repos/hyprwm/Hyprland/releases/latest --jq .tag_name)"
+          stable_nixpkgs=""
+          if [ "$stable" = "$pin_tag" ]; then
+            stable_nixpkgs="$pin_nixpkgs"
+          fi
+          rows="$(jq -sc . <(row stable "$stable" "$stable_nixpkgs") <(row main main))"
+
+          # One `vX.Y.Z-b` branch per patch tag; a row only when it's ahead.
+          branch="${stable}-b"
+          ahead="$(gh api "repos/hyprwm/Hyprland/compare/${stable}...${branch}" --jq .ahead_by 2>/dev/null || echo 0)"
+          if [ "${ahead:-0}" -gt 0 ]; then
+            rows="$(jq -c --argjson r "$(row release-branch "$branch")" '. + [$r]' <<<"$rows")"
+          fi
+
+          echo "matrix=$rows" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Hyprland refs this run"
+            echo '```json'
+            jq . <<<"$rows"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # -------------------------------------------------------------------- nix
+  # hyprtail built against each row's Hyprland closure (`make all` under
+  # mkHyprlandPlugin, the pkg-config mode hyprpm uses), the host-free tests,
+  # and the nm import check against that row's (non-LTO) Hyprland binary.
+  nix:
+    needs: resolve
+    name: upstream-${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.resolve.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: nix
+        uses: ./.github/actions/nix-setup
+        with:
+          cache-key-suffix: ${{ matrix.name }}
+
+      # `legacyPackages.hyprland` is the derivation hyprtail builds against
+      # (flake.nix), so Hyprland is built once per row.
+      - name: Build Hyprland (${{ matrix.ref }})
+        env:
+          OVERRIDES: ${{ matrix.overrides }}
+        run: |
+          set -euo pipefail
+          read -ra ov <<<"$OVERRIDES"
+          nix build ".#legacyPackages.x86_64-linux.hyprland" -L --out-link hyprland-bin "${ov[@]}"
+          sha="$(nix flake metadata "github:hyprwm/Hyprland?ref=${{ matrix.ref }}" --json --refresh | jq -r .locked.rev)"
+          echo "${{ matrix.name }} ${{ matrix.ref }} ${sha}" > row.txt
+          echo "Hyprland ${{ matrix.ref }} at \`${sha}\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build hyprtail
+        env:
+          OVERRIDES: ${{ matrix.overrides }}
+        run: |
+          set -euo pipefail
+          read -ra ov <<<"$OVERRIDES"
+          nix build ".#hyprtail" -L --out-link plugin "${ov[@]}"
+
+      - name: make test-unit test-compat
+        env:
+          OVERRIDES: ${{ matrix.overrides }}
+        run: |
+          set -euo pipefail
+          read -ra ov <<<"$OVERRIDES"
+          nix develop ".#ci" "${ov[@]}" -c make test-unit test-compat SANITIZE=1
+
+      # Nix wraps bin/Hyprland in a shell script; the ELF is .Hyprland-wrapped.
+      - name: nm import check
+        run: |
+          set -euo pipefail
+          elf="hyprland-bin/bin/.Hyprland-wrapped"
+          [ -f "$elf" ] || elf="hyprland-bin/bin/Hyprland"
+          bash scripts/ci/check-imports.sh plugin/lib/libhyprtail.so "$elf"
+
+      # For the alert job's issue body.
+      - name: Upload resolved ref
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: row-${{ matrix.name }}
+          path: row.txt
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Save Nix store
+        if: success()
+        uses: nix-community/cache-nix-action/save@v7
+        with:
+          primary-key: ${{ steps.nix.outputs.cache-key }}
+          gc-max-store-size-linux: 5G
+
+  # ------------------------------------------------------------------- arch
+  # What hyprpm users on Arch get next: the live repos' Hyprland package, LTO
+  # build included. Same script as ci.yml's arch-pin.
+  arch:
+    name: upstream-arch
+    runs-on: ubuntu-24.04
+    container:
+      image: archlinux:latest
+      options: --cap-add=SYS_PTRACE
+    steps:
+      - name: Install packages from the live repos
+        run: pacman -Syu --noconfirm --needed base-devel git hyprland glslang
+
+      - uses: actions/checkout@v4
+
+      - name: Build and test (scripts/ci/arch.sh)
+        run: bash scripts/ci/arch.sh
+
+      - name: Record package version
+        if: always()
+        run: echo "arch $(pacman -Q hyprland 2>/dev/null || echo 'hyprland not installed')" > row.txt
+
+      - name: Upload resolved package
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: row-arch
+          path: row.txt
+          retention-days: 14
+
+  # ------------------------------------------------------------------ alert
+  # Scheduled runs only. One open tracking issue; a comment only when the set
+  # of failing rows changes, so a row that stays red doesn't comment daily.
+  # The main row is not alerted on: it is known red until the 1.1 port
+  # (docs/CI.md "Planned for 1.1"). Add it to `alertable` after the port.
+  alert:
+    if: always() && github.event_name == 'schedule'
+    needs: [nix, arch]
+    name: alert
+    runs-on: ubuntu-24.04
+    permissions:
+      issues: write
+      actions: read
+    steps:
+      - name: Download resolved refs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: row-*
+          path: rows
+
+      - name: Open or update the tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          title="Upstream Hyprland broke hyprtail"
+          label="upstream-regression"
+
+          failed="$(gh api "repos/${REPO}/actions/runs/${{ github.run_id }}/jobs" --paginate \
+            --jq '.jobs[] | select(.conclusion == "failure") | .name' | sort)"
+          alertable="$(grep -Ev '^upstream-main$' <<<"$failed" || true)"
+          if [ -z "$alertable" ]; then
+            echo "no alertable failures"
+            exit 0
+          fi
+          marker="<!-- failed: $(tr '\n' ' ' <<<"$alertable") -->"
+
+          {
+            echo "Scheduled run: ${RUN_URL}"
+            echo
+            echo "Failing:"
+            sed 's/^/- /' <<<"$alertable"
+            echo
+            echo "Refs this run (row, ref, commit or package):"
+            cat rows/*/row.txt 2>/dev/null | sed 's/^/- /' || true
+            echo
+            echo "$marker"
+          } > body.md
+
+          gh label create "$label" --repo "$REPO" --force --color d73a4a \
+            --description "Scheduled upstream CI caught a regression" || true
+          issue="$(gh issue list --repo "$REPO" --state open --search "\"$title\" in:title" \
+            --json number --jq '.[0].number // empty')"
+          if [ -z "$issue" ]; then
+            gh issue create --repo "$REPO" --title "$title" --label "$label" --body-file body.md \
+              || gh issue create --repo "$REPO" --title "$title" --body-file body.md
+            exit 0
+          fi
+          last="$(gh issue view "$issue" --repo "$REPO" --json body,comments \
+            --jq '([.body] + [.comments[].body]) | last')"
+          if grep -qF "$marker" <<<"$last"; then
+            echo "issue #$issue already reports this set of failures"
+            exit 0
+          fi
+          gh issue comment "$issue" --repo "$REPO" --body-file body.md
