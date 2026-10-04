@@ -134,4 +134,4 @@ shape change that alters the image box starts a new trail segment.
 - Bezier curves for warp transitions.
 - Benchmarking
 - Catmul-Rom splines
-- Cursor SVG shader source.
+- Cursor graphic shader source.
