@@ -83,7 +83,7 @@ jobs:
 
           {
             echo "### Hyprland refs this run"
-            echo '```json'
+            echo '```-json'
             echo "$rows" | jq .
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
