@@ -1,16 +1,17 @@
 #version 300 es
 #pragma hyprtail contract 2
 #pragma hyprtail topology instanced count
-// hyprtail "spray" preset: K particles per trail node, each drifting away
-// from where its node was born as the node ages. Also the reference for
-// instanced-topology geometry shaders whose reach GROWS with age: the
-// padding has to cover the furthest a particle can get before fade_ms, so it
-// is written in terms of fade_ms (a reserved parameter, allowed in padding
-// expressions) and the speed and wobble limits below.
+// hyprtail geometry "drift": K particles per trail node, each flying away
+// from where its node was born as the node ages, pulled by an optional
+// gravity. Also the reference for instanced-topology geometry shaders whose
+// reach GROWS with age: the padding has to cover the furthest a particle can
+// get before fade_ms, so it is written in terms of fade_ms (a reserved
+// parameter, allowed in padding expressions) and the speed, gravity and
+// wobble limits below.
 //
 // A particle's heading comes from its node's seed, biased to trail behind the
 // pointer using the node's velocity direction (its DIRECTION only, so the
-// reach doesn't depend on how fast the pointer moved). See jitter.vert for
+// reach doesn't depend on how fast the pointer moved). See scatter.vert for
 // the instanced-topology summary.
 
 #include "helpers/fade.glsl"
@@ -24,9 +25,15 @@
 #pragma hyprtail param float wobble 6 0 256
 // 0 = random heading, 1 = straight behind the pointer's motion.
 #pragma hyprtail param float trailing 0.6 0 1
-// Farthest a particle can be from its node: top speed for fade_ms, plus the
-// wobble, its own size and the ~1px soft edge.
-#pragma hyprtail padding speed * fade_ms / 1000 + wobble + size + 1
+// Constant pull, px per second squared, toward gravity_dir: positive y is
+// down the screen, so 0,-1 makes particles rise like embers. Only the
+// direction of gravity_dir counts; 0,0 turns gravity off.
+#pragma hyprtail param float gravity 0 0 4000
+#pragma hyprtail param vec2 gravity_dir 0,1 -1 1
+// Farthest a particle can be from its node: top speed and gravity for
+// fade_ms (distance = v t + g t^2 / 2, t in s), plus the wobble, its own
+// size and the ~1px soft edge.
+#pragma hyprtail padding speed * fade_ms / 1000 + gravity * fade_ms * fade_ms / 2000000 + wobble + size + 1
 
 const float TAU = 6.28318530718;
 
@@ -61,8 +68,12 @@ void main() {
     // input moves with age and differs per particle.
     float w = (ht_noise(vec2(t * 3.0, ht_rand(n.seed, 3u * i + 2u) * 64.0)) * 2.0 - 1.0) * wobble;
 
+    // Unit (or zero) pull direction, so gravity alone bounds the reach.
+    float gLen = length(gravity_dir);
+    vec2  g    = gLen > 1e-4 ? gravity_dir / gLen * gravity : vec2(0.0);
+
     vec2 c = ht_corner();
-    vec2 p = n.pos + dir * v * t + side * w * min(t, 1.0) + c * size * life;
+    vec2 p = n.pos + dir * v * t + 0.5 * g * t * t + side * w * min(t, 1.0) + c * size * life;
 
     ht_vLocal   = c;
     ht_vAge     = n.age;

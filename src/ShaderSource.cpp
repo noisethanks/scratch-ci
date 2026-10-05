@@ -17,26 +17,29 @@ namespace hyprtail::shader {
         // Stock shaders and the prefab library, embedded at build time (the
         // Makefile lists them as dependencies). Keep them ASCII: GLSL ES
         // drivers aren't reliable with UTF-8, even in comments.
-        constexpr unsigned char CLASSIC_RIBBON_VERT[] = {
+        constexpr unsigned char GEOM_RIBBON_VERT[] = {
 #embed "../shaders/ribbon.vert"
         };
-        constexpr unsigned char CLASSIC_RIBBON_FRAG[] = {
-#embed "../shaders/ribbon.frag"
+        constexpr unsigned char GEOM_SCATTER_VERT[] = {
+#embed "../shaders/scatter.vert"
         };
-        constexpr unsigned char CLASSIC_RING_VERT[] = {
-#embed "../shaders/ring.vert"
+        constexpr unsigned char GEOM_DRIFT_VERT[] = {
+#embed "../shaders/drift.vert"
         };
-        constexpr unsigned char CLASSIC_RING_FRAG[] = {
-#embed "../shaders/ring.frag"
+        constexpr unsigned char GEOM_HALO_VERT[] = {
+#embed "../shaders/halo.vert"
         };
-        constexpr unsigned char PREFAB_JITTER_VERT[] = {
-#embed "../shaders/jitter.vert"
+        constexpr unsigned char LOOK_GRADIENT_FRAG[] = {
+#embed "../shaders/gradient.frag"
         };
-        constexpr unsigned char PREFAB_SPRAY_VERT[] = {
-#embed "../shaders/spray.vert"
-        };
-        constexpr unsigned char PREFAB_DOTS_FRAG[] = {
+        constexpr unsigned char LOOK_DOTS_FRAG[] = {
 #embed "../shaders/dots.frag"
+        };
+        constexpr unsigned char LOOK_PULSE_FRAG[] = {
+#embed "../shaders/pulse.frag"
+        };
+        constexpr unsigned char LOOK_SIZZLE_FRAG[] = {
+#embed "../shaders/sizzle.frag"
         };
         constexpr unsigned char PRELUDE_COMMON[] = {
 #embed "../shaders/prelude/common.glsl"
@@ -68,6 +71,9 @@ namespace hyprtail::shader {
         constexpr unsigned char PREFAB_NOISE[] = {
 #embed "../shaders/helpers/noise.glsl"
         };
+        constexpr unsigned char PREFAB_PALETTE[] = {
+#embed "../shaders/helpers/palette.glsl"
+        };
 
         template <size_t N>
         constexpr std::string_view view(const unsigned char (&data)[N]) {
@@ -76,10 +82,8 @@ namespace hyprtail::shader {
 
         const std::map<std::string, std::string_view, std::less<>>& prefabs() {
             static const std::map<std::string, std::string_view, std::less<>> m{
-                {"helpers/ribbon.glsl", view(PREFAB_RIBBON)},
-                {"helpers/fade.glsl", view(PREFAB_FADE)},
-                {"helpers/sdf.glsl", view(PREFAB_SDF)},
-                {"helpers/noise.glsl", view(PREFAB_NOISE)},
+                {"helpers/ribbon.glsl", view(PREFAB_RIBBON)}, {"helpers/fade.glsl", view(PREFAB_FADE)},       {"helpers/sdf.glsl", view(PREFAB_SDF)},
+                {"helpers/noise.glsl", view(PREFAB_NOISE)},   {"helpers/palette.glsl", view(PREFAB_PALETTE)},
             };
             return m;
         }
@@ -398,8 +402,8 @@ namespace hyprtail::shader {
 
     std::string_view builtin(std::string_view name) {
         static const std::map<std::string, std::string_view, std::less<>> m{
-            {"ribbon.vert", view(CLASSIC_RIBBON_VERT)}, {"ribbon.frag", view(CLASSIC_RIBBON_FRAG)}, {"ring.vert", view(CLASSIC_RING_VERT)}, {"ring.frag", view(CLASSIC_RING_FRAG)},
-            {"jitter.vert", view(PREFAB_JITTER_VERT)},  {"spray.vert", view(PREFAB_SPRAY_VERT)},    {"dots.frag", view(PREFAB_DOTS_FRAG)},
+            {"ribbon.vert", view(GEOM_RIBBON_VERT)},     {"scatter.vert", view(GEOM_SCATTER_VERT)}, {"drift.vert", view(GEOM_DRIFT_VERT)}, {"halo.vert", view(GEOM_HALO_VERT)},
+            {"gradient.frag", view(LOOK_GRADIENT_FRAG)}, {"dots.frag", view(LOOK_DOTS_FRAG)},       {"pulse.frag", view(LOOK_PULSE_FRAG)}, {"sizzle.frag", view(LOOK_SIZZLE_FRAG)},
         };
         const auto it = m.find(name);
         return it == m.end() ? std::string_view{} : it->second;

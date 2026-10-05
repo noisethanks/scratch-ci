@@ -1,10 +1,10 @@
 #version 300 es
 #pragma hyprtail contract 2
 #pragma hyprtail topology instanced copies
-// hyprtail "jitter" preset: K scattered copies of every trail node. Also the
-// reference for instanced-topology geometry shaders whose reach is BOUNDED:
-// each copy sits at a fixed random offset (at most `spread`) from its node, so
-// the padding is a constant.
+// hyprtail geometry "scatter": K scattered copies of every trail node. Also
+// the reference for instanced-topology geometry shaders whose reach is
+// BOUNDED: each copy sits at a fixed random offset (at most `spread`) from its
+// node, so the padding is a constant.
 //
 // Instanced topology in short (SPEC section 13.3):
 //   - "#pragma hyprtail topology instanced <K>": K is a literal 1..64, or the

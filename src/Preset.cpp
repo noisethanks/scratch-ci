@@ -170,6 +170,9 @@ namespace hyprtail::preset {
         constexpr unsigned char SPRING_CONF[] = {
 #embed "../presets/spring.conf"
         };
+        constexpr unsigned char INK_CONF[] = {
+#embed "../presets/ink.conf"
+        };
 
         template <size_t N>
         constexpr std::string_view view(const unsigned char (&data)[N]) {
@@ -178,8 +181,8 @@ namespace hyprtail::preset {
 
         std::string_view builtinManifest(std::string_view name) {
             static const std::map<std::string, std::string_view, std::less<>> m{
-                {"subtle", view(SUBTLE_CONF)}, {"classic", view(CLASSIC_CONF)}, {"jitter", view(JITTER_CONF)}, {"spray", view(SPRAY_CONF)},
-                {"vivid", view(VIVID_CONF)},   {"comet", view(COMET_CONF)},     {"embers", view(EMBERS_CONF)}, {"spring", view(SPRING_CONF)},
+                {"subtle", view(SUBTLE_CONF)}, {"classic", view(CLASSIC_CONF)}, {"jitter", view(JITTER_CONF)}, {"spray", view(SPRAY_CONF)}, {"vivid", view(VIVID_CONF)},
+                {"comet", view(COMET_CONF)},   {"embers", view(EMBERS_CONF)},   {"spring", view(SPRING_CONF)}, {"ink", view(INK_CONF)},
             };
             const auto it = m.find(name);
             return it == m.end() ? std::string_view{} : it->second;
@@ -242,7 +245,7 @@ namespace hyprtail::preset {
             auto vert = resolveStage(layerName, keys, allowPaths, "vertex", "ribbon.vert");
             if (!vert)
                 return std::unexpected(vert.error());
-            auto frag = resolveStage(layerName, keys, allowPaths, "fragment", "ribbon.frag");
+            auto frag = resolveStage(layerName, keys, allowPaths, "fragment", "gradient.frag");
             if (!frag)
                 return std::unexpected(frag.error());
 
@@ -269,7 +272,7 @@ namespace hyprtail::preset {
                 const auto builtin = builtinManifest(std::string_view{name}.substr(PREFAB_PREFIX.size()));
                 if (builtin.empty())
                     return std::unexpected(std::format("unknown prefab preset \"{}\" (built-in: prefab:subtle, prefab:classic, prefab:jitter, prefab:spray, prefab:vivid, "
-                                                       "prefab:comet, prefab:embers, prefab:spring)",
+                                                       "prefab:comet, prefab:embers, prefab:spring, prefab:ink)",
                                                        name));
                 text = std::string{builtin};
             } else {
@@ -316,7 +319,7 @@ namespace hyprtail::preset {
         // expected to actually run -- it exists so a mistake in this
         // codebase's own built-ins degrades instead of throwing/crashing.
         SResolved hardcodedFallback() {
-            SLayerSpec trail{.name = "trail", .vertBuiltin = "ribbon.vert", .fragBuiltin = "ribbon.frag"};
+            SLayerSpec trail{.name = "trail", .vertBuiltin = "ribbon.vert", .fragBuiltin = "gradient.frag"};
             return SResolved{.name = FALLBACK_PRESET, .description = "fallback", .layers = {std::move(trail)}};
         }
     }

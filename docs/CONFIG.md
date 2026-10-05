@@ -40,7 +40,7 @@ A preset name is addressed in one of two namespaces, and they never overlap:
 - **`prefab:<name>`** is always the built-in preset embedded in the plugin,
   regardless of any local file with the same name. Built-ins: `prefab:subtle`,
   `prefab:classic`, `prefab:jitter`, `prefab:spray`, `prefab:vivid`,
-  `prefab:comet`, `prefab:embers` and `prefab:spring`.
+  `prefab:comet`, `prefab:embers`, `prefab:spring` and `prefab:ink`.
 - **`<name>`** (no prefix) is always your own file,
   `~/.config/hypr/hyprtail/presets/<name>.conf`. If that file doesn't exist,
   loading fails with an error naming the path it looked for; it never falls
@@ -51,8 +51,12 @@ A fresh install has no `presets/` directory, so the default is
 
 Shipped presets:
 
-- **`prefab:subtle`** (default): one thin trail layer, short fade,
-  low-alpha neutral color, no idle effect.
+- **`prefab:subtle`** (default): one thin trail layer (`thread`), short
+  fade, low-alpha neutral color, no idle effect.
+- **`prefab:ink`**: a calligraphy stroke, one ribbon (`ink`) drawn as if by
+  a flat nib, so it swells moving across the nib and thins moving along it;
+  paper white cooling to slate as it fades. Try `params = "ink:nib_angle=-30"`
+  to turn the pen, or `ink:nib=0` for a round one.
 - **`prefab:classic`**: a wider, speed-tinted trail (slow motion tints one
   color, fast motion tints another) plus an optional idle ring around a
   stationary cursor (off by default).
@@ -70,17 +74,20 @@ Shipped presets:
   (slow) to magenta (fast). Layers composite with ordinary alpha blending
   (there is no per-layer blend mode), so the glow is a translucent halo, not
   additive light. Try `params = "glow:width=40 core:width=6"`.
-- **`prefab:comet`**: one narrow ribbon (4 px) with a very short fade
-  (160 ms), so the tail tapers to a point right behind the pointer. Ice blue
-  shifts to amber with speed; `speed_ref` (px/ms) is set high (4), so the
-  amber only appears on fast flicks. Try `params = "trail:speed_ref=1.5"`
-  to make it flare on lighter movement.
-- **`prefab:embers`**: sparse glowing particles, built on the instanced
-  topology alone (no ribbon layer): 2 small, soft dots per point drifting
-  slowly (24 px/s) in nearly random directions and lingering for 1.2 s.
-  Points pushed out of the buffer take their particles with them, so raise
-  `capacity` (for example 256) for long strokes. Try
-  `params = "embers:count=4 embers:fade_ms=2000"`.
+- **`prefab:comet`**: a narrow ribbon (`tail`, 5 px) with a very short fade
+  (180 ms), so it tapers to a point right behind the pointer, over a few
+  twinkling star-shaped `sparks` thrown straight back. Ice blue shifts to
+  amber with speed; `speed_ref` (px/ms) is set high (4), so the amber only
+  appears on fast flicks. Try `params = "tail:speed_ref=1.5"` to make it
+  flare on lighter movement.
+- **`prefab:embers`**: fire. Soft particles (`embers`, 2 per point) drift
+  slowly, rise up the screen and cool from yellow to red over 1.4 s; while
+  the pointer rests, short sparks crackle around it now and then
+  (`crackle`). Points pushed out of the buffer take their particles with
+  them, so raise `capacity` (for example 256) for long strokes. The crackle
+  runs until the pointer moves, which keeps the monitor redrawing every frame
+  while it shows: `params = "crackle:duration_ms=8000"` stops it after 8 s,
+  `crackle:enabled=false` turns it off.
 
 - **`prefab:spring`**: a springy rope instead of a pointer history (source
   `spring`, see "Sources" below): a chain of `capacity` points, the first
@@ -90,7 +97,7 @@ Shipped presets:
   the cursor and fades. Try `params = "source:damping=120 source:age_step_ms=6"`
   for a livelier, longer rope.
 
-`jitter`, `spray` and `embers` draw *(visible points) x (copies per point)* quads, so `capacity` and
+`jitter`, `spray`, `embers` and comet's `sparks` draw *(visible points) x (copies per point)* quads, so `capacity` and
 `fade_ms` together with the copy count set the GPU cost: the most a single
 layer can draw is 64 copies x 4096 points.
 
@@ -103,10 +110,10 @@ layer can draw is 64 copies x 4096 points.
 3. Edit the file freely. Presets are re-read on every Hyprland config reload,
    not when the preset file itself changes.
 4. To change a shader too, copy `shaders/ribbon.vert` and
-   `shaders/ribbon.frag` from the repository root into
+   `shaders/gradient.frag` from the repository root into
    `~/.config/hypr/hyprtail/`, change the preset's
-   `trail:vertex`/`trail:fragment` from `prefab:ribbon.vert` /
-   `prefab:ribbon.frag` to `ribbon.vert` / `ribbon.frag`, and edit the
+   `thread:vertex`/`thread:fragment` from `prefab:ribbon.vert` /
+   `prefab:gradient.frag` to `ribbon.vert` / `gradient.frag`, and edit the
    shaders. See SHADERS.md.
 
 The prefix rule is the same everywhere in hyprtail: **`prefab:` /
@@ -142,9 +149,10 @@ core:color    = rgba(ffffffa0)
 - Every other line is `<layer>:<key> = <value>`, where `<layer>` must be one
   of the names in `layers`.
   - `<layer>:vertex` / `<layer>:fragment` pick that layer's shader:
-    `prefab:<name>` for an embedded one (`prefab:ribbon.vert`,
-    `prefab:ribbon.frag`, `prefab:ring.vert`, `prefab:ring.frag`,
-    `prefab:jitter.vert`, `prefab:spray.vert`, `prefab:dots.frag`), or
+    `prefab:<name>` for an embedded one (geometry: `prefab:ribbon.vert`,
+    `prefab:scatter.vert`, `prefab:drift.vert`, `prefab:halo.vert`; looks:
+    `prefab:gradient.frag`, `prefab:dots.frag`, `prefab:pulse.frag`,
+    `prefab:sizzle.frag`), or
     anything else as a path to your own file. A relative path resolves
     against the hyprtail config root; `~` and absolute paths also work.
     Built-in presets may only use `prefab:` shaders.

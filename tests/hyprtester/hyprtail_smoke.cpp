@@ -274,7 +274,8 @@ TEST_CASE(hyprtailLifecycle) {
     // instances in one draw). State only, see the header comment.
     {
         // Every step below keeps trail:fade_ms at FADE_MS so the waits hold.
-        const std::string fade = std::format("trail:fade_ms={}", FADE_MS);
+        const std::string fade       = std::format("trail:fade_ms={}", FADE_MS);
+        const std::string subtleFade = std::format("thread:fade_ms={}", FADE_MS); // prefab:subtle's one layer
 
         // Each instanced preset loads, compiles and draws.
         for (const std::string preset : {"prefab:jitter", "prefab:spray"}) {
@@ -348,13 +349,13 @@ TEST_CASE(hyprtailLifecycle) {
                                                                     "description = smoke test: path, quad and instanced layers\n"
                                                                     "layers = trail, idle, sparks\n"
                                                                     "trail:vertex = prefab:ribbon.vert\n"
-                                                                    "trail:fragment = prefab:ribbon.frag\n"
-                                                                    "idle:vertex = prefab:ring.vert\n"
-                                                                    "idle:fragment = prefab:ring.frag\n"
+                                                                    "trail:fragment = prefab:gradient.frag\n"
+                                                                    "idle:vertex = prefab:halo.vert\n"
+                                                                    "idle:fragment = prefab:pulse.frag\n"
                                                                     "idle:enabled = true\n"
                                                                     "idle:start_ms = 50\n"
                                                                     "idle:duration_ms = 200\n"
-                                                                    "sparks:vertex = prefab:spray.vert\n"
+                                                                    "sparks:vertex = prefab:drift.vert\n"
                                                                     "sparks:fragment = prefab:dots.frag\n"
                                                                     "sparks:count = 12\n";
         }
@@ -370,7 +371,7 @@ TEST_CASE(hyprtailLifecycle) {
         for (const std::string preset : {"prefab:jitter", "prefab:classic", "prefab:spray", "smoke-stack", "prefab:subtle", "prefab:jitter"}) {
             const auto step = "switch to " + preset;
             OK(moveAlong(700, 400, 1200, 700, 12));
-            HYPRTAIL_CONFIGURE(step, preset, fade, 0);
+            HYPRTAIL_CONFIGURE(step, preset, preset == "prefab:subtle" ? subtleFade : fade, 0);
             OK(moveAlong(1200, 700, 800, 500, 12));
             HYPRTAIL_HEALTHY(step);
         }
@@ -389,7 +390,8 @@ TEST_CASE(hyprtailLifecycle) {
     // and a preset's source can change at runtime. State only, see the
     // header comment.
     {
-        const std::string fade = std::format("trail:fade_ms={}", FADE_MS);
+        const std::string fade       = std::format("trail:fade_ms={}", FADE_MS);
+        const std::string subtleFade = std::format("thread:fade_ms={}", FADE_MS); // prefab:subtle's one layer
 
         // Loads, draws, moves, and once the pointer is still the chain comes
         // to rest: the status stops reporting its points as moving. (That
@@ -417,13 +419,13 @@ TEST_CASE(hyprtailLifecycle) {
                                                                            "source = spring\n"
                                                                            "source:damping = 150\n"
                                                                            "trail:vertex = prefab:ribbon.vert\n"
-                                                                           "trail:fragment = prefab:ribbon.frag\n"
-                                                                           "idle:vertex = prefab:ring.vert\n"
-                                                                           "idle:fragment = prefab:ring.frag\n"
+                                                                           "trail:fragment = prefab:gradient.frag\n"
+                                                                           "idle:vertex = prefab:halo.vert\n"
+                                                                           "idle:fragment = prefab:pulse.frag\n"
                                                                            "idle:enabled = true\n"
                                                                            "idle:start_ms = 50\n"
                                                                            "idle:duration_ms = 200\n"
-                                                                           "sparks:vertex = prefab:spray.vert\n"
+                                                                           "sparks:vertex = prefab:drift.vert\n"
                                                                            "sparks:fragment = prefab:dots.frag\n"
                                                                            "sparks:count = 12\n";
         }
@@ -440,7 +442,7 @@ TEST_CASE(hyprtailLifecycle) {
         for (const std::string preset : {"prefab:subtle", "prefab:spring", "prefab:jitter", "smoke-spring-stack", "prefab:spring", "prefab:spring"}) {
             const auto step = "switch to " + preset;
             OK(moveAlong(700, 400, 1200, 700, 12));
-            HYPRTAIL_CONFIGURE(step, preset, fade, 0);
+            HYPRTAIL_CONFIGURE(step, preset, preset == "prefab:subtle" ? subtleFade : fade, 0);
             HYPRTAIL_EXPECT_STATUS(step, preset.contains("spring") ? "source: spring" : "source: pointer");
             OK(moveAlong(1200, 700, 800, 500, 12));
             HYPRTAIL_HEALTHY(step);

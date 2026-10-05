@@ -242,9 +242,9 @@ positions grown by the padding expression (plus `damage_padding`); anything a
 copy draws outside it is not guaranteed to be repainted, and leaves ghosts. Two
 disciplines, both shipped:
 
-- *Bounded offset* (`prefab:jitter.vert`): each copy sits at a fixed offset of
+- *Bounded offset* (`prefab:scatter.vert`): each copy sits at a fixed offset of
   at most `spread` from its node, so `padding spread + size + 1`.
-- *Growth with age* (`prefab:spray.vert`): copies drift away as the node ages.
+- *Growth with age* (`prefab:drift.vert`): copies drift away as the node ages.
   Write the padding for the farthest point before `fade_ms`, e.g. `padding
   speed * fade_ms / 1000 + wobble + size + 1` (`fade_ms` is allowed in padding
   expressions, being a reserved parameter), and cap the age used in the shader
@@ -382,6 +382,34 @@ float ht_sdRing(vec2 p, float r, float halfWidth);
 float ht_coverage(float signedDistance); // ~1px antialiased 0..1 coverage
 ```
 
+**`helpers/palette.glsl`** (vertex or fragment): the two-color palette every
+built-in look shares (`prefab:gradient.frag`, `prefab:dots.frag`). Declare
+the same params they do and a preset's colors carry over between your shader
+and theirs:
+
+```glsl
+#pragma hyprtail param color color_a rgba(1a66ffff)
+#pragma hyprtail param color color_b rgba(ff1a1aff)
+#pragma hyprtail param int   color_by 0 0 4
+#pragma hyprtail param float speed_ref 2 0.001 1000
+#pragma hyprtail param float color_period 200 1 100000
+
+const float HT_TAU = 6.28318530718;
+float ht_wave(float x, float period); // 0..1 back and forth once per period
+float ht_paletteT(int mode, float speed, float life, float dist, float seed,
+                  float age, float speedRef, float period);
+// 0..1 position between color_a and color_b, for color_by = mode:
+// 0 speed (color_b at speedRef px/ms), 1 life (color_b as it fades),
+// 2 distance (back and forth every `period` px along the trail),
+// 3 seed (fixed random per point or copy), 4 cycle (back and forth every
+// `period` ms of the point's age, offset by its seed).
+```
+
+Typical use: `vec4 c = mix(color_a, color_b, ht_paletteT(color_by, ht_vSpeed,
+ht_vLife, ht_vDist, ht_vSeed, ht_vAge, speed_ref, color_period));`. Mode 4 runs
+on a point's age, not `ht_nowMs`: `ht_nowMs` is rebased on the newest trail
+point, so it jumps whenever the pointer moves.
+
 ## Packaging rules
 
 - A shader stage is one standalone `.vert` or `.frag` file — never both in
@@ -409,9 +437,9 @@ float ht_coverage(float signedDistance); // ~1px antialiased 0..1 coverage
 
 ## Worked example: a solid-color fragment shader
 
-The simplest useful custom shader: replace `prefab:classic`'s speed-tinted
-fragment shader with a single flat color, keeping the stock ribbon
-geometry (`prefab:ribbon.vert`) unchanged.
+The simplest useful custom shader: replace the default preset's two-color
+fragment shader (`prefab:gradient.frag`) with a single flat color, keeping
+the stock ribbon geometry (`prefab:ribbon.vert`) unchanged.
 
 ```glsl
 #version 300 es
@@ -466,28 +494,30 @@ to `~/.config/hypr/hyprtail/presets/mine.conf`, set `preset = "mine"`) and in
 it change:
 
 ```
-trail:fragment = solid.frag        # bare = your file, relative to ~/.config/hypr/hyprtail/
-trail:color    = rgba(ff2266ff)
+thread:fragment = solid.frag        # bare = your file, relative to ~/.config/hypr/hyprtail/
+thread:color    = rgba(ff2266ff)
 ```
 
 or override it directly without a custom preset:
 
 ```
 plugin:hyprtail:layer1_fragment = ~/.config/hypr/hyprtail/solid.frag
-plugin:hyprtail:params = trail:color=rgba(ff2266ff)
+plugin:hyprtail:params = thread:color=rgba(ff2266ff)
 ```
 
-(`trail` here assumes layer 1 of the active preset is named `trail`, true
-for both shipped presets.)
+(`thread` is the name of `prefab:subtle`'s one layer; with another preset,
+use the name of its first layer.)
 
 **Expect one warning with either setup.** Swapping a layer's shader doesn't
-touch its parameter defaults: the preset's own `trail:` values stay in place.
-Both shipped presets set `trail:color_slow` and `trail:color_fast`, which
+touch its parameter defaults: the preset's own `thread:` values stay in
+place. `prefab:subtle` sets `thread:color_a` and `thread:color_b`, which
 `solid.frag` doesn't declare (it declares `color`). Those two values then name
 parameters that aren't in the new program, so each load and config reload
-reports a `params:trail` warning (`color_slow: not a parameter of this layer;
-ignoring`, and the same for `color_fast`). The layer still draws with
-`solid.frag` and `trail:color`; the warning is the only effect. With your own
+reports a `params:thread` warning (`color_a: not a parameter of this layer;
+ignoring`, and the same for `color_b`). The layer still draws with
+`solid.frag` and `thread:color`; the warning is the only effect. With your own
 preset file (the first setup) you can avoid it by deleting the
-`trail:color_slow` and `trail:color_fast` lines; with `layer1_fragment` (the
+`thread:color_a` and `thread:color_b` lines; with `layer1_fragment` (the
 second setup) the preset's values can't be removed, so the warning stays.
+Naming your parameter `color_a` instead of `color` avoids the warning for
+that one.

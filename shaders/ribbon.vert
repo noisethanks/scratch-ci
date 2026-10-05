@@ -1,9 +1,10 @@
 #version 300 es
 #pragma hyprtail contract 2
 #pragma hyprtail topology path
-// hyprtail "classic" preset, layer "trail": ribbon geometry. Also the
-// reference for path-topology geometry shaders: copy it and change what you
-// like.
+// hyprtail geometry "ribbon": the trail as one continuous strip. Every
+// built-in ribbon preset uses this file, so a change to how the strip is
+// built (joins, smoothing) reaches all of them at once. Also the reference
+// for path-topology geometry shaders: copy it and change what you like.
 //
 // Contract 2 in short (SPEC section 13):
 //   - "#pragma hyprtail contract 2" must come right after #version; the
@@ -33,8 +34,30 @@
 
 #pragma hyprtail param float width 8 0 512
 #pragma hyprtail param float miter_limit 2 1 16
-// Widest possible miter, plus the ~1px antialiased edge.
+// How much the width follows a point's life: 0 = full width until it fades
+// out, 1 = thins with age and pinches to a point at the faded end.
+#pragma hyprtail param float taper 1 0 1
+// Calligraphy: 0 = round pen (same width in every direction), 1 = flat nib,
+// full width moving across the nib's edge and thin moving along it.
+#pragma hyprtail param float nib 0 0 1
+// The nib edge's angle on screen, degrees counterclockwise from horizontal.
+#pragma hyprtail param float nib_angle 45 -90 90
+// Widest possible miter, plus the ~1px antialiased edge. taper and nib only
+// ever narrow the ribbon.
 #pragma hyprtail padding width * 0.5 * miter_limit + 1
+
+const float NIB_THIN = 0.15; // width fraction left moving along a full nib
+
+// Half-width at a joint. Computed from the joint's own direction (the mean of
+// the segments meeting there), so both segments sharing a joint agree on it.
+float halfWidth(float life, vec2 dirIn, vec2 dirOut) {
+    vec2  j      = ht_dirBetween(vec2(0.0), dirIn + dirOut, dirOut);
+    float a      = radians(nib_angle);
+    vec2  edge   = vec2(cos(a), -sin(a)); // screen y points down
+    float across = abs(j.x * edge.y - j.y * edge.x);
+    float pen    = mix(1.0, mix(NIB_THIN, 1.0, across), nib);
+    return 0.5 * width * mix(1.0, life, taper) * pen;
+}
 
 void main() {
     ht_initVaryings();
@@ -64,12 +87,10 @@ void main() {
     bool  atEnd = ht_atEnd();
     float side  = ht_side();
 
-    // Width tapers with age, like the alpha: the tail thins as it fades and
-    // pinches to a point at a fully faded end.
     float life0 = ht_life(p0.age, fade_ms);
     float life1 = ht_life(p1.age, fade_ms);
-    float hw0   = 0.5 * width * life0;
-    float hw1   = 0.5 * width * life1;
+    float hw0   = halfWidth(life0, dirPrev, dir);
+    float hw1   = halfWidth(life1, dir, dirNext);
 
     vec2  offset = atEnd ? ht_jointOffset(dir, dirNext, hw1, miter_limit) : ht_jointOffset(dirPrev, dir, hw0, miter_limit);
     vec2  pos    = (atEnd ? p1.pos : p0.pos) + offset * side;

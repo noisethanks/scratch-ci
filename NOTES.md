@@ -1014,6 +1014,41 @@ Interface only, no spring math. Reasoning:
   `params = "source:damping=..."` live; a lock/unlock and a workspace
   switch (re-seed).
 
+## Preset rework slice 1: the shader kit (built, untested on host; SPEC 13.7.1)
+
+- **No time-based palette from `ht_nowMs`.** `ht_nowMs` is uploaded as
+  `nowMs - preset.gpu.refMs()` (`LayerPassElement.cpp:289`), and the buffer
+  is rebased on the newest node at each upload (`LayerPassElement.cpp:127`),
+  so the value jumps back whenever a point is added. A color cycle on it
+  would stutter while the pointer moves. `color_by = 4` (cycle) runs on each
+  point's age plus its seed instead, which is stable per point. `dots.frag`'s
+  twinkle does the same. Quad looks (`pulse`, `sizzle`) use `ht_stillMs`,
+  which is continuous while the pointer rests, the only time they show.
+- **Calligraphy nib width per joint.** `ribbon.vert` computes the half-width
+  at a joint from the mean direction of the two segments meeting there, so
+  both segments sharing the joint agree and the strip doesn't step. `nib`
+  and `taper` only narrow the ribbon, so the padding is unchanged.
+- **`drift.vert` gravity padding.** `gravity_dir` is normalized in the shader
+  (zero turns gravity off), so `gravity` alone bounds the pull:
+  `gravity * fade_ms^2 / 2000000` px on top of the old speed term, with age
+  capped at `fade_ms` as before. A vec2 param can't appear in a padding
+  expression (`params::scalar`, `Params.cpp:223-226`, returns none for it),
+  hence magnitude and direction as two params.
+- **`sizzle.frag` stays inside its square.** Spark points reach at most
+  `sqrt(0.8^2 + 0.12^2) * radius`, about `0.81 * radius`; anything past the
+  quad (glow, thick sparks on a small radius) is clipped by the quad, which is
+  exactly the damaged box, so it can't leave ghosts. Its burst decisions
+  depend only on uniforms, so the early discards are uniform control flow and
+  `ht_coverage`'s `fwidth` afterwards is well defined.
+- **Smoke test params.** `HYPRTAIL_HEALTHY` fails on any warning, and
+  `prefab:subtle`'s layer is now `thread`, so the preset-switch loops pass
+  `thread:fade_ms` for subtle instead of `trail:fade_ms`.
+- **Codrops "stylised mouse trails" (OGL):** used as inspiration only (eased
+  point chain drawn as a thick ribbon; our spring source is the chain). No
+  code taken. The article page wasn't readable from here (HTTP 403); OGL
+  itself is Unlicense (github.com/oframe/ogl). The demo's own license wasn't
+  found.
+
 ## Open questions
 
 - [x] Hyprland commit to pin: `efb5099` (v0.56.2, host package)

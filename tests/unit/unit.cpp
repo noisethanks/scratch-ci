@@ -220,14 +220,14 @@ static void testShaderSource() {
     CHECK(!pp("#version 300 es\n#pragma hyprtail contract 2\n#pragma hyprtail glow 1\nvoid main() {}\n", eStage::FRAGMENT));
 
     // Built-ins preprocess.
-    for (const auto* name : {"ribbon.vert", "ring.vert", "jitter.vert", "spray.vert"})
+    for (const auto* name : {"ribbon.vert", "scatter.vert", "drift.vert", "halo.vert"})
         CHECK(shader::preprocess(shader::builtin(name), name, {}, eStage::VERTEX).has_value());
-    for (const auto* name : {"ribbon.frag", "ring.frag", "dots.frag"})
+    for (const auto* name : {"gradient.frag", "dots.frag", "pulse.frag", "sizzle.frag"})
         CHECK(shader::preprocess(shader::builtin(name), name, {}, eStage::FRAGMENT).has_value());
 
     // The instanced built-ins declare what the loader checks: topology,
     // a K param inside 1..64, a padding expression, and (dots.frag) expects.
-    for (const auto* name : {"jitter.vert", "spray.vert"}) {
+    for (const auto* name : {"scatter.vert", "drift.vert"}) {
         const auto s = shader::preprocess(shader::builtin(name), name, {}, eStage::VERTEX);
         CHECK(s && s->topology == eTopology::INSTANCED && !s->instances.param.empty() && !s->padding.empty());
         if (!s)
@@ -239,6 +239,21 @@ static void testShaderSource() {
     }
     const auto dots = shader::preprocess(shader::builtin("dots.frag"), "dots.frag", {}, eStage::FRAGMENT);
     CHECK(dots && dots->expects.size() == 2);
+
+    // The shared palette (helpers/palette.glsl): every look that colors with
+    // it declares its params with the same names, types and ranges, so a
+    // preset's colors carry over when a layer swaps looks.
+    const auto gradient = shader::preprocess(shader::builtin("gradient.frag"), "gradient.frag", {}, eStage::FRAGMENT);
+    CHECK(gradient.has_value());
+    if (gradient && dots) {
+        for (const auto* name : {"color_a", "color_b", "color_by", "speed_ref", "color_period"}) {
+            const auto find = [&](const shader::SSource& s) { return std::ranges::find_if(s.params, [&](const auto& p) { return p.decl.name == name; }); };
+            const auto g = find(*gradient), d = find(*dots);
+            CHECK(g != gradient->params.end() && d != dots->params.end());
+            if (g != gradient->params.end() && d != dots->params.end())
+                CHECK(g->decl.type == d->decl.type && g->decl.min == d->decl.min && g->decl.max == d->decl.max);
+        }
+    }
 }
 
 // The built-in preset manifests (presets/*.conf, run from the repo root):
@@ -360,7 +375,7 @@ static void testPresetManifests() {
             }
         }
     }
-    CHECK(manifests >= 8); // classic, subtle, jitter, spray, vivid, comet, embers, spring
+    CHECK(manifests >= 9); // classic, subtle, jitter, spray, vivid, comet, embers, spring, ink
 
     // The shipped presets that are built purely from other shipped parts:
     // each exists, lists the layers it should, and pairs the shaders it should.
@@ -377,7 +392,7 @@ static void testPresetManifests() {
         return c ? static_cast<int>(c->argb >> 24) : -1;
     };
     const auto ribbon = [&](const std::string& preset, const std::string& layer) {
-        return val(preset, layer, "vertex") == "prefab:ribbon.vert" && val(preset, layer, "fragment") == "prefab:ribbon.frag";
+        return val(preset, layer, "vertex") == "prefab:ribbon.vert" && val(preset, layer, "fragment") == "prefab:gradient.frag";
     };
 
     // spring: one ribbon layer over the spring source, with its settings
@@ -391,24 +406,46 @@ static void testPresetManifests() {
     CHECK(layerOrder["vivid"] == "glow, core");
     CHECK(ribbon("vivid", "glow") && ribbon("vivid", "core"));
     CHECK(num("vivid", "glow", "width") > num("vivid", "core", "width") && num("vivid", "core", "width") > 0.0);
-    for (const auto* key : {"color_slow", "color_fast"}) {
+    for (const auto* key : {"color_a", "color_b"}) {
         CHECK(alpha("vivid", "glow", key) > 0 && alpha("vivid", "glow", key) < 0x80);
         CHECK(alpha("vivid", "core", key) == 0xff);
     }
 
-    // comet: one narrow ribbon layer with a short fade, a higher speed_ref than
-    // the ribbon default (2).
-    CHECK(layerOrder["comet"] == "trail" && ribbon("comet", "trail"));
-    CHECK(num("comet", "trail", "width") > 0.0 && num("comet", "trail", "width") < num("classic", "trail", "width"));
-    CHECK(num("comet", "trail", "fade_ms") < num("subtle", "trail", "fade_ms"));
-    CHECK(num("comet", "trail", "speed_ref") > 2.0);
+    // subtle: one flat-colored ribbon (color_a == color_b).
+    CHECK(layerOrder["subtle"] == "thread" && ribbon("subtle", "thread"));
+    CHECK(val("subtle", "thread", "color_a") == val("subtle", "thread", "color_b"));
 
-    // embers: one instanced layer, no ribbon or path layer, and its own
-    // count, speed and fade rather than a copy of spray's.
-    CHECK(layerOrder["embers"] == "embers" && byPreset["embers"].size() == 1);
-    CHECK(val("embers", "embers", "vertex") == "prefab:spray.vert" && val("embers", "embers", "fragment") == "prefab:dots.frag");
+    // ink: one ribbon drawn with a flat nib, colored by life.
+    CHECK(layerOrder["ink"] == "ink" && ribbon("ink", "ink"));
+    CHECK(num("ink", "ink", "nib") > 0.0 && num("ink", "ink", "color_by") == 1.0);
+
+    // comet: sparks under a narrow ribbon tail with a short fade and a higher
+    // speed_ref than the ribbon default (2).
+    CHECK(layerOrder["comet"] == "sparks, tail" && ribbon("comet", "tail"));
+    CHECK(val("comet", "sparks", "vertex") == "prefab:drift.vert" && val("comet", "sparks", "fragment") == "prefab:dots.frag");
+    CHECK(num("comet", "tail", "width") > 0.0 && num("comet", "tail", "width") < num("classic", "trail", "width"));
+    CHECK(num("comet", "tail", "fade_ms") < num("subtle", "thread", "fade_ms"));
+    CHECK(num("comet", "tail", "speed_ref") > 2.0);
+
+    // embers: rising drift particles plus an idle crackle, and its own count,
+    // speed and fade rather than a copy of spray's.
+    CHECK(layerOrder["embers"] == "embers, crackle");
+    CHECK(val("embers", "embers", "vertex") == "prefab:drift.vert" && val("embers", "embers", "fragment") == "prefab:dots.frag");
+    CHECK(val("embers", "crackle", "vertex") == "prefab:halo.vert" && val("embers", "crackle", "fragment") == "prefab:sizzle.frag");
+    CHECK(num("embers", "embers", "gravity") > 0.0 && val("embers", "embers", "gravity_dir") == "0,-1");
     for (const auto* key : {"count", "speed", "fade_ms"})
         CHECK(num("embers", "embers", key) != num("spray", "trail", key));
+
+    // Reworked presets name their layers uniquely, so a layer block pasted
+    // from one into another never collides.
+    {
+        std::map<std::string, int> uses;
+        for (const auto* stem : {"subtle", "ink", "comet", "embers"})
+            for (const auto& [layer, keys] : byPreset[stem])
+                ++uses[layer];
+        for (const auto& [layer, n] : uses)
+            CHECK(n == 1);
+    }
 }
 
 static void testCrashGuard() {
@@ -943,8 +980,9 @@ int main() {
     if (const char* dir = std::getenv("OUT_DIR")) {
         std::filesystem::create_directories(dir);
         const std::pair<const char*, shader::eStage> builtins[] = {
-            {"ribbon.vert", shader::eStage::VERTEX}, {"ribbon.frag", shader::eStage::FRAGMENT}, {"ring.vert", shader::eStage::VERTEX},   {"ring.frag", shader::eStage::FRAGMENT},
-            {"jitter.vert", shader::eStage::VERTEX}, {"spray.vert", shader::eStage::VERTEX},    {"dots.frag", shader::eStage::FRAGMENT},
+            {"ribbon.vert", shader::eStage::VERTEX},  {"scatter.vert", shader::eStage::VERTEX},    {"drift.vert", shader::eStage::VERTEX},
+            {"halo.vert", shader::eStage::VERTEX},    {"gradient.frag", shader::eStage::FRAGMENT}, {"dots.frag", shader::eStage::FRAGMENT},
+            {"pulse.frag", shader::eStage::FRAGMENT}, {"sizzle.frag", shader::eStage::FRAGMENT},
         };
         for (const auto& [name, stage] : builtins) {
             auto src = shader::preprocess(shader::builtin(name), name, {}, stage);

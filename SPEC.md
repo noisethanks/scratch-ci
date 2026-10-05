@@ -1350,6 +1350,48 @@ would have linked fine.
     **Built (phase 4)** (`presets/classic.conf`, `prefab:classic`): reproduces today's hardcoded
     defaults exactly, proving the manifest system is behavior-preserving.
 
+#### 13.7.1 Preset rework: the shader kit (slice 1 built, untested on host)
+
+The prefabs are immutable built-in designs; `presets/*.conf` are the same
+trails exposed for users to copy and tune. Prefabs should cover every
+capability (topologies, uniforms, both sources, spring motion), span
+intensity (professional to flashy) and cost (iGPU-safe to heavy), and be
+mixable: a user preset can combine layer blocks from several prefabs. No
+plugin code change is part of this rework; it is shaders, manifests and
+docs only (registering a built-in in `ShaderSource.cpp`/`Preset.cpp` aside).
+
+- **Kit, not one shader per preset.** Geometry (vertex) shaders own shape:
+  `ribbon.vert` (path; `width`, `miter_limit`, `taper`, `nib`,
+  `nib_angle`), `scatter.vert` (instanced, bounded offset; was
+  `jitter.vert`), `drift.vert` (instanced, grows with age, `gravity` +
+  `gravity_dir`; was `spray.vert`), `halo.vert` (quad; was `ring.vert`).
+  Looks (fragment shaders) own color and material: `gradient.frag` (path;
+  replaces `ribbon.frag`, adds `softness` for glows), `dots.frag` (quad,
+  instanced; `shape`, `twinkle`), `pulse.frag` (quad; was `ring.frag`),
+  `sizzle.frag` (quad, idle crackle). Every look declares `expects`.
+- **One ribbon geometry.** Every ribbon prefab uses `ribbon.vert`, so a
+  future change to how the strip is built (Catmull-Rom subdivision) reaches
+  all of them by changing that one file.
+- **Shared palette.** Looks color with `color_a`, `color_b`, `color_by`
+  (int: 0 speed, 1 life, 2 distance, 3 seed, 4 cycle), `speed_ref`,
+  `color_period`, all declared alike (`helpers/palette.glsl`;
+  `color_slow`/`color_fast` and ring's `color` are gone). A layer's colors
+  survive swapping one look for another.
+- **Unique layer names** across reworked prefabs (`thread`, `ink`, `tail`,
+  `sparks`, `embers`, `crackle`), so a block pasted from one preset into
+  another never collides and a `params` entry names exactly one layer. The
+  cost: a `params` entry doesn't follow the user from one preset to another
+  (it targets a layer by name, and is an unknown-layer warning elsewhere).
+- **Persistent idle effects are allowed.** A quad layer with
+  `duration_ms = 0` keeps the monitor redrawing every frame while it shows
+  (`main.cpp` runLifecycle: damage every frame while `quadInWindow`); the
+  shader and preset comments say so and point at a finite `duration_ms`.
+  No frame-rate cap for now.
+- **Slice 1 prefabs:** `subtle` (unchanged look), `ink` (new), `comet`
+  (tail + sparks), `embers` (rising embers + idle crackle). `classic`,
+  `jitter`, `spray`, `vivid`, `spring` are migrated to the new names only,
+  pending the lineup rework.
+
 ### 13.8 Config surface v2
 
 - **All keys are registered once, at init** (as today): `preset`,
