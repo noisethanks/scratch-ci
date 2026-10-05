@@ -27,37 +27,13 @@ hyprpm enable hyprtail
 
 ### Nix
 
-What you need, plainly:
-
-- The upstream-flake Hyprland (`github:hyprwm/Hyprland`) at v0.55.0 or newer
-  (hyprtail is developed against v0.56.2), and a GCC 16 toolchain.
-- nixpkgs' own packaged `hyprland` may be older, and an old one cannot build
-  the plugin: v0.52.1's `hyprland.pc` has no `-I<prefix>/hyprland/src`, so the
-  build stops at `#include <plugins/PluginAPI.hpp>` not found (`make` says so
-  up front). hyprtail never uses your nixpkgs' Hyprland unless you wire it in.
-- Hyprland's `main` branch is unsupported at launch and fails to compile by
-  design (its render API changed); a port is planned for 1.1. Build against a
-  release.
-- The Nix path builds in CI but has not yet been confirmed on a persistent
-  NixOS system.
-
-hyprtail's flake takes Hyprland from upstream's flake, as hyprland-plugins
-does: its `hyprland` input is `github:hyprwm/Hyprland`, and its `nixpkgs` and
-`systems` inputs follow that one. That URL names no tag and the repository
-commits no `flake.lock`, so unless you pin it yourself the input is upstream's
-default branch, which is `main`, which does not build. Pin the release you
-run, as below, so hyprtail is built against the Hyprland your compositor runs:
-
 ```nix
 inputs = {
   hyprland = {
     url = "github:hyprwm/Hyprland?ref=v0.56.2";
-    # v0.56.2 needs glaze 7.x but its own lock pins a nixpkgs with glaze 8,
-    # which makes its build fetch glaze at build time and fail in the Nix
-    # sandbox. This is the nixpkgs v0.56.1 uses (glaze 7.9.0).
+    # Needed for v0.56.2 only: its own nixpkgs has the wrong glaze version.
     inputs.nixpkgs.url = "github:NixOS/nixpkgs/61b7c44c4073f0b827768aff0049561b5110ea5a";
   };
-  # Hyprland's own nixpkgs: the set it is tested with.
   nixpkgs.follows = "hyprland/nixpkgs";
   hyprtail = {
     url = "github:noisethanks/hyprtail";
@@ -66,33 +42,20 @@ inputs = {
 };
 ```
 
-This is the wiring in `nix/consumer/flake.nix`, with the two pinned values
-filled in. That file leaves `hyprland.url` open, because CI supplies the
-values itself: its `nix-pin` job builds the consumer with
-`--override-input hyprland github:hyprwm/Hyprland?ref=v0.56.2` and
-`--override-input hyprland/nixpkgs github:NixOS/nixpkgs/61b7c44c4073f0b827768aff0049561b5110ea5a`.
-Writing them in the file as above is equivalent, but CI does not build that
-exact text. The nixpkgs pin is only needed while v0.56.2 is the release you
-build against; docs/CI.md ("Nix: pinned nixpkgs") says when CI drops it.
+Then, with Home Manager:
 
-A plugin must be built against the same Hyprland revision that loads it, so
-`inputs.hyprtail.inputs.hyprland.follows` should name the Hyprland input you
-actually run.
+```nix
+wayland.windowManager.hyprland = {
+  package = inputs.hyprland.packages.${pkgs.stdenv.hostPlatform.system}.hyprland;
+  plugins = [ inputs.hyprtail.packages.${pkgs.stdenv.hostPlatform.system}.hyprtail ];
+};
+```
 
-Two ways to get the plugin, both built against hyprtail's `hyprland` input
-(your `follows`, if you set one):
+The plugin must be built against the Hyprland you run. Keep both on the same
+`hyprland` input.
 
-- `inputs.hyprtail.packages.${system}.hyprtail`: the plugin only. Nothing in
-  your package set changes. `lib/libhyprtail.so` is the plugin to load.
-- `inputs.hyprtail.overlays.default`: adds `pkgs.hyprlandPlugins.hyprtail`.
-  **This overlay replaces your `hyprland` package**, and Hyprland's
-  dependency packages (hyprutils, aquamarine and the rest) with the ones from
-  that input, in every package set it is applied to. It does so to guarantee
-  the plugin is built against that Hyprland and its GCC 16 stdenv rather than
-  whatever your nixpkgs has. Your nixpkgs must provide `gcc16Stdenv`, which
-  Hyprland's overlay uses, and Hyprland's dependencies (glaze, for one) then
-  come from your nixpkgs, so `nixpkgs.follows = "hyprland/nixpkgs"` above is
-  the safe choice. If you don't want your `hyprland` replaced, use the package.
+`overlays.default` is also available. It adds `pkgs.hyprlandPlugins.hyprtail`
+and replaces your `hyprland` with the one from the `hyprland` input.
 
 
 ## Configuring
