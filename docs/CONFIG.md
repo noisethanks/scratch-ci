@@ -1,128 +1,40 @@
 # hyprtail configuration
 
-All keys live under `plugin:hyprtail:` in hyprlang, or under
-`plugin.hyprtail` in Lua config.
+All keys live under `plugin.hyprtail` in Lua config.
 
 ```
-# hyprlang
-plugin:hyprtail:preset = prefab:classic
-plugin:hyprtail:capacity = 128
-
 # Lua
 hl.config({ plugin = { hyprtail = { preset = "prefab:classic", capacity = 128 } } })
 ```
 
-Bad values (out of range, not one of the allowed strings, malformed
-`params`/`emit_from` text) are reported as a warning and the previous value
-is kept — they never break your config.
-
-## Terms
-
-- A **layer** is one draw layer of a preset: `trail` and `idle` in the
-  shipped presets. A preset stacks up to 4. Nothing else in hyprtail is
-  called a layer (the shader prelude, for example, is described by stage
-  and topology instead; see SHADERS.md).
 - The **hyprtail config root** is `$XDG_CONFIG_HOME/hypr/hyprtail/`
   (`~/.config/hypr/hyprtail/` if `XDG_CONFIG_HOME` is unset). Every
   relative path hyprtail reads from your config resolves against it.
 
-## Presets
 
-A **preset** is a named look: an ordered stack of up to 4 layers, each with
-its own shader pair and default parameter values. Pick one with:
+## Terms
 
-| Key | Type | Default | Values |
-|---|---|---|---|
-| `preset` | string | `prefab:subtle` | `prefab:<name>` (built-in) or a bare `<name>` (your own file) |
+- A **layer** is one draw layer of a shader. For example `trail` and `idle` in the shipped presets. 
+- Prefabs are default shader styles, internally defined by hyprtail. They can be referenced in the configs as such:
+```
+preset = "prefab:subtle"
+```
+Prefabs are always available and cannot be edited.
+- ***Presets*** refer to identical copies of the prefabs. These copies are intended to provide a simple starting point for basic configurations, such as changing color or tail width. This document focuses on these kinds of basic customizations.
 
-A preset name is addressed in one of two namespaces, and they never overlap:
 
-- **`prefab:<name>`** is always the built-in preset embedded in the plugin,
-  regardless of any local file with the same name. Built-ins: `prefab:subtle`,
-  `prefab:classic`, `prefab:jitter`, `prefab:spray`, `prefab:vivid`,
-  `prefab:comet`, `prefab:embers`, `prefab:spring` and `prefab:ink`.
-- **`<name>`** (no prefix) is always your own file,
-  `~/.config/hypr/hyprtail/presets/<name>.conf`. If that file doesn't exist,
-  loading fails with an error naming the path it looked for; it never falls
-  back to a built-in of the same name.
+## Getting started with Presets
 
-A fresh install has no `presets/` directory, so the default is
-`prefab:subtle`.
-
-Shipped presets:
-
-- **`prefab:subtle`** (default): one thin trail layer (`thread`), short
-  fade, low-alpha neutral color, no idle effect.
-- **`prefab:ink`**: a calligraphy stroke, one ribbon (`ink`) drawn as if by
-  a flat nib, so it swells moving across the nib and thins moving along it;
-  paper white cooling to slate as it fades. Try `params = "ink:nib_angle=-30"`
-  to turn the pen, or `ink:nib=0` for a round one.
-- **`prefab:classic`**: a wider, speed-tinted trail (slow motion tints one
-  color, fast motion tints another) plus an optional idle ring around a
-  stationary cursor (off by default).
-- **`prefab:jitter`**: a cloud of small dots scattered around every trail
-  point, `copies` of them (1–64, default 6) at random offsets of at most
-  `spread` px. Try `params = "trail:copies=16 trail:spread=24"`.
-- **`prefab:spray`**: particles thrown off the trail, `count` per point
-  (1–64, default 4), drifting away (mostly behind the pointer's motion) at up
-  to `speed` px/s while shrinking and fading over `fade_ms`. The redrawn area
-  grows with `speed * fade_ms`, so a fast, long-lived spray costs more to
-  draw. Try `params = "trail:count=12 trail:speed=120"`.
-- **`prefab:vivid`**: a glowing ribbon, two layers over the same trail
-  points: `glow`, a wide (26 px), faint, longer-lived ribbon underneath, and
-  `core`, a narrow (4 px), opaque, brighter ribbon on top. Both shade cyan
-  (slow) to magenta (fast). Layers composite with ordinary alpha blending
-  (there is no per-layer blend mode), so the glow is a translucent halo, not
-  additive light. Try `params = "glow:width=40 core:width=6"`.
-- **`prefab:comet`**: a narrow ribbon (`tail`, 5 px) with a very short fade
-  (180 ms), so it tapers to a point right behind the pointer, over a few
-  twinkling star-shaped `sparks` thrown straight back. Ice blue shifts to
-  amber with speed; `speed_ref` (px/ms) is set high (4), so the amber only
-  appears on fast flicks. Try `params = "tail:speed_ref=1.5"` to make it
-  flare on lighter movement.
-- **`prefab:embers`**: fire. Soft particles (`embers`, 2 per point) drift
-  slowly, rise up the screen and cool from yellow to red over 1.4 s; while
-  the pointer rests, short sparks crackle around it now and then
-  (`crackle`). Points pushed out of the buffer take their particles with
-  them, so raise `capacity` (for example 256) for long strokes. The crackle
-  runs until the pointer moves, which keeps the monitor redrawing every frame
-  while it shows: `params = "crackle:duration_ms=8000"` stops it after 8 s,
-  `crackle:enabled=false` turns it off.
-
-- **`prefab:spring`**: a springy rope instead of a pointer history (source
-  `spring`, see "Sources" below): a chain of `capacity` points, the first
-  chasing the pointer and each other one chasing the point before it, drawn
-  as one ribbon. The tail swings and settles rather than replaying the
-  pointer's path, and when the pointer stops the rope springs together under
-  the cursor and fades. Try `params = "source:damping=120 source:age_step_ms=6"`
-  for a livelier, longer rope.
-
-`jitter`, `spray`, `embers` and comet's `sparks` draw *(visible points) x (copies per point)* quads, so `capacity` and
-`fade_ms` together with the copy count set the GPU cost: the most a single
-layer can draw is 64 copies x 4096 points.
-
-### Quickstart: make your own copy
-
-1. Copy `presets/subtle.conf` from the repository root to
-   `~/.config/hypr/hyprtail/presets/subtle.conf`. Unchanged, it behaves
-   exactly like `prefab:subtle`: its shaders are still the embedded ones.
-2. Set `preset = "subtle"` (no prefix).
-3. Edit the file freely. Presets are re-read on every Hyprland config reload,
+1. Begin with downloading the presets and shaders directory from the project root and placing them in `~/.config/hypr/hyprtail/` 
+2. Edit the files freely. Presets are re-read on every Hyprland config reload,
    not when the preset file itself changes.
-4. To change a shader too, copy `shaders/ribbon.vert` and
-   `shaders/gradient.frag` from the repository root into
-   `~/.config/hypr/hyprtail/`, change the preset's
-   `thread:vertex`/`thread:fragment` from `prefab:ribbon.vert` /
-   `prefab:gradient.frag` to `ribbon.vert` / `gradient.frag`, and edit the
-   shaders. See SHADERS.md.
-
-The prefix rule is the same everywhere in hyprtail: **`prefab:` /
-`helpers/` means embedded and immutable, anything else is your own file.**
-It is applied to preset names (`prefab:subtle` vs `subtle`), to a preset's
-shader stages (`prefab:ribbon.vert` vs `ribbon.vert`), and to shader
-includes (`#include "helpers/ribbon.glsl"` vs a relative path; see
-SHADERS.md). Editing means swapping the prefixed form for a bare one that
-points at your copy.
+3. Presets are composed of built in shaders. These built in shaders are referenced as such:
+```
+    trail:vertex = prefab:ribbon.vert
+```
+4. To modify a preset shader, reference them by path. Relative paths resolves
+    against the hyprtail config root; `~` and absolute paths also work.
+    See SHADERS.md for more detailed documentation about shader definitions.
 
 ### Preset file format
 
@@ -153,9 +65,7 @@ core:color    = rgba(ffffffa0)
     `prefab:scatter.vert`, `prefab:drift.vert`, `prefab:halo.vert`; looks:
     `prefab:gradient.frag`, `prefab:dots.frag`, `prefab:pulse.frag`,
     `prefab:sizzle.frag`), or
-    anything else as a path to your own file. A relative path resolves
-    against the hyprtail config root; `~` and absolute paths also work.
-    Built-in presets may only use `prefab:` shaders.
+    anything else as a path to your own file. 
   - Any other `<key>` sets a default value for a parameter that layer's
     shader declares (see SHADERS.md for how shaders declare parameters).
 - `#` starts a comment to end of line; blank lines are ignored.
