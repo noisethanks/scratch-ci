@@ -19,48 +19,13 @@ Performant shader-driven cursor trails for Hyprland.
 - Prefabs ranging from professional to flashy.
 
 
-## Installation and Usage
+## Installation
 ```
 hyprpm add https://github.com/noisethanks/hyprtail
 hyprpm enable hyprtail
 ```
 
-### Nix
-
-```nix
-inputs = {
-  hyprland = {
-    url = "github:hyprwm/Hyprland?ref=v0.56.2";
-    # Needed for v0.56.2 only: its own nixpkgs has the wrong glaze version.
-    inputs.nixpkgs.url = "github:NixOS/nixpkgs/61b7c44c4073f0b827768aff0049561b5110ea5a";
-  };
-  nixpkgs.follows = "hyprland/nixpkgs";
-  hyprtail = {
-    url = "github:noisethanks/hyprtail";
-    inputs.hyprland.follows = "hyprland";
-  };
-};
-```
-
-Then, with Home Manager:
-
-```nix
-wayland.windowManager.hyprland = {
-  package = inputs.hyprland.packages.${pkgs.stdenv.hostPlatform.system}.hyprland;
-  plugins = [ inputs.hyprtail.packages.${pkgs.stdenv.hostPlatform.system}.hyprtail ];
-};
-```
-
-The plugin must be built against the Hyprland you run. Keep both on the same
-`hyprland` input.
-
-`overlays.default` is also available. It adds `pkgs.hyprlandPlugins.hyprtail`
-and replaces your `hyprland` with the one from the `hyprland` input.
-
-
 ## Configuring
-
-Invalid values are blocked from updating, and emit a warning. 
 
 ```
 hl.config({
@@ -80,6 +45,8 @@ hl.config({
 })
 
 ```
+
+To disable the trail over specific clients, use this window rule:
 
 ```
 
