@@ -16,6 +16,7 @@
 #include <map>
 #include <optional>
 #include <regex>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -220,14 +221,14 @@ static void testShaderSource() {
     CHECK(!pp("#version 300 es\n#pragma hyprtail contract 2\n#pragma hyprtail glow 1\nvoid main() {}\n", eStage::FRAGMENT));
 
     // Built-ins preprocess.
-    for (const auto* name : {"ribbon.vert", "scatter.vert", "drift.vert", "halo.vert"})
+    for (const auto* name : {"shaders/ribbon.vert", "shaders/scatter.vert", "shaders/drift.vert", "shaders/halo.vert"})
         CHECK(shader::preprocess(shader::builtin(name), name, {}, eStage::VERTEX).has_value());
-    for (const auto* name : {"gradient.frag", "dots.frag", "pulse.frag", "sizzle.frag"})
+    for (const auto* name : {"shaders/gradient.frag", "shaders/dots.frag", "shaders/pulse.frag", "shaders/sizzle.frag"})
         CHECK(shader::preprocess(shader::builtin(name), name, {}, eStage::FRAGMENT).has_value());
 
     // The instanced built-ins declare what the loader checks: topology,
     // a K param inside 1..64, a padding expression, and (dots.frag) expects.
-    for (const auto* name : {"scatter.vert", "drift.vert"}) {
+    for (const auto* name : {"shaders/scatter.vert", "shaders/drift.vert"}) {
         const auto s = shader::preprocess(shader::builtin(name), name, {}, eStage::VERTEX);
         CHECK(s && s->topology == eTopology::INSTANCED && !s->instances.param.empty() && !s->padding.empty());
         if (!s)
@@ -237,13 +238,13 @@ static void testShaderSource() {
             declared.push_back(p.decl);
         CHECK(!shader::instanceCountProblem(*s, declared));
     }
-    const auto dots = shader::preprocess(shader::builtin("dots.frag"), "dots.frag", {}, eStage::FRAGMENT);
+    const auto dots = shader::preprocess(shader::builtin("shaders/dots.frag"), "shaders/dots.frag", {}, eStage::FRAGMENT);
     CHECK(dots && dots->expects.size() == 2);
 
     // The shared palette (helpers/palette.glsl): every look that colors with
     // it declares its params with the same names, types and ranges, so a
     // preset's colors carry over when a layer swaps looks.
-    const auto gradient = shader::preprocess(shader::builtin("gradient.frag"), "gradient.frag", {}, eStage::FRAGMENT);
+    const auto gradient = shader::preprocess(shader::builtin("shaders/gradient.frag"), "shaders/gradient.frag", {}, eStage::FRAGMENT);
     CHECK(gradient.has_value());
     if (gradient && dots) {
         for (const auto* name : {"color_a", "color_b", "color_by", "speed_ref", "color_period"}) {
@@ -335,15 +336,42 @@ static void testPresetManifests() {
             }
 
             const auto vertKey = keys.find("vertex"), fragKey = keys.find("fragment");
-            if (vertKey == keys.end() || fragKey == keys.end() || !vertKey->second.starts_with("prefab:") || !fragKey->second.starts_with("prefab:")) {
-                fail("needs prefab: vertex and fragment shaders");
+            // Shader references are paths relative to the hyprtail root
+            // (shaders/ribbon.vert), the same string in both modes. Embedded
+            // mode: it is a key of shader::builtin(), never read from disk.
+            // Disk mode: it is a file under hyprtail/ (this repo's copy of
+            // the root) holding the same text as the embedded one, so a
+            // copied folder and the prefab: preset draw the same thing.
+            if (vertKey == keys.end() || fragKey == keys.end() || vertKey->second.starts_with("prefab:") || fragKey->second.starts_with("prefab:")) {
+                fail("needs vertex and fragment shader paths relative to the hyprtail root (shaders/ribbon.vert), not prefab:");
                 continue;
             }
-            const auto vertName = vertKey->second.substr(7), fragName = fragKey->second.substr(7);
+            const auto vertName = vertKey->second, fragName = fragKey->second;
+            bool       pathsOk  = true;
+            for (const auto& name : {vertName, fragName}) {
+                const auto embedded = shader::builtin(name);
+                if (embedded.empty()) {
+                    fail(std::format("{} isn't in the embedded shader table", name));
+                    pathsOk = false;
+                    continue;
+                }
+                std::ifstream     in(fs::path{"hyprtail"} / name, std::ios::binary);
+                std::stringstream disk;
+                disk << in.rdbuf();
+                if (!in) {
+                    fail(std::format("hyprtail/{} doesn't exist on disk", name));
+                    pathsOk = false;
+                } else if (disk.str() != embedded) {
+                    fail(std::format("hyprtail/{} on disk differs from the embedded copy", name));
+                    pathsOk = false;
+                }
+            }
+            if (!pathsOk)
+                continue;
             const auto vert = shader::preprocess(shader::builtin(vertName), vertName, {}, shader::eStage::VERTEX);
             const auto frag = shader::preprocess(shader::builtin(fragName), fragName, {}, shader::eStage::FRAGMENT);
             if (!vert || !frag) {
-                fail(std::format("{} or {} isn't a built-in shader that preprocesses", vertName, fragName));
+                fail(std::format("{} or {} doesn't preprocess", vertName, fragName));
                 continue;
             }
             if (const auto mismatch = shader::expectsMismatch(*vert, *frag))
@@ -392,7 +420,7 @@ static void testPresetManifests() {
         return c ? static_cast<int>(c->argb >> 24) : -1;
     };
     const auto ribbon = [&](const std::string& preset, const std::string& layer) {
-        return val(preset, layer, "vertex") == "prefab:ribbon.vert" && val(preset, layer, "fragment") == "prefab:gradient.frag";
+        return val(preset, layer, "vertex") == "shaders/ribbon.vert" && val(preset, layer, "fragment") == "shaders/gradient.frag";
     };
 
     // spring: one ribbon layer over the spring source, with its settings
@@ -422,7 +450,7 @@ static void testPresetManifests() {
     // comet: sparks under a narrow ribbon tail with a short fade and a higher
     // speed_ref than the ribbon default (2).
     CHECK(layerOrder["comet"] == "sparks, tail" && ribbon("comet", "tail"));
-    CHECK(val("comet", "sparks", "vertex") == "prefab:drift.vert" && val("comet", "sparks", "fragment") == "prefab:dots.frag");
+    CHECK(val("comet", "sparks", "vertex") == "shaders/drift.vert" && val("comet", "sparks", "fragment") == "shaders/dots.frag");
     CHECK(num("comet", "tail", "width") > 0.0 && num("comet", "tail", "width") < num("classic", "trail", "width"));
     CHECK(num("comet", "tail", "fade_ms") < num("subtle", "thread", "fade_ms"));
     CHECK(num("comet", "tail", "speed_ref") > 2.0);
@@ -430,8 +458,8 @@ static void testPresetManifests() {
     // embers: rising drift particles plus an idle crackle, and its own count,
     // speed and fade rather than a copy of spray's.
     CHECK(layerOrder["embers"] == "embers, crackle");
-    CHECK(val("embers", "embers", "vertex") == "prefab:drift.vert" && val("embers", "embers", "fragment") == "prefab:dots.frag");
-    CHECK(val("embers", "crackle", "vertex") == "prefab:halo.vert" && val("embers", "crackle", "fragment") == "prefab:sizzle.frag");
+    CHECK(val("embers", "embers", "vertex") == "shaders/drift.vert" && val("embers", "embers", "fragment") == "shaders/dots.frag");
+    CHECK(val("embers", "crackle", "vertex") == "shaders/halo.vert" && val("embers", "crackle", "fragment") == "shaders/sizzle.frag");
     CHECK(num("embers", "embers", "gravity") > 0.0 && val("embers", "embers", "gravity_dir") == "0,-1");
     for (const auto* key : {"count", "speed", "fade_ms"})
         CHECK(num("embers", "embers", key) != num("spray", "trail", key));
@@ -980,17 +1008,15 @@ int main() {
     if (const char* dir = std::getenv("OUT_DIR")) {
         std::filesystem::create_directories(dir);
         const std::pair<const char*, shader::eStage> builtins[] = {
-            {"ribbon.vert", shader::eStage::VERTEX},  {"scatter.vert", shader::eStage::VERTEX},    {"drift.vert", shader::eStage::VERTEX},
-            {"halo.vert", shader::eStage::VERTEX},    {"gradient.frag", shader::eStage::FRAGMENT}, {"dots.frag", shader::eStage::FRAGMENT},
-            {"pulse.frag", shader::eStage::FRAGMENT}, {"sizzle.frag", shader::eStage::FRAGMENT},
+            {"shaders/ribbon.vert", shader::eStage::VERTEX},  {"shaders/scatter.vert", shader::eStage::VERTEX},    {"shaders/drift.vert", shader::eStage::VERTEX},
+            {"shaders/halo.vert", shader::eStage::VERTEX},    {"shaders/gradient.frag", shader::eStage::FRAGMENT}, {"shaders/dots.frag", shader::eStage::FRAGMENT},
+            {"shaders/pulse.frag", shader::eStage::FRAGMENT}, {"shaders/sizzle.frag", shader::eStage::FRAGMENT},
         };
         for (const auto& [name, stage] : builtins) {
             auto src = shader::preprocess(shader::builtin(name), name, {}, stage);
             if (!src)
                 continue;
-            std::string file = name;
-            std::ranges::replace(file, '/', '_');
-            std::ofstream(std::filesystem::path{dir} / file) << src->text;
+            std::ofstream(std::filesystem::path{dir} / std::filesystem::path{name}.filename()) << src->text;
         }
     }
 

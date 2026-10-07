@@ -188,11 +188,13 @@ namespace hyprtail::preset {
             return it == m.end() ? std::string_view{} : it->second;
         }
 
-        // Two explicit namespaces, used for preset names and for the shader
-        // stages inside a manifest alike: "prefab:<name>" is the embedded
-        // built-in, never a file; a bare "<name>" is the user's own, never a
-        // built-in. (Shader includes follow the same rule: "helpers/<name>"
-        // is the embedded helper, a path is a file. See ShaderSource.cpp.)
+        // "prefab:<name>" is the embedded built-in, never a file. As a trail
+        // it names an embedded preset; as a shader stage (user presets only)
+        // it is shorthand for the embedded "shaders/<name>". Anything else
+        // is a path, resolved by cfg::resolveShaderPath(): relative ones
+        // against the hyprtail root, "~" and absolute as given. (Shader
+        // includes follow the same rule: "helpers/<name>" is the embedded
+        // helper, a path is a file. See ShaderSource.cpp.)
         constexpr std::string_view              PREFAB_PREFIX = "prefab:";
 
         std::expected<std::string, std::string> readFile(const std::filesystem::path& path) {
@@ -204,33 +206,43 @@ namespace hyprtail::preset {
             return ss.str();
         }
 
-        // Resolves one shader stage of one layer: "prefab:<name>" (a
-        // shader::builtin() name), or -- user presets only (allowPaths) -- a
-        // path, relative ones against the hyprtail config root, same as
-        // layerN_vertex/layerN_fragment (cfg::resolveShaderPath). Always
-        // returns a safe built-in identity (`safeBuiltin`) alongside a path
-        // override, so CShaderSlot's constructor -- which unconditionally
-        // looks up the built-in text -- never sees an unresolvable name (a
-        // bad prefab reference is instead caught structurally, right here,
-        // before any CLayer/CShaderSlot exists).
-        std::expected<std::pair<std::string, std::string>, std::string> resolveStage(const std::string& layerName, const std::map<std::string, std::string>& keys, bool allowPaths,
-                                                                                     const char* stageKey, const char* safeBuiltin) {
+        // Resolves one shader stage of one layer to {embedded key, path
+        // override}; a path override is "" for an embedded shader.
+        //  - "prefab:<name>": the embedded shaders/<name>, in any preset.
+        //  - anything else in an embedded preset: looked up in the embedded
+        //    shader table by the path as written ("shaders/ribbon.vert"),
+        //    never on disk. That keeps the zero-file first run working and a
+        //    stale copied folder from changing what prefab:<preset> means.
+        //  - anything else in a file preset: a path, resolved like
+        //    layerN_vertex/layerN_fragment (cfg::resolveShaderPath). One that
+        //    isn't on disk is added to `missing`; load() reports it.
+        // Always returns a safe embedded identity (`safeBuiltin`) alongside a
+        // path override, so CShaderSlot's constructor -- which
+        // unconditionally looks up the embedded text -- never sees an
+        // unresolvable name (a bad embedded reference is instead caught
+        // structurally, right here, before any CLayer/CShaderSlot exists).
+        std::expected<std::pair<std::string, std::string>, std::string> resolveStage(const std::string& layerName, const std::map<std::string, std::string>& keys, bool embedded,
+                                                                                     const char* stageKey, const char* safeBuiltin, std::vector<std::string>& missing) {
             const auto it = keys.find(stageKey);
             if (it == keys.end())
                 return std::unexpected(std::format(R"(layer "{}" needs "{}:{}")", layerName, layerName, stageKey));
             const std::string& value = it->second;
 
             if (value.starts_with(PREFAB_PREFIX)) {
-                const auto name = value.substr(PREFAB_PREFIX.size());
-                if (shader::builtin(name).empty())
+                auto key = "shaders/" + value.substr(PREFAB_PREFIX.size());
+                if (shader::builtin(key).empty())
                     return std::unexpected(std::format(R"(layer "{}": "{}" isn't a built-in shader)", layerName, value));
-                return std::pair<std::string, std::string>{name, ""};
+                return std::pair<std::string, std::string>{std::move(key), ""};
             }
 
-            if (!allowPaths)
-                return std::unexpected(std::format(R"(layer "{}": "{}": a prefab preset can only use "prefab:<name>" shaders)", layerName, value));
             if (value.empty())
                 return std::unexpected(std::format("layer \"{}:{}\" is empty", layerName, stageKey));
+
+            if (embedded) {
+                if (shader::builtin(value).empty())
+                    return std::unexpected(std::format(R"(layer "{}": "{}" isn't an embedded shader; a prefab preset names them like "shaders/ribbon.vert")", layerName, value));
+                return std::pair<std::string, std::string>{value, ""};
+            }
 
             std::filesystem::path p = cfg::resolveShaderPath(value);
             if (!p.is_absolute())
@@ -238,14 +250,17 @@ namespace hyprtail::preset {
             std::error_code ec;
             if (const auto canon = std::filesystem::weakly_canonical(p, ec); !ec)
                 p = canon;
+            if (!std::filesystem::exists(p))
+                missing.push_back(p.string());
             return std::pair<std::string, std::string>{safeBuiltin, p.string()};
         }
 
-        std::expected<SLayerSpec, std::string> resolveLayer(const std::string& layerName, const std::map<std::string, std::string>& keys, bool allowPaths) {
-            auto vert = resolveStage(layerName, keys, allowPaths, "vertex", "ribbon.vert");
+        std::expected<SLayerSpec, std::string> resolveLayer(const std::string& layerName, const std::map<std::string, std::string>& keys, bool embedded,
+                                                            std::vector<std::string>& missing) {
+            auto vert = resolveStage(layerName, keys, embedded, "vertex", "shaders/ribbon.vert", missing);
             if (!vert)
                 return std::unexpected(vert.error());
-            auto frag = resolveStage(layerName, keys, allowPaths, "fragment", "gradient.frag");
+            auto frag = resolveStage(layerName, keys, embedded, "fragment", "shaders/gradient.frag", missing);
             if (!frag)
                 return std::unexpected(frag.error());
 
@@ -261,14 +276,26 @@ namespace hyprtail::preset {
             return spec;
         }
 
-        // "prefab:<name>" -> the embedded manifest; "<name>" ->
-        // <hyprtail root>/presets/<name>.conf, no fallback to a built-in.
-        std::expected<SResolved, std::string> loadInner(const std::string& name) {
+        // What to write instead of a trail that is neither "prefab:<name>"
+        // nor a .conf path (the old bare "<name>" form, no extension).
+        std::string notATrail(const std::string& name) {
+            if (name.empty())
+                return R"(trail is empty; write "prefab:<name>" for a built-in, or the path of a .conf file relative to <hyprtail root>, e.g. "presets/mine.conf")";
+            const auto own  = name.contains('/') ? name + ".conf" : "presets/" + name + ".conf";
+            const auto hint = builtinManifest(name).empty() ? std::string{} : std::format(R"("prefab:{}" for the built-in, or )", name);
+            return std::format(R"("{}" isn't a trail: write {}"{}" for your own file (the path of a .conf file with its extension, relative to <hyprtail root>))", name, hint, own);
+        }
+
+        // "prefab:<name>" -> the embedded manifest; otherwise the path of a
+        // .conf file (cfg::resolveShaderPath, relative ones against the
+        // hyprtail root), never a fallback to a built-in. Shader files a file
+        // preset names that aren't on disk are added to `missing`.
+        std::expected<SResolved, std::string> loadInner(const std::string& name, std::vector<std::string>& missing) {
             std::string text;
-            bool        prefab = false;
+            bool        embedded = false;
 
             if (name.starts_with(PREFAB_PREFIX)) {
-                prefab             = true;
+                embedded           = true;
                 const auto builtin = builtinManifest(std::string_view{name}.substr(PREFAB_PREFIX.size()));
                 if (builtin.empty())
                     return std::unexpected(std::format("unknown prefab preset \"{}\" (built-in: prefab:subtle, prefab:classic, prefab:jitter, prefab:spray, prefab:vivid, "
@@ -276,16 +303,16 @@ namespace hyprtail::preset {
                                                        name));
                 text = std::string{builtin};
             } else {
-                if (name.empty() || name.contains('/'))
-                    return std::unexpected(std::format(
-                        R"("{}" isn't a bare preset name; use "prefab:<name>" for a built-in, or a file name without '/' for <hyprtail root>/presets/<name>.conf)", name));
-                const auto root = cfg::hyprtailRoot();
-                if (root.empty())
+                if (!name.ends_with(".conf"))
+                    return std::unexpected(notATrail(name));
+                const auto file = cfg::resolveShaderPath(name);
+                if (!file.is_absolute())
                     return std::unexpected("can't locate the hyprtail config directory (no usable HOME or XDG_CONFIG_HOME)");
-                const auto file = root / "presets" / (name + ".conf");
-                if (!std::filesystem::exists(file))
+                if (!std::filesystem::exists(file)) {
+                    const auto stem = std::filesystem::path{name}.stem().string();
                     return std::unexpected(
-                        std::format("no such file: {}{}", file.string(), builtinManifest(name).empty() ? "" : std::format(" (for the built-in, use \"prefab:{}\")", name)));
+                        std::format("no such file: {}{}", file.string(), builtinManifest(stem).empty() ? "" : std::format(" (for the built-in, use \"prefab:{}\")", stem)));
+                }
                 auto read = readFile(file);
                 if (!read)
                     return std::unexpected(read.error());
@@ -304,7 +331,7 @@ namespace hyprtail::preset {
             static const std::map<std::string, std::string> empty;
             for (const auto& layerName : manifest->layers) {
                 const auto it   = manifest->layerKeys.find(layerName);
-                auto       spec = resolveLayer(layerName, it == manifest->layerKeys.end() ? empty : it->second, !prefab);
+                auto       spec = resolveLayer(layerName, it == manifest->layerKeys.end() ? empty : it->second, embedded, missing);
                 if (!spec)
                     return std::unexpected(spec.error());
                 out.layers.push_back(std::move(*spec));
@@ -319,24 +346,42 @@ namespace hyprtail::preset {
         // expected to actually run -- it exists so a mistake in this
         // codebase's own built-ins degrades instead of throwing/crashing.
         SResolved hardcodedFallback() {
-            SLayerSpec trail{.name = "trail", .vertBuiltin = "ribbon.vert", .fragBuiltin = "gradient.frag"};
+            SLayerSpec trail{.name = "trail", .vertBuiltin = "shaders/ribbon.vert", .fragBuiltin = "shaders/gradient.frag"};
             return SResolved{.name = FALLBACK_PRESET, .description = "fallback", .layers = {std::move(trail)}};
         }
     }
 
-    SResolved load(const std::string& name) {
-        const auto key = "trail:" + name;
-        if (auto r = loadInner(name)) {
+    std::optional<SResolved> load(const std::string& name, bool haveActive) {
+        const auto               key = "trail:" + name;
+        std::vector<std::string> missing;
+        auto                     r = loadInner(name, missing);
+
+        if (r && missing.empty()) {
             diag::resetKey(key);
             return std::move(*r);
-        } else
+        }
+
+        if (!r)
             diag::report(eSeverity::ERR, key, std::format("trail \"{}\": {}\nUsing \"{}\" instead.", name, r.error(), FALLBACK_PRESET));
+        else {
+            // The preset itself is fine, but shader files it names aren't on
+            // disk: degraded, not off, so a warning, and what is showing
+            // stays (nothing is showing yet at startup: the fallback).
+            std::string list;
+            for (const auto& m : missing)
+                list += "\n  " + m;
+            diag::report(eSeverity::WARN, key,
+                         std::format("trail \"{}\": shader file(s) not found:{}\n{}", name, list, haveActive ? "Keeping the current trail." : std::format("Using \"{}\" instead.", FALLBACK_PRESET)));
+            if (haveActive)
+                return std::nullopt;
+        }
 
         if (name == FALLBACK_PRESET)
             return hardcodedFallback();
 
-        if (auto r = loadInner(FALLBACK_PRESET))
-            return std::move(*r);
+        std::vector<std::string> none;
+        if (auto fallback = loadInner(FALLBACK_PRESET, none))
+            return std::move(*fallback);
         return hardcodedFallback();
     }
 }

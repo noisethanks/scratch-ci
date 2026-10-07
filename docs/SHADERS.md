@@ -490,7 +490,7 @@ Line by line:
 
 To use it: save it as `~/.config/hypr/hyprtail/solid.frag`. Then either
 write a preset of your own (CONFIG.md's quickstart: copy `hyprtail/presets/subtle.conf`
-to `~/.config/hypr/hyprtail/presets/mine.conf`, set `trail = "mine"`) and in
+to `~/.config/hypr/hyprtail/presets/mine.conf`, set `trail = "presets/mine.conf"`) and in
 it change:
 
 ```

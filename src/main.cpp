@@ -931,7 +931,7 @@ static void kickRender() {
 // Shader paths of a layer at this position in the active preset: a
 // `layerN_vertex`/`layerN_fragment` override (SPEC §13.7, N = 1-based) wins
 // per stage if set, else the active preset's own per-layer shader ("" for
-// a prefab: shader, else the absolute path it resolved to). Both resolve
+// an embedded shader, else the absolute path it resolved to). Both resolve
 // relative paths against the hyprtail config root (cfg::resolveShaderPath).
 static std::pair<std::string, std::string> layerShaderPaths(size_t index) {
     std::pair<std::string, std::string> fromPreset;
@@ -1084,7 +1084,12 @@ static void applyConfig() {
     p.emitFromNorm    = s_config.emitFromNorm;
     p.emitOffsetPx    = s_config.emitOffsetPx;
 
-    p.pendingPreset = hyprtail::preset::load(s_config.trail);
+    // nullopt: the trail names shader files that aren't on disk and one is
+    // already showing; it stays (load() reported it).
+    if (auto loaded = hyprtail::preset::load(s_config.trail, !p.activePreset.layers.empty()))
+        p.pendingPreset = std::move(*loaded);
+    else
+        p.pendingPreset.reset();
 
     // Keeps the newest points; the VBO is reallocated at the next draw
     // (CNodeBuffer::ensure), where GL is current.

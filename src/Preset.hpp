@@ -2,6 +2,7 @@
 
 #include <expected>
 #include <map>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -19,16 +20,21 @@
 //   source      = pointer | spring            optional, at most once, default pointer
 //
 //   source:<name>    = <value>                a setting of the source (Source.hpp)
-//   <layer>:vertex   = prefab:<built-in name> or a path
-//   <layer>:fragment = prefab:<built-in name> or a path
+//   <layer>:vertex   = a shader path, e.g. shaders/ribbon.vert (or prefab:ribbon.vert)
+//   <layer>:fragment = a shader path, e.g. shaders/gradient.frag (or prefab:gradient.frag)
 //   <layer>:<name>   = <value>                a parameter default
 //
-// Two namespaces, no shadowing: "prefab:<name>" is an embedded built-in
-// preset; a bare "<name>" is <hyprtail root>/presets/<name>.conf
-// (cfg::hyprtailRoot(): $XDG_CONFIG_HOME/hypr/hyprtail, fallback
-// ~/.config/hypr/hyprtail). Shader stages inside a manifest use the same
-// split: "prefab:<name>" embedded, anything else a path (user presets only),
-// relative ones against the hyprtail root.
+// Two namespaces, no shadowing. A preset is "prefab:<name>", an embedded
+// built-in, or the path of a .conf file with its extension, e.g.
+// "presets/subtle.conf" (cfg::resolveShaderPath(): relative ones against
+// <hyprtail root>, cfg::hyprtailRoot(): $XDG_CONFIG_HOME/hypr/hyprtail,
+// fallback ~/.config/hypr/hyprtail). A bare "<name>" is an error.
+//
+// Shader stages are paths relative to the same root, whichever kind of
+// preset names them: in an embedded preset they are looked up in the
+// embedded shader table by that string and never touch the disk; in a file
+// preset they are files, and a missing one is a warning (load() below).
+// "prefab:<name>" in a file preset is the embedded "shaders/<name>".
 //
 // The source is the one thing every layer of a preset draws from, so it is
 // declared once, by the preset, and its settings live under the reserved
@@ -59,8 +65,9 @@ namespace hyprtail::preset {
     std::expected<SManifest, std::string> parse(std::string_view text);
 
     // A resolved preset, ready for CLayer construction: name, description,
-    // and up to 4 SLayerSpecs with vertex/fragment already resolved to a
-    // built-in shader::builtin() name or an absolute path.
+    // and up to 4 SLayerSpecs with vertex/fragment already resolved to an
+    // embedded shader::builtin() key ("shaders/ribbon.vert") or an absolute
+    // path.
     struct SResolved {
         std::string                        name, description;
         std::vector<SLayerSpec>            layers;
@@ -70,12 +77,16 @@ namespace hyprtail::preset {
         bool                               operator==(const SResolved&) const = default;
     };
 
-    // Resolves `name` ("prefab:<name>" or a bare "<name>", see above). A
-    // bare name that has no file is an error, never a built-in. Any failure
-    // (not found, parse error, an unrecognized prefab shader, a path in a
-    // prefab preset, an unresolvable path in a user preset) is reported
-    // (diag, "preset:<name>") and falls back to the embedded
-    // "prefab:subtle" manifest, which is guaranteed to parse -- it ships
-    // with the plugin.
-    SResolved load(const std::string& name);
+    // Resolves `name`: "prefab:<name>" or the path of a .conf file (see
+    // above). Any failure (unknown prefab, a bare name or other value that
+    // isn't a .conf path, no such file, parse error, an unrecognized shader
+    // reference, an unresolvable path) is reported (diag, "trail:<name>")
+    // and falls back to the embedded "prefab:subtle" manifest, which is
+    // guaranteed to parse -- it ships with the plugin.
+    //
+    // One exception: a file preset that parses but names shader files that
+    // aren't on disk is a warning, not an error. With `haveActive` (a trail
+    // is already showing) it returns nullopt and the caller keeps what it
+    // has; without, it falls back like the others.
+    std::optional<SResolved> load(const std::string& name, bool haveActive);
 }

@@ -72,9 +72,11 @@ namespace hyprtail::cfg {
     // ~/.config/hypr/hyprtail. Empty if neither variable is usable.
     std::filesystem::path hyprtailRoot();
 
-    // Shader path from the config or a preset manifest: "" -> empty
-    // (built-in); "~" / "~/..." -> $HOME; relative -> against hyprtailRoot()
-    // (deliberately not the Hyprland config directory, unlike
-    // decoration:screen_shader: one base for every hyprtail path).
+    // The one resolver for every path hyprtail reads from the user's config
+    // (shader paths from the config or a preset manifest, and the `trail`
+    // setting's preset file): "" -> empty (built-in); "~" / "~/..." -> $HOME;
+    // relative -> against hyprtailRoot() (deliberately not the Hyprland
+    // config directory, unlike decoration:screen_shader: one base for every
+    // hyprtail path).
     std::filesystem::path resolveShaderPath(const std::string& configured);
 }

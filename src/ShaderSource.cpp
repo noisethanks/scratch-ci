@@ -402,8 +402,9 @@ namespace hyprtail::shader {
 
     std::string_view builtin(std::string_view name) {
         static const std::map<std::string, std::string_view, std::less<>> m{
-            {"ribbon.vert", view(GEOM_RIBBON_VERT)},     {"scatter.vert", view(GEOM_SCATTER_VERT)}, {"drift.vert", view(GEOM_DRIFT_VERT)}, {"halo.vert", view(GEOM_HALO_VERT)},
-            {"gradient.frag", view(LOOK_GRADIENT_FRAG)}, {"dots.frag", view(LOOK_DOTS_FRAG)},       {"pulse.frag", view(LOOK_PULSE_FRAG)}, {"sizzle.frag", view(LOOK_SIZZLE_FRAG)},
+            {"shaders/ribbon.vert", view(GEOM_RIBBON_VERT)},     {"shaders/scatter.vert", view(GEOM_SCATTER_VERT)}, {"shaders/drift.vert", view(GEOM_DRIFT_VERT)},
+            {"shaders/halo.vert", view(GEOM_HALO_VERT)},         {"shaders/gradient.frag", view(LOOK_GRADIENT_FRAG)}, {"shaders/dots.frag", view(LOOK_DOTS_FRAG)},
+            {"shaders/pulse.frag", view(LOOK_PULSE_FRAG)},       {"shaders/sizzle.frag", view(LOOK_SIZZLE_FRAG)},
         };
         const auto it = m.find(name);
         return it == m.end() ? std::string_view{} : it->second;

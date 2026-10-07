@@ -1056,7 +1056,8 @@ alias and no compatibility shim.
 
 - **`preset` setting renamed `trail`** (`plugin:hyprtail:trail`,
   `SValues::trail`, `hyprctl hyprtail` field `trail`, text and JSON). The
-  value is resolved exactly as before (`preset::load`, `Preset.cpp:266-293`):
+  value was resolved as follows (`preset::load`; superseded by the next
+  section, which replaces the bare name with a `.conf` path):
   `prefab:<name>` is an embedded manifest, a bare `<name>` (no `/`,
   `Preset.cpp:279`) is `<hyprtail root>/presets/<name>.conf`
   (`Preset.cpp:285`). Strings that name the setting changed (the
@@ -1095,6 +1096,78 @@ alias and no compatibility shim.
   `plugin:hyprtail:trail` (no `plugin:hyprtail:preset`), the embedded
   manifests and the shader helpers; `make test-unit` passes (307 checks plus
   the glslangValidator pass). Nothing was loaded into any Hyprland instance.
+
+## Trail paths and shader paths (built; compiled and unit-tested only, loader not run)
+
+Follows the rename section above, before any release: no alias.
+
+- **Shipped presets name shaders by path.** Every `<layer>:vertex`/`fragment`
+  in `hyprtail/presets/*.conf` (27 references in 9 files) went from
+  `prefab:<name>` to the path relative to the hyprtail root,
+  `shaders/<name>`. A purely mechanical rewrite; the only other text
+  changes are two comments: the `subtle.conf` header (how to copy and
+  select it) and one sentence in `vivid.conf`. The manifest grammar already
+  expressed this (`parse`, `Preset.cpp:47-146`: a value is everything after
+  the first `=` up to `#`), so no syntax change was needed.
+- **One resolver.** Disk-mode shader paths and the `trail` value both go
+  through `cfg::resolveShaderPath` (`Config.cpp:223`), the function
+  `layerN_vertex`/`layerN_fragment` already used. Not renamed (it now also
+  resolves a `.conf` path); its comment in `Config.hpp` says so.
+- **Embedded table keyed by the same string.** `shader::builtin()` keys
+  were `ribbon.vert`; they are now `shaders/ribbon.vert`
+  (`ShaderSource.cpp:403-410`), so a prefab preset's stage value is looked
+  up as written. The slot's safe identity (`SLayerSpec::vertBuiltin`,
+  `Preset.cpp:260,263`, the hardcoded fallback) uses the new keys, and
+  built-in shaders now show as `<shaders/ribbon.vert>` in messages. The
+  `helpers/` table (`prefabs()`, `ShaderSource.cpp:83-90`) is keyed
+  relative to `shaders/` and was left alone as asked, so the two embedded
+  tables use different bases. A wart, not a bug.
+- **Embedded presets never read the disk** (`Preset.cpp:241-244`): a stage
+  not in the table is an error naming the expected form. File presets
+  resolve on disk (`Preset.cpp:247-255`).
+- **`prefab:<name>` as a shader stage is kept** as shorthand for the embedded
+  `shaders/<name>` (`Preset.cpp:231-236`), for file presets that want to pin
+  an embedded shader. It also keeps the smoke test's scratch presets
+  working with no `shaders/` folder on disk. Removing it later is one
+  branch in `resolveStage`.
+- **Missing shader file in a file preset: warning, keep the current
+  trail.** The existing slot-level path already reports a missing file as a
+  `WARN` (`shader:<layer>`) and keeps the current *shader*, but on a preset
+  switch the slot is a fresh object with no program, so "keeping" meant
+  drawing the built-in ribbon. To keep the previous *trail*, `resolveStage`
+  collects missing files (`Preset.cpp:253-254`) and `load()` returns nothing
+  for them when a trail is showing (`Preset.cpp:354-376`); `applyConfig`
+  then drops the queued switch (`main.cpp:1089-1092`). Same diag path, so
+  the orange notification and `errors.log` as before. Other load failures
+  (no such preset file, parse error, bad bare name) are unchanged: `ERR`
+  and fallback to `prefab:subtle`. `activePreset.layers.empty()` is the
+  "nothing showing yet" test (it is empty until the first
+  `prepareLayers()`, `LayerPassElement.hpp:97`). Also: a preset kept this
+  way isn't re-checked until the next config reload, and the missing file
+  isn't watched (the active preset's files are).
+- **`trail` value forms.** `prefab:<name>`, or a path ending `.conf`
+  (`Preset.cpp:306`). Anything else, bare names included, gets `notATrail`
+  (`Preset.cpp:281`): `"subtle" isn't a trail: write "prefab:subtle" for the
+  built-in, or "presets/subtle.conf" for your own file ...`. No way to name
+  a bare shader file in `trail`; a custom shader goes in a preset.
+- **Tests.** `testPresetManifests` now requires path-form stages and checks,
+  per stage of each shipped preset, both modes: the string is a key of
+  `shader::builtin()` (embedded) and `hyprtail/<string>` exists with
+  byte-identical contents (disk). Checked it fails when a disk shader is
+  edited. The loader itself (`Preset.cpp`) needs Hyprland headers, so it is
+  not in the unit build; a scratch harness that links the real
+  `preset::load` (stubbing `diag::report`) was written but the shell
+  allowlist refused to run it, so the loader's own branches (`notATrail`,
+  the missing-file warning, `load()`'s `nullopt`) have only been compiled.
+- **Helpers on disk: no effect.** `#include "helpers/..."` is looked up in
+  the embedded table before any path logic (`ShaderSource.cpp:232-237`),
+  whether the including shader is embedded or a file. `SSource::files`, the
+  list that feeds the file watcher, is only filled for units with a path
+  (`ShaderSource.cpp:264-265`, `ShaderSlot.cpp` `reload`), so an edit under
+  `hyprtail/shaders/helpers/` triggers nothing and changes nothing; the
+  copy is reference material. Only `#include "./helpers/<name>"` (or any
+  path not starting with the bare `helpers/`) reads the disk
+  (`ShaderSource.cpp:239-255`), and `prelude/` is never a file.
 
 ## Open questions
 

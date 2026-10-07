@@ -600,7 +600,8 @@ this file states the decision and marks what's still a placeholder.
 > Hyprland's own "unknown config key" error, not a plugin one. What
 > replaces each is in §13.7/§13.8: shader identity and per-layer parameter
 > defaults move into a preset file (`prefab:subtle`, `prefab:classic`, or a
-> user's own `presets/<name>.conf`); `trail = "<name>"` selects one; `layer1_vertex` ..
+> user's own `presets/<name>.conf`); `trail = "prefab:<name>"` or
+> `trail = "presets/<name>.conf"` selects one; `layer1_vertex` ..
 > `layer4_fragment` still override a layer's shader by config; the `params`
 > string still overrides a layer's parameters by config. **Also removed, now
 > that phase 6 is built:** `interpolate_warps`, replaced by `warp =
@@ -1223,17 +1224,23 @@ would have linked fine.
 
 ### 13.7 Presets
 
-- **Where, two explicit namespaces (no shadowing):** `prefab:<name>` is
-  always the embedded built-in, ignoring any local file of that name. A
-  bare `<name>` is always
-  `$XDG_CONFIG_HOME/hypr/hyprtail/presets/<name>.conf` (fallback
-  `~/.config/hypr/hyprtail/presets/`; the "hyprtail config root" below),
-  and fails with a clear error naming the path if the file is missing; it
-  never falls back to a built-in. The default is `prefab:subtle`, since a
-  fresh install has no `presets/` directory. `hyprtail/presets/subtle.conf` is both
-  the embedded prefab and a copy-and-edit starting point: dropped
-  unchanged into the user's `presets/` as `subtle.conf`, it behaves
-  identically.
+- **Where, two explicit namespaces (no shadowing):** the `trail` value is
+  either `prefab:<name>`, always the embedded built-in, ignoring any local
+  file of that name, or the path of a `.conf` file, with its extension,
+  resolved by `cfg::resolveShaderPath()` (`Config.cpp:223`): relative ones
+  against the hyprtail config root (below), e.g. `presets/subtle.conf`;
+  `~` and absolute as given. That is the one path resolver for every file
+  hyprtail reads from the user's config; the preset loader has no second
+  one. A value that is neither (the removed bare form, `trail = "subtle"`,
+  or a path without `.conf`) is an error that says what to write instead
+  (`notATrail`, `Preset.cpp:281`); a missing file is an error naming the
+  path; neither falls back to a built-in except through the reported
+  fallback below. The default is `prefab:subtle`, since a fresh install has
+  no `hyprtail/` folder. `hyprtail/presets/subtle.conf` is both the
+  embedded prefab and a copy-and-edit starting point: copied with its
+  folder into `~/.config/hypr/` and selected as `presets/subtle.conf`, it
+  behaves identically (a unit test pins that the shaders it names are
+  byte-identical to the embedded ones).
 - **Manifest:** a `<name>.conf` file, plain `key = value` lines, `#` comments,
   reading like hyprlang. Layer keys are prefixed `<layer>:` as in
   `plugin:hyprtail:...`. `layers` gives the draw order (first = bottom).
@@ -1244,8 +1251,8 @@ would have linked fine.
   description = Thin neutral trail
   layers      = core
 
-  core:vertex   = prefab:ribbon.vert     # embedded, or a path (bare = your file)
-  core:fragment = solid.frag             # relative to the hyprtail config root
+  core:vertex   = shaders/ribbon.vert    # a path relative to the hyprtail config root
+  core:fragment = shaders/solid.frag     # your own file, same base
   core:fade_ms  = 350                    # any other key = a parameter of the layer
   core:width    = 4
   core:color    = rgba(ffffffa0)
@@ -1259,19 +1266,27 @@ would have linked fine.
 
   **Built (phase 4)** (`src/Preset.*`): `contract`/`description`/`layers`
   plus `<layer>:vertex`/`fragment`/`<name>`, `#` comments anywhere on a
-  line, blank lines ignored. Shader stages use the same two namespaces as
-  preset names: `vertex`/`fragment` = `prefab:<name>` is an embedded main
-  shader, checked against `shader::builtin()`'s names (`ribbon.vert`,
-  `ribbon.frag`, `ring.vert`, `ring.frag`); anything else is a path to the
-  user's own file, resolved by `cfg::resolveShaderPath()`: `~` and absolute
-  as given, relative against the hyprtail config root. Prefab presets may
-  only use `prefab:` shaders. (Prefab presets and `helpers/` includes, §5,
-  are the same pattern applied to presets, main shaders and include files:
-  prefixed = embedded and immutable, otherwise the user's own copy.)
+  line, blank lines ignored. A shader stage is a path relative to the
+  hyprtail config root (`shaders/ribbon.vert`), whichever kind of preset
+  names it, and the preset kind decides where it is looked up
+  (`resolveStage`, `Preset.cpp:224-257`): in an embedded (`prefab:`)
+  preset it is a key of the embedded shader table, `shader::builtin()`
+  (`ShaderSource.cpp:403-410`, keyed by exactly that string), and never
+  touches the disk -- so a run with no files on disk works and a stale
+  copied folder can't change what `prefab:` means (`Preset.cpp:241-244`);
+  in a file preset it is resolved by the same `cfg::resolveShaderPath()`
+  and read from disk. `prefab:<name>` as a stage value (a file preset
+  only needs it to pin an embedded shader) is shorthand for the embedded
+  `shaders/<name>` in any preset (`Preset.cpp:231-236`). `helpers/` and
+  `prelude/` are not stage paths: includes are unchanged (§5; `helpers/`
+  is embedded and keyed relative to `shaders/`, so editing the on-disk
+  copy has no effect). (Prefab presets and `helpers/` includes, §5, are
+  the same pattern applied to presets, main shaders and include files:
+  embedded and immutable, otherwise the user's own copy.)
   Structural mistakes (unknown top-level key, a `<layer>:` key for a layer
   not in `layers`, a bad/missing `contract`, `layers` empty/duplicated/over
-  4, an unrecognized `prefab:` shader name, a path in a prefab preset) are
-  load-time errors; an unknown *parameter* name needs the compiled
+  4, an unrecognized `prefab:` shader name, a stage in a prefab preset that
+  isn't in the embedded table) are load-time errors; an unknown *parameter* name needs the compiled
   program's declared params, so it's deferred to `CLayer::resolve()`
   (`params:<layer>`, entry ignored) same as always. Any failure loading
   the *selected* preset (file not found, parse error, bad shader reference)
@@ -1279,6 +1294,16 @@ would have linked fine.
   to the embedded `prefab:subtle` manifest, guaranteed to parse since it
   ships with the plugin. That fallback is degradation after a clear error,
   not resolution: a bare name never resolves to a built-in.
+  **One exception, built:** a file preset that parses but names a shader
+  file that isn't on disk (`missing`, `Preset.cpp:253-254`) is a warning
+  (`WARN`, the orange notification and `errors.log`, key `trail:<name>`),
+  not an error. If a trail is already showing, `preset::load()` returns
+  nothing (`Preset.cpp:373-376`) and `applyConfig()` drops the queued
+  switch (`main.cpp:1089-1092`): the current trail stays. At startup
+  nothing is showing yet, so it falls back like the others. A shader file
+  deleted or broken later, while its preset is active, is the slot's own
+  warning, unchanged (`CShaderSlot::reload`, "Keeping the current
+  shader").
 - **Source (built, spring-chain stage 2, untested on host):** the source is
   the one thing all of a preset's layers share (§13.1), so the preset
   declares it once: a top-level `source = pointer | spring` (optional, at
@@ -1308,9 +1333,11 @@ would have linked fine.
     chain keeping the head end, as for the ring.
   - **Built-in:** `prefab:spring`, one ribbon layer over the spring source.
 - **Selection and overrides:**
-  - `trail = "<name>"` selects a preset. **Built (phase 4)**
-    (`plugin:hyprtail:trail`, `Config.*`; formerly `preset`, renamed
-    before any release, no alias): default `prefab:subtle`.
+  - `trail = "prefab:<name>"` or `trail = "presets/<name>.conf"` selects
+    a preset (see "Where" above). **Built (phase 4)**
+    (`plugin:hyprtail:trail`, `Config.*`; formerly `preset`, and formerly
+    also taking a bare `<name>`, both changed before any release, no
+    alias): default `prefab:subtle`.
   - **Hyprtail config root:** `$XDG_CONFIG_HOME/hypr/hyprtail/`, fallback
     `~/.config/hypr/hyprtail/` (`cfg::hyprtailRoot()`). Every relative
     path hyprtail reads from the user's config resolves against it: a

@@ -359,7 +359,7 @@ TEST_CASE(hyprtailLifecycle) {
                                                                     "sparks:fragment = prefab:dots.frag\n"
                                                                     "sparks:count = 12\n";
         }
-        HYPRTAIL_CONFIGURE("stacked preset", "smoke-stack", fade + " sparks:fade_ms=" + std::to_string(FADE_MS), 0);
+        HYPRTAIL_CONFIGURE("stacked preset", "presets/smoke-stack.conf", fade + " sparks:fade_ms=" + std::to_string(FADE_MS), 0);
         HYPRTAIL_EXPECT_STATUS("stacked preset", "layer sparks");
         if (!statusHas("topology path") || !statusHas("topology quad") || !statusHas("topology instanced count"))
             FAIL_TEST("stacked preset: expected a path, a quad and an instanced layer:\n{}", status());
@@ -368,7 +368,7 @@ TEST_CASE(hyprtailLifecycle) {
 
         // Presets switched while a trail is still on screen, in an order
         // that swaps instanced <-> path <-> quad state under the same VBO.
-        for (const std::string preset : {"prefab:jitter", "prefab:classic", "prefab:spray", "smoke-stack", "prefab:subtle", "prefab:jitter"}) {
+        for (const std::string preset : {"prefab:jitter", "prefab:classic", "prefab:spray", "presets/smoke-stack.conf", "prefab:subtle", "prefab:jitter"}) {
             const auto step = "switch to " + preset;
             OK(moveAlong(700, 400, 1200, 700, 12));
             HYPRTAIL_CONFIGURE(step, preset, preset == "prefab:subtle" ? subtleFade : fade, 0);
@@ -429,7 +429,7 @@ TEST_CASE(hyprtailLifecycle) {
                                                                            "sparks:fragment = prefab:dots.frag\n"
                                                                            "sparks:count = 12\n";
         }
-        HYPRTAIL_CONFIGURE("spring stack", "smoke-spring-stack", fade + " sparks:fade_ms=" + std::to_string(FADE_MS), 0);
+        HYPRTAIL_CONFIGURE("spring stack", "presets/smoke-spring-stack.conf", fade + " sparks:fade_ms=" + std::to_string(FADE_MS), 0);
         HYPRTAIL_EXPECT_STATUS("spring stack", "layer sparks");
         if (!statusHas("source: spring") || !statusHas("topology path") || !statusHas("topology quad") || !statusHas("topology instanced count"))
             FAIL_TEST("spring stack: expected a spring source under a path, a quad and an instanced layer:\n{}", status());
@@ -439,7 +439,7 @@ TEST_CASE(hyprtailLifecycle) {
         // Presets switched while the chain is moving, in and out of the
         // spring source (a new source replaces the old one, the same kind
         // keeps it).
-        for (const std::string preset : {"prefab:subtle", "prefab:spring", "prefab:jitter", "smoke-spring-stack", "prefab:spring", "prefab:spring"}) {
+        for (const std::string preset : {"prefab:subtle", "prefab:spring", "prefab:jitter", "presets/smoke-spring-stack.conf", "prefab:spring", "prefab:spring"}) {
             const auto step = "switch to " + preset;
             OK(moveAlong(700, 400, 1200, 700, 12));
             HYPRTAIL_CONFIGURE(step, preset, preset == "prefab:subtle" ? subtleFade : fade, 0);
