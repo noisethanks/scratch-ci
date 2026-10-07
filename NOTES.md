@@ -846,8 +846,10 @@ so no compatibility shim.
 ## Per-app suppression (cited at efb5099)
 
 A third suppress condition, alongside session lock and pointer constraint:
-a dynamic window-rule effect, `hyprtail:no_trail`, checked against the
-focused window.
+a dynamic window-rule effect, `hyprtail:no_trail`. It was first checked
+against the focused window; it now follows the window under the pointer, see
+"Rule follows the pointer, not focus" at the end of this section. The
+decisions below that mention focus, no cache, or fading are superseded there.
 
 - **Mechanism, confirmed via `nm -D` on the installed host binary and
   direct source reads:** `Desktop::Rule::windowEffects()->registerEffect()`
@@ -893,6 +895,116 @@ focused window.
   shader-param contract, a different surface with different failure
   semantics (a bad shader param is a config error; a bad/missing rule
   value should just mean "not suppressed," silently).
+
+### Rule follows the pointer, not focus (cited at efb5099)
+
+Symptom: with `input:follow_mouse` = 2 or 3 the focused window and the one
+under the pointer differ, and the rule was applied to the focused one.
+
+- **Old read site:** `appRuleSuppressed()` in `src/main.cpp` (was `:146-158`),
+  `Desktop::focusState()->window()` at `:149`, reached through `suppressed()`
+  from `sampleSource`, `onMouseMoveInternal`, `onIdleTimer` and the quad branch
+  of `runLifecycle`. Focus-based, so the fix applied. The status also named the
+  focused window (`statusSnapshot`, was `:1121-1124`).
+- **Hit test used:** `Desktop::viewState()->hitTest().windowAt(Pointer::mgr()->position(),
+  Desktop::View::RESERVED_EXTENTS | INPUT_EXTENTS | ALLOW_FLOATING)`
+  (`ViewHitTester.hpp:22`, `ViewState.hpp:17`, `ViewStateTracker.hpp:19`; flag
+  enum `Window.hpp:63-74`). This answers the backlog item below: the helper
+  is not on `Compositor`, it is `CViewHitTester` at the pin.
+- **Why not core's exact flags:** the pointer-focus lookup is
+  `RESERVED_EXTENTS | INPUT_EXTENTS | ALLOW_FLOATING | FOLLOW_MOUSE_CHECK`
+  (`InputManager.cpp:487-488`). `FOLLOW_MOUSE_CHECK` shrinks the hitbox of every
+  window except `focusState()->window()` by `input:follow_mouse_shrink`
+  (`ViewHitTester.cpp:42-43`, `:61-62`, `:104-105`, `:233-234`), a hysteresis for
+  switching focus. Keeping it would make "under the pointer" depend on focus
+  again (and off by a few pixels at window edges). Every other
+  pointer-location caller omits it (`InputManager.cpp:876`, `:946`, `:1008`;
+  `KeybindManager.cpp:956`; `Monitor.cpp:1491`). Floating and z-order are the hit
+  test's own: pinned floating first (`ViewHitTester.cpp:52-72`), floating above
+  fullscreen (`:126-131`), a fullscreen window (`:139-150`), then tiled.
+- **Where it runs:** `render.pre` (`Renderer.cpp:2095`, `EventBus.hpp:136`), per
+  non-mirror monitor render. It sits before `beginRender` (`:2140`), which takes
+  the damage ring (`:1782-1783`), so ring damage added there is part of that
+  render, and before any pass element exists. Not `RENDER_BEGIN`: that is after
+  `beginRender`, where ring damage only reaches the next frame.
+- **Deviation from "once per frame, shared across monitors":** there is no
+  frame shared by monitors; each renders on its own vblank. Re-evaluating at
+  each monitor's `render.pre` is one `windowAt` call (a loop over the window
+  list) per render, and `CPointerGate` makes the effects edge-triggered, so the
+  buffer clear and the damage happen once. Consumers read the stored answer
+  (`pointerExcluded()`), none runs its own hit test. The status command is the
+  exception: it reports the window under the pointer fresh.
+- **Hard gate, superseding "fades like pointer constraint":** the earlier
+  decision rejected hard-gating to avoid touching `runLifecycle`. The request
+  is that nothing is drawn over an excluded window, including what is already
+  fading, so the excluded window joins session lock in `runLifecycle`'s one
+  `hardGated` check. Trail and idle layers both pass through it, and
+  `suppressed()` (shared by sampling, the idle timer and the warp hook) includes
+  the gate. Pointer constraint is unchanged.
+- **Enter / exit:** on enter the source is cleared, a break is queued and
+  `repaintLastDrawn()` (the helper `onLayoutChanged` already needed, extracted
+  and reused) ring-damages each layer's last drawn box on every monitor; the
+  render's `damage.update` with an empty box then clears it once. On exit the
+  source is cleared again and a break queued, so the first new node starts a
+  segment. The state logic (`CPointerGate`, `PointerGate.hpp`) has no Hyprland
+  includes and is unit-tested for the pointer and spring sources
+  (`testPointerGate`): no churn without a change, buffer emptied on enter and
+  on exit, first node after exit unconnected.
+- **Motion damage while excluded:** `onMouseMoveInternal` used `suppressed()`
+  as its early return. With the gate in `suppressed()` that would skip the
+  damage that schedules the render whose `render.pre` sees the pointer leave,
+  leaving the gate shut with hardware cursors. It now returns only for lock
+  and constraint. Cost: a small damaged box per pointer motion over an excluded
+  window, as for any window without the rule.
+- **Status:** `focusedClass`/`focusedTitle` became `hoveredClass`/`hoveredTitle`
+  (JSON and text), now naming the window under the pointer; `appRule` is the
+  gate as of the last render. Nothing else in the repo read the old names.
+- **Not extended: the smoke test.** hyprtester can spawn clients
+  (`Tests::spawnKitty`, `hyprtester/src/tests/shared.hpp`) and the smoke test
+  already warps the pointer with `hl.dsp.cursor.move`, but `appRule` only
+  changes on a render, which a headless output is not known to do (the smoke
+  assertions already carry that caveat), and it needs kitty in the nested
+  environment. An assertion I cannot run, that may never fire, is worse than
+  none. Left for the host, see below.
+- **Stability risk, stated per CLAUDE.md:** low. One new event listener
+  (removed in `teardown`), no new GL resources, no hooks. Ring damage from
+  `render.pre` is the pattern `onMouseMoveInternal` already uses outside a
+  render. A nested run is not needed; host test below.
+- **Host test steps:** `hyprpm update`, `hyprpm reload -f`. Rule on a class,
+  e.g. `hl.window_rule({ match = { class = "^(mpv)$" }, ["hyprtail:no_trail"] = true })`,
+  with `input:follow_mouse = 2` (or 3).
+  1. Open mpv and a terminal; click the terminal (it holds focus). Move the
+     pointer over mpv: no trail, and none left over where it was drawn.
+     `hyprctl hyprtail` shows `suppressed: yes (app rule)` and the mpv class under
+     "window under pointer".
+  2. Leave mpv onto the terminal: the trail returns and its first segment starts
+     at the pointer, with no line back across mpv.
+  3. Same with `follow_mouse = 0` and mpv focused, pointer over the terminal:
+     trail shown.
+  4. Fast sweep across mpv and out again: no ghost pixels at the entry point.
+  5. Stationary pointer over the terminal; move mpv under it
+     (`hyprctl dispatch` a move/float, or open mpv there): trail ends. Close
+     mpv: trail works again on the next motion.
+  6. Floating mpv over a tiled terminal, pointer on the overlap: excluded.
+     Pinned/floating window above an excluded tiled one: not excluded.
+  7. Two monitors, pointer entering mpv from the other monitor: nothing left
+     on either.
+  8. With an idle layer (`prefab:classic`): stay still over mpv, no marker;
+     over the terminal, marker appears after its `start_ms`.
+- **Known limitations:**
+  - The hit test ignores layer surfaces. A layer surface above an excluded
+    window (a panel, launcher or overlay) still reads as that window, where
+    core's pointer focus (`InputManager.cpp:475-478`) would give the layer.
+    Left as is.
+  - An override-redirect X11 window (menu, tooltip) that does not take focus
+    makes `windowAt` return `focusState()->window()` (`ViewHitTester.cpp:107-109`),
+    so over such a popup the rule is read from the focused window.
+  - The gate changes only when a monitor renders. With direct scanout active
+    (`Renderer.cpp:2080-2092`) `render.pre` does not run and nothing is drawn by
+    us anyway; the gate catches up on the next normal render.
+  - Which window is "under" the pointer at a window border follows
+    `general:resize_on_border` / `extend_border_grab_area` (`ViewHitTester.cpp:40`),
+    as pointer focus does.
 
 ## CI: test rows through the flake, stable-row nixpkgs pin (cited at efb5099, v0.56.1, main 4bb6844b; 2026-09-30)
 
@@ -1181,15 +1293,9 @@ Follows the rename section above, before any release: no alias.
 - [ ] **Host freezes** (flipped transform; fullscreen game start). Not isolated; see "Freeze analysis". Plugin hardening in, no fix claimed.
 - [ ] Cursor-warp tool for the visual test harness (partly answered: `hl.dsp.cursor.move({ x = X, y = Y })` via `hyprctl dispatch`, field names from `LuaBindingsDispatchers.cpp:77-85`, used by the smoke test): `hyprctl dispatch movecursor` is unreliable under the Lua provider (needs the `eval`/`hl.dsp.movecursor` form, field names unconfirmed), `wlrctl pointer move` didn't work in first attempt (likely wrong `WAYLAND_DISPLAY`), neither fully resolved. Not urgent given manual drag + `cursorpos_trace.sh` already gave a usable result, but will matter once scripting the stage-4/5 validation shaders.
 - [ ] `hyprctl hyprtail` lifecycle line (`Status.cpp:97-100`) is gated on `topology == "quad"` by hand (path: fade+reach; quad: fade+start+duration+reach), matching which fields `ribbon.vert`/`ring.frag` actually read. Worth revisiting: key the displayed fields off which reserved params (`shader::reservedParams()`, `ShaderSource.cpp:351-369`) a layer's shader pragma actually declares as used, rather than hardcoding per-topology in `Status.cpp`, so the status output stays correct automatically as shader capabilities change (e.g. a future path shader that does read `duration_ms`, or a quad variant that doesn't). Not blocking; `reservedParams()` currently marks all three (`fade_ms`/`start_ms`/`duration_ms`) `uniform=true` unconditionally for both topologies, so there's no existing per-shader "which reserved params does this program use" signal to key off yet — would need one added to `SProgramInfo`/`ShaderSlot` first.
-- [ ] **Backlog: "window under pointer" mode for per-app suppression**, as an
-  alternative or addition to the focus-based `hyprtail:no_trail` rule.
-  Not investigated past a first pass: no `vectorToWindowUnified()`/`windowAt()`-
-  style Compositor helper was found at `efb5099` in the areas checked
-  (`Compositor.hpp`); would need a proper search before committing to an
-  approach, plus a per-render window-under-cursor query (continuous, not
-  event-driven, since the pointer moves independently of any window event).
-  Deprioritized: the trail already follows the pointer regardless of window
-  focus (SPEC §7), so a focus-based rule was judged the better fit for the
-  stated per-app use case (suppress over a specific app you're using), and
-  hover mode would mainly matter for a narrower case (suppress over an
-  unfocused window the pointer happens to be crossing) that hasn't come up.
+- [x] **"Window under pointer" mode for per-app suppression.** Done, and it
+  replaced the focus-based rule instead of sitting beside it (it came up with
+  `follow_mouse` = 2/3). The helper is `CViewHitTester::windowAt`, not on
+  `Compositor`; see "Rule follows the pointer, not focus" under "Per-app
+  suppression". Open there: a hand test on the host, and layer surfaces
+  above an excluded window (listed under known limitations).

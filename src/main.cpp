@@ -25,7 +25,7 @@
 #include <managers/fullscreen/FullscreenController.hpp>
 #include <managers/SessionLockManager.hpp>
 #include <event/EventBus.hpp>
-#include <desktop/state/FocusState.hpp>
+#include <desktop/state/ViewState.hpp>
 #include <state/MonitorState.hpp>
 #include <output/Monitor.hpp>
 #include <helpers/memory/Memory.hpp>
@@ -41,6 +41,7 @@
 #include "FileWatch.hpp"
 #include "Layer.hpp"
 #include "LayerPassElement.hpp"
+#include "PointerGate.hpp"
 #include "Preset.hpp"
 #include "RenderUtil.hpp"
 #include "Status.hpp"
@@ -102,6 +103,8 @@ static CFunctionHook*   s_captureHook     = nullptr;
 // (0) doubles as "not registered": registerEffect() never returns 0 for a new
 // dynamic name, so this is a safe sentinel for teardown() to guard on.
 static Desktop::Rule::CWindowRuleEffectContainer::storageType s_noTrailEffectIdx = Desktop::Rule::WINDOW_RULE_EFFECT_NONE;
+static hyprtail::CPointerGate                                 s_gate; // pointer over a hyprtail:no_trail window, SPEC §7
+static CHyprSignalListener                                    s_preRenderListener;
 static CHyprSignalListener                                    s_renderStageListener;
 static CHyprSignalListener                                    s_mouseMoveListener;
 static CHyprSignalListener                                    s_workspaceActiveListener;
@@ -138,16 +141,24 @@ static bool pointerConstrained() {
     return g_pInputManager && g_pInputManager->isConstrained();
 }
 
-// The focused window's hyprtail:no_trail rule, looked up fresh every call:
-// no listener-driven cache. Desktop::Rule::windowEffects() and
-// CWindowRuleApplicator::m_otherProps.props are the documented plugin-read
+// The window under the pointer: the hit test core's pointer-focus path uses
+// (InputManager.cpp:487-488 at the pin), at the pointer's own position and
+// with the same flags minus FOLLOW_MOUSE_CHECK. That flag shrinks the hitbox
+// of every window but the focused one by input:follow_mouse_shrink
+// (ViewHitTester.cpp:42-43, :61-62), a focus-switch hysteresis: it would make
+// the answer depend on focus. The other pointer-location callers leave it out
+// too (InputManager.cpp:876, :946, :1008). Floating windows and z-order are
+// the hit test's (ViewHitTester.cpp:52-131). nullptr: no window there.
+static PHLWINDOW windowUnderPointer() {
+    return Desktop::viewState()->hitTest().windowAt(Pointer::mgr()->position(), Desktop::View::RESERVED_EXTENTS | Desktop::View::INPUT_EXTENTS | Desktop::View::ALLOW_FLOATING);
+}
+
+// Whether w has the hyprtail:no_trail rule set. Desktop::Rule::windowEffects()
+// and CWindowRuleApplicator::m_otherProps.props are the documented plugin-read
 // path (WindowRuleApplicator.hpp:63-72 at the pin, SPEC §2), the same one
 // hyprbars uses for its own dynamic effects (hyprbars barDeco.cpp:641-646).
-static bool appRuleSuppressed() {
-    if (s_noTrailEffectIdx == Desktop::Rule::WINDOW_RULE_EFFECT_NONE)
-        return false;
-    const auto w = Desktop::focusState()->window();
-    if (!w || !w->m_ruleApplicator)
+static bool windowExcluded(const PHLWINDOW& w) {
+    if (s_noTrailEffectIdx == Desktop::Rule::WINDOW_RULE_EFFECT_NONE || !w || !w->m_ruleApplicator)
         return false;
     const auto& props = w->m_ruleApplicator->m_otherProps.props;
     const auto  it    = props.find(s_noTrailEffectIdx);
@@ -156,14 +167,20 @@ static bool appRuleSuppressed() {
     return hyprtail::params::ruleTruthy(it->second->effect);
 }
 
-// Session lock, pointer constraint, and the focused window's hyprtail:no_trail
-// rule all suppress the source the same way (SPEC §7): no new points, idle-
-// marker effects end, motion tracking pauses. Session lock is the only one of
-// the three that also hard-gates drawing (runLifecycle's `!locked &&` check)
-// -- path points from the other two just stop growing and fade out on their
-// own.
+// Whether the pointer is over an excluded window, as of the last pre-render
+// evaluation (onPreRender).
+static bool pointerExcluded() {
+    return s_gate.excluded();
+}
+
+// Session lock, pointer constraint, and the pointer being over an excluded
+// window all suppress the source the same way (SPEC §7): no new points, idle-
+// marker effects end, motion tracking pauses. Session lock and the excluded
+// window also hard-gate drawing (runLifecycle's `hardGated`); a pointer
+// constraint doesn't: its path points just stop growing and fade out on
+// their own.
 static bool suppressed() {
-    return sessionLocked() || pointerConstrained() || appRuleSuppressed();
+    return sessionLocked() || pointerConstrained() || pointerExcluded();
 }
 
 // Screenshare exclude (SPEC §13.12): anything but the literal "include"
@@ -317,8 +334,10 @@ static void runLifecycle(const PHLMONITOR& pMonitor) {
 
     // Core keeps drawing the cursor over the lock screen (Renderer.cpp:2176
     // vs :2212-2216). This deliberately diverges from core: nothing while
-    // locked.
-    const bool locked = sessionLocked();
+    // locked. Nothing over an excluded window either (SPEC §7); the damage
+    // update below then clears what was drawn, once. Every layer, trail and
+    // idle alike, goes through this one check.
+    const bool hardGated = sessionLocked() || pointerExcluded();
     sampleSource(nowMs);
 
     // Advance the source to this render's instant. One that was at rest at
@@ -343,7 +362,7 @@ static void runLifecycle(const PHLMONITOR& pMonitor) {
         CBox  cur    = {};
         float extent = 0.F;
 
-        if (!locked && layerDrawable(l, hidden)) {
+        if (!hardGated && layerDrawable(l, hidden)) {
             extent = layerExtentPx(p, l);
             if (nodeLayer(l)) {
                 // An instanced layer draws the visible nodes only (a path
@@ -542,7 +561,7 @@ static void hkControllerWarpTo(const void* thisptr, const Vector2D& pos, bool fo
         const double   nowMs = msSinceEpoch(Time::steadyNow());
         noteMotion(to, nowMs);
 
-        if (!s_preset || to == from || pointerConstrained())
+        if (!s_preset || to == from || pointerConstrained() || pointerExcluded())
             return;
 
         switch (s_preset->warpMode) {
@@ -681,7 +700,11 @@ static void onMouseMoveInternal() {
     // damage below makes one happen).
     noteMotion(pos, msSinceEpoch(Time::steadyNow()));
 
-    if (!s_preset || suppressed())
+    // Not suppressed(): over an excluded window the damage below still has to
+    // happen. It makes the render whose pre-render evaluation notices the
+    // pointer has left; skipping it would leave the gate shut until
+    // something else rendered.
+    if (!s_preset || sessionLocked() || pointerConstrained())
         return;
 
     // Reach of the widest path or instanced layer (before any program is
@@ -764,6 +787,19 @@ static void onMonitorGone(const PHLMONITOR& pMonitor) {
     });
 }
 
+// Repaint what every layer drew last, on every monitor: monitor-local boxes,
+// still where the layers are on screen. Call after the source was cleared. The
+// next render of each monitor sees an empty source, damages those boxes once
+// more and goes idle; the ring damage here is what makes that render happen.
+static void repaintLastDrawn() {
+    for (const auto& m : State::monitorState()->allMonitors()) {
+        if (!m || !m->m_enabled || m->isMirror())
+            continue;
+        for (auto& l : s_preset->layers)
+            l->damage.damagePrev(m);
+    }
+}
+
 // Monitors arranged (MonitorLayoutController.cpp:70, Monitor.cpp:1399,
 // MonitorRuleManager.cpp:204). Nodes are global coordinates: if a monitor
 // moved, changed size (mode, scale, transform) or appeared, old points could
@@ -785,17 +821,37 @@ static void onLayoutChanged() {
 
         s_preset->source->clear();
         s_preset->pendingBreak = true;
-        // Repaint what was drawn last: monitor-local boxes, still where the
-        // layers are on screen. The next render of each monitor sees an empty
-        // source, damages those boxes once more and goes idle.
-        for (const auto& m : State::monitorState()->allMonitors()) {
-            if (!m || !m->m_enabled || m->isMirror())
-                continue;
-            for (auto& l : s_preset->layers)
-                l->damage.damagePrev(m);
-        }
+        repaintLastDrawn();
         hyprtail::compat::log(Log::INFO, "monitor layout changed, trail cleared");
     });
+}
+
+// The evaluation point for the per-app rule (SPEC §7): state mutation, before
+// anything of this render is drawn or damaged (render.pre, Renderer.cpp:2095
+// at the pin; beginRender takes the damage ring only after it, :2140 and
+// :1782-1783, so ring damage added here lands in this very render). Hit
+// test once per render of a monitor, not per consumer: runLifecycle, the
+// motion check, the idle timer and the warp hook read the result through
+// pointerExcluded(). Monitors render on their own schedules, so there is no
+// frame shared by all of them; every pass sees the pointer and windows as
+// they are now, and the gate only acts when its answer changes, so the clear
+// and the damage happen once however many monitors render.
+static void onPreRenderInternal(const PHLMONITOR& pMonitor) {
+    if (!s_preset || !pMonitor || pMonitor->isMirror())
+        return;
+
+    switch (s_gate.update(windowExcluded(windowUnderPointer()), *s_preset->source)) {
+        case hyprtail::eGateEdge::NONE: return;
+        // The source is empty now (update() cleared it). Break so whatever
+        // comes next does not join an older node; and on entry repaint what
+        // was visible, on every monitor. Exit has nothing drawn to clear.
+        case hyprtail::eGateEdge::ENTER: repaintLastDrawn(); [[fallthrough]];
+        case hyprtail::eGateEdge::EXIT: s_preset->pendingBreak = true; break;
+    }
+}
+
+static void onPreRender(const PHLMONITOR& pMonitor) {
+    hyprtail::diag::guard("pre-render", [&] { onPreRenderInternal(pMonitor); });
 }
 
 // Extract function address from a non-virtual member function pointer.
@@ -858,6 +914,7 @@ static void teardown() noexcept {
         s_layoutChangedListener.reset();
         s_mouseMoveListener.reset();
         s_cursorShapeListener.reset();
+        s_preRenderListener.reset();
         s_renderStageListener.reset();
         removeHook(s_cursorHook);
         removeHook(s_warpHook);
@@ -1117,10 +1174,10 @@ static hyprtail::status::SSnapshot statusSnapshot() {
 
     s.suppress.locked      = sessionLocked();
     s.suppress.constrained = pointerConstrained();
-    s.suppress.appRule     = appRuleSuppressed();
-    if (const auto w = Desktop::focusState()->window()) {
-        s.suppress.focusedClass = hyprtail::compat::windowClass(*w);
-        s.suppress.focusedTitle = hyprtail::compat::windowTitle(*w);
+    s.suppress.appRule     = pointerExcluded();
+    if (const auto w = windowUnderPointer()) {
+        s.suppress.hoveredClass = hyprtail::compat::windowClass(*w);
+        s.suppress.hoveredTitle = hyprtail::compat::windowTitle(*w);
     }
 
     const double nowMs = msSinceEpoch(Time::steadyNow());
@@ -1209,7 +1266,8 @@ static PLUGIN_DESCRIPTION_INFO pluginInit() {
     s_config = {};
 
     // Per-app suppression (SPEC §7): a dynamic window-rule effect, read back
-    // per render via m_ruleApplicator->m_otherProps (appRuleSuppressed()).
+    // per render, from the window under the pointer, via
+    // m_ruleApplicator->m_otherProps (windowExcluded()).
     s_noTrailEffectIdx = Desktop::Rule::windowEffects()->registerEffect("hyprtail:no_trail");
 
     // Node seeds (SPEC §13.2): per-load random base, hashed with an
@@ -1280,6 +1338,9 @@ static PLUGIN_DESCRIPTION_INFO pluginInit() {
     // cursor hook isn't called while the cursor is hidden
     // (Renderer.cpp:2212-2216, 2976-2978), which would freeze a trail mid-fade.
     s_renderStageListener = Event::bus()->m_events.render.stage.listen([](eRenderStage stage) { onRenderStage(stage); });
+
+    // The per-app rule is evaluated before the render starts (SPEC §7).
+    s_preRenderListener = Event::bus()->m_events.render.pre.listen([](PHLMONITOR monitor) { onPreRender(monitor); });
 
     s_mouseMoveListener = Event::bus()->m_events.input.mouse.move.listen([](Vector2D, Event::SCallbackInfo&) { onMouseMove(); });
 

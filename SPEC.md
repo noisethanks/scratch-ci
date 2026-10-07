@@ -203,8 +203,10 @@ this file states the decision and marks what's still a placeholder.
   touches, so a render happens even when moving the hardware cursor plane
   doesn't schedule one (Aquamarine's Wayland backend, i.e. nested). The render
   then runs the normal lifecycle. `cursor:no_hardware_cursors` is **not**
-  required. Skipped while suppressed (session lock, pointer constraint, or the
-  focused window's `hyprtail:no_trail` rule, §7).
+  required. Skipped while the session is locked or the pointer is constrained
+  (§7). Not skipped over a window with the `hyprtail:no_trail` rule: the
+  damage is what makes the render whose pre-render evaluation notices the
+  pointer has left that window.
   **VRR gate:** with the cursor shown, monitors where core's
   `shouldSkipScheduleFrameOnMouseEvent()` holds are skipped (fullscreen
   no-break case). With the cursor hidden, core's check would skip every
@@ -441,18 +443,53 @@ this file states the decision and marks what's still a placeholder.
 - **Per-app suppression:** a dynamic window-rule effect, `hyprtail:no_trail`
   (registered via `Desktop::Rule::windowEffects()->registerEffect()`,
   exported by the host binary and resolved at plugin-load time, same as
-  `saveBufferForMirror`; cited at `efb5099`). Checked against whichever
-  window currently holds focus (`Desktop::focusState()->window()`), read
-  back via `window->m_ruleApplicator->m_otherProps.props`
-  (`WindowRuleApplicator.hpp:63-72`, "Plugins may read this" — the same
-  mechanism hyprbars uses for its own dynamic effects). Looked up fresh on
-  every call, no cache, no event listener. Suppresses exactly like a
-  pointer constraint: nothing inserted, idle-marker effects end, motion
-  tracking pauses; it is **not** a hard draw-gate (see below).
-- **Session lock is the only hard draw-gate.** It's the one suppress
-  condition that also zeroes the path layer's drawn box outright
-  (`runLifecycle`'s `!locked &&` check), so the trail disappears
-  immediately. Pointer constraint and the app rule only stop the *source*:
+  `saveBufferForMirror`; cited at `efb5099`). Follows the **pointer's
+  location, not input focus**: it is read from the window under the pointer,
+  found with `Desktop::viewState()->hitTest().windowAt(Pointer::mgr()->position(),
+  RESERVED_EXTENTS | INPUT_EXTENTS | ALLOW_FLOATING)` (`main.cpp`
+  `windowUnderPointer()`). Those are core's pointer-focus flags
+  (`InputManager.cpp:487-488`) minus `FOLLOW_MOUSE_CHECK`, which shrinks
+  every window's hitbox but the focused one's by `input:follow_mouse_shrink`
+  (`ViewHitTester.cpp:42-43`, `:61-62`, `:104-105`): a focus-switch
+  hysteresis that would make the answer depend on focus. The other
+  pointer-location callers leave it out too (`InputManager.cpp:876`,
+  `:946`, `:1008`; `KeybindManager.cpp:956`). The hit test gives
+  floating-over-tiled, pinned and fullscreen priority (`ViewHitTester.cpp:52-150`).
+  No window there is not excluded. The rule is read back via
+  `window->m_ruleApplicator->m_otherProps.props` (`WindowRuleApplicator.hpp:63-72`,
+  "Plugins may read this" — the same mechanism hyprbars uses for its own
+  dynamic effects). No focus state and no cached mouse-focus field is read.
+- **Evaluation point:** the `Event::bus()->m_events.render.pre` listener
+  (`Renderer.cpp:2095`, `EventBus.hpp:136`), the state-mutation stage: it runs
+  before `beginRender` takes the damage ring (`Renderer.cpp:2140`,
+  `:1782-1783`) and before any pass element is added, so what it damages
+  lands in that same render. The hit test runs once per render of a
+  non-mirror monitor and is stored in a `CPointerGate` (`PointerGate.hpp`);
+  `runLifecycle`, the warp hook, the idle timer and the status read the
+  stored answer through `pointerExcluded()`. A window opening, moving or
+  closing under a still pointer is picked up by the next render, which that
+  change itself causes. Monitors render on independent schedules, so there is
+  no single frame to share: each pass re-evaluates, and the gate acts only
+  when its answer changes, so the clear and the damage below happen once.
+- **While the pointer is over an excluded window nothing is recorded and
+  nothing is drawn.** `suppressed()` includes the gate (nothing inserted,
+  idle-marker effects end, motion tracking pauses, warps are ignored), and
+  `runLifecycle`'s `hardGated` check (session lock or the gate) zeroes every
+  layer's drawn box, trail and idle alike, through the one check.
+  - **Enter:** `CPointerGate::update` clears the source, the next insert is
+    marked a segment break, and the last drawn box of every layer is damaged on
+    every enabled non-mirror monitor (`damagePrev`, ring damage, so a monitor
+    with nothing else to render still gets a frame). The render then draws
+    nothing and clears each box once, so no ghost pixels remain.
+  - **Exit:** the source is cleared again and the next insert is a segment
+    break, so the first new node is not joined to an older one across the
+    excluded window. Nothing was drawn, so there is nothing to repaint.
+  - Pointer motion still damages a small box while excluded (the motion check
+    skips only lock and constraint), so a render, and with it the
+    evaluation that sees the pointer leave, happens with hardware cursors.
+- **Session lock and the excluded window are the hard draw-gates.** Both zero
+  the layers' drawn boxes outright (`runLifecycle`'s `hardGated`), so the
+  trail disappears at once. Pointer constraint only stops the *source*:
   points already in the ring keep aging and fading over `fade_ms` on their
   own, same as a pointer that simply stopped moving. Idle/quad-style
   effects, which have no buffered history, end immediately under all three
@@ -1671,8 +1708,9 @@ screenshare fields arrive with their phases.
   node-buffer failure flag, time the pointer has been still. Not built: emit
   mode.
 - **Suppression** (added with §7's per-app rule): whether session lock,
-  pointer constraint or the app rule is active, and the focused window's
-  class and title the rule was evaluated against.
+  pointer constraint or the app rule is active (the rule: as of the last
+  render), and the class and title of the window under the pointer now
+  (`hoveredClass`, `hoveredTitle` in the JSON; empty if none).
 - **Per monitor:** renders, lifecycle run via the hook vs. the fallback,
   frames drawn, empty-damage skips, per layer the last drawn box (text:
   never drawn / idle / drawing), whether it needs a copy (mirrored or

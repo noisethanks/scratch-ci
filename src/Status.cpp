@@ -85,8 +85,8 @@ namespace hyprtail::status {
                            s.source.gpuFailed ? ", NODE BUFFER FAILED (see errors.log)" : "");
         const auto conditions = suppressConditions(s);
         out += conditions.empty() ? "  suppressed: no\n" : std::format("  suppressed: yes ({})\n", conditions);
-        out += std::format("  focused window: {}\n",
-                           s.suppress.focusedClass.empty() ? "none" : std::format(R"(class "{}", title "{}")", s.suppress.focusedClass, s.suppress.focusedTitle));
+        out += std::format("  window under pointer: {}\n",
+                           s.suppress.hoveredClass.empty() ? "none" : std::format(R"(class "{}", title "{}")", s.suppress.hoveredClass, s.suppress.hoveredTitle));
 
         for (const auto& l : s.layers) {
             const char* state = l.disabled ? "DISABLED (see errors.log)" : !l.enabled ? "off" : l.resolved ? "on" : "on, not compiled yet";
@@ -131,8 +131,8 @@ namespace hyprtail::status {
             R"("source": {{"nodes": {}, "capacity": {}, "generation": {}, "pendingBreak": {}, "warp": "{}", "gpuFailed": {}, "stillMs": {:.1f}, "kind": "{}", "moving": {}}}, )",
             s.source.nodes, s.source.capacity, s.source.generation, b(s.source.pendingBreak), esc(s.source.warpMode), b(s.source.gpuFailed), s.source.stillMs, esc(s.source.kind),
             b(s.source.moving));
-        out += std::format(R"("suppress": {{"locked": {}, "constrained": {}, "appRule": {}, "focusedClass": "{}", "focusedTitle": "{}"}}, )", b(s.suppress.locked),
-                           b(s.suppress.constrained), b(s.suppress.appRule), esc(s.suppress.focusedClass), esc(s.suppress.focusedTitle));
+        out += std::format(R"("suppress": {{"locked": {}, "constrained": {}, "appRule": {}, "hoveredClass": "{}", "hoveredTitle": "{}"}}, )", b(s.suppress.locked),
+                           b(s.suppress.constrained), b(s.suppress.appRule), esc(s.suppress.hoveredClass), esc(s.suppress.hoveredTitle));
 
         out += R"("layers": [)";
         for (size_t i = 0; i < s.layers.size(); ++i) {

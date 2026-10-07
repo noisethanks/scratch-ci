@@ -23,6 +23,7 @@
 #include "../../src/ConfigParse.hpp"
 #include "../../src/CrashGuard.hpp"
 #include "../../src/Params.hpp"
+#include "../../src/PointerGate.hpp"
 #include "../../src/ShaderSource.hpp"
 #include "../../src/Source.hpp"
 #include "../../src/SpringChain.hpp"
@@ -538,6 +539,61 @@ static void testCrashGuard() {
         CHECK(false); // mkdtemp failing is an environment problem worth flagging
 }
 
+// Per-app suppression state (SPEC section 7): the enter and exit transitions of
+// CPointerGate and what they do to the point buffer, for both sources.
+static void testPointerGate() {
+    for (const char* kind : {"pointer", "spring"}) {
+        auto                  src = source::make(kind, 8, 7);
+        CPointerGate          gate;
+        const SVec2f          a{10, 10}, b{20, 10}, c{500, 400}, d{510, 400};
+        std::vector<SGpuNode> out;
+
+        src->insert(a, 0.0, false);
+        src->insert(b, 10.0, false);
+
+        // Not excluded and staying so: no edge, nothing touched.
+        const auto gen = src->generation();
+        const auto n   = src->size();
+        CHECK(n > 0);
+        CHECK(!gate.excluded());
+        CHECK(gate.update(false, *src) == eGateEdge::NONE);
+        CHECK(src->size() == n && src->generation() == gen);
+
+        // Enter: the buffer is dropped, nothing stays to be drawn.
+        CHECK(gate.update(true, *src) == eGateEdge::ENTER);
+        CHECK(gate.excluded());
+        CHECK(src->empty() && src->generation() != gen);
+        CHECK(!src->visibleBounds(10.0, 1000.0));
+
+        // Excluded and staying so: no edge, and the buffer is left alone
+        // (the caller inserts nothing, but update() must not churn it).
+        const auto emptyGen = src->generation();
+        CHECK(gate.update(true, *src) == eGateEdge::NONE);
+        CHECK(gate.excluded() && src->empty() && src->generation() == emptyGen);
+
+        // Exit: an empty buffer, so the first new node is joined to nothing
+        // from before the excluded window.
+        CHECK(gate.update(false, *src) == eGateEdge::EXIT);
+        CHECK(!gate.excluded() && src->empty());
+        src->insert(c, 500.0, false);
+        src->orderedCopy(out, 500.0);
+        CHECK(!out.empty() && (out[0].bits & GPU_BIT_SEGMENT_START));
+        CHECK(std::ranges::all_of(out, [&](const SGpuNode& node) { return node.posPx == c; })); // nothing from before
+
+        // Back to normal: a not-excluded update keeps what was inserted.
+        src->insert(d, 510.0, false);
+        const auto before = src->generation();
+        const auto m      = src->size();
+        CHECK(gate.update(false, *src) == eGateEdge::NONE);
+        CHECK(src->size() == m && src->generation() == before);
+
+        // Straight from exit to enter again, and an enter on an empty buffer.
+        CHECK(gate.update(true, *src) == eGateEdge::ENTER && src->empty());
+        CHECK(gate.update(false, *src) == eGateEdge::EXIT && src->empty());
+        CHECK(gate.update(true, *src) == eGateEdge::ENTER && src->empty());
+    }
+}
+
 static void testRing() {
     CTrailRing ring(8, 42);
     ring.insert({0, 0}, 0.0, false);     // first node: segment start
@@ -1002,6 +1058,7 @@ int main() {
     testShaderSource();
     testPresetManifests();
     testCrashGuard();
+    testPointerGate();
     testRing();
 
     // Preprocessed built-ins for the GLSL validator.
