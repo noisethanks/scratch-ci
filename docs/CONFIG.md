@@ -1,11 +1,10 @@
 # Basic Customization
 
 ## Terms
-- **Prefabs** are default trail styles, internally defined by hyprtail. They can be referenced in the configs as such:
+- **Prefabs** are default trail styles, internal to hyprtail. They can be referenced in the configs as such:
 ```
 trail = "prefab:subtle"
 ```
-Prefabs are always available and cannot be edited.
 - **Presets** are identical copies of the prefabs. These copies are intended to provide a simple starting point for basic configurations, such as changing color or tail width. This document focuses on these kinds of basic customizations.
 - A **stage** is one step in the rendering pipeline of a shader. A shader willl always have a vertex stage, and, in hyprtail, will always have a fragment stage.
 - A **layer** in hyprtail is one draw layer of a shader. For example `glow` and `core` in the vivid presets. 
@@ -19,10 +18,10 @@ Prefabs are always available and cannot be edited.
 1. Begin with downloading the presets and shaders directory from the project root and placing them in `~/.config/hypr/hyprtail/` 
 2. Edit the files freely. Presets are re-read on every Hyprland config reload,
    not when th$e preset file itself changes. You can use **hyprctl reload**
-3. Prefab trails are composed of prefab shaders. These built in shaders are referenced by their stage as such:
+3. Preset trails are composed of preset shaders. These built in shaders are referenced by their stage as such:
 ```
-trail:vertex = prefab:ribbon.vert
-trail:fragment = prefab:gradient.frag  
+trail:vertex = shaders/ribbon.vert
+trail:fragment = shaders/gradient.frag  
 ```
 4. To modify a preset shader, reference them by path. Relative paths resolves
     against the hyprtail config root. `~` and absolute paths also work.

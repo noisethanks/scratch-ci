@@ -71,8 +71,8 @@ hl.config({
             capacity     = 64, -- maximum tail length in terms of vertices, int from 2 to 4096
             min_spacing  = 2, -- minimum amount of movement necessary to trigger polling, int from 0 to 256
             warp         = "break", -- warping path calculation method, valid strings: break, line, curve
-            damage_padding = 0, -- extra redraw area for wide trails, int from 0 to 4096, increase if trail leaves artifacts
-            emit_from    = "hotspot", -- normalized emission point, string, either `hotspot` or two space separated floats eg `0.5 0.5` 
+            damage_padding = 0, -- extra redraw area for wide trails, increase if trail leaves artifacts, int from 0 to 4096
+            emit_from    = "hotspot", -- normalized emission point, string, either `hotspot` or space separated floats between 0 an 1, e.g. `0.5 0.5` 
             emit_offset  = {0, 0}, -- additional offset for emission point, vec2 from -128 to 128
             screenshare  = "exclude", -- if trail is visible to screen share, valid strings: 'include','exclude'
             params       = "", -- advanced, refer to CONFIG.md
