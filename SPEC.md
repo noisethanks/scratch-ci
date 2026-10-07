@@ -278,8 +278,8 @@ this file states the decision and marks what's still a placeholder.
 ## 5. Shader extensibility contract
 
 > **Superseded in part by contract 2 (§13.2-13.6, built in phase 2).** No
-> longer true below: the stock pairs are now `shaders/ribbon.*` (the trail
-> layer) and `shaders/ring.*` (the idle layer), there are no raw attributes
+> longer true below: the stock pairs are now `hyprtail/shaders/ribbon.*` (the trail
+> layer) and `hyprtail/shaders/ring.*` (the idle layer), there are no raw attributes
 > or fixed uniforms (the prelude declares them), padding is an expression
 > and no longer adds to a stock extent, and `helpers/ribbon.glsl` no longer
 > has `ht_startsSegment` (nodes carry `segmentStart`). Still true: separate
@@ -290,7 +290,7 @@ this file states the decision and marks what's still a placeholder.
 - Shader authors may supply custom vertex and/or fragment shaders.
 - **Shader files:** standalone GLSL ES 3.00 `.vert`/`.frag` files, laid out
   exactly like user-supplied shaders will be. The stock pair lives in
-  `shaders/trail.vert` and `shaders/trail.frag`, embedded into the plugin at
+  `hyprtail/shaders/trail.vert` and `hyprtail/shaders/trail.frag`, embedded into the plugin at
   build time with C++26 `#embed` (the Makefile lists them as dependencies).
   The config loader reads the same kind of file from a user path
   (`plugin:hyprtail:vertex_shader` / `fragment_shader`, §9). Their header
@@ -305,7 +305,7 @@ this file states the decision and marks what's still a placeholder.
   and is reported.
 - **Contract enforcement:** after linking, the program's active uniforms
   and attribute locations are checked against what the plugin provides for
-  that slot (trail: the uniforms and locations 0-11 in `shaders/trail.vert`;
+  that slot (trail: the uniforms and locations 0-11 in `hyprtail/shaders/trail.vert`;
   idle: its uniforms, no attributes). Anything else is rejected with a
   message naming it: the plugin would never set it, so it would read 0 (a
   shader written for a newer plugin version reading `colorSlow` on an older
@@ -336,8 +336,8 @@ this file states the decision and marks what's still a placeholder.
   only `helpers/sdf.glsl` (`ht_sdCircle`, `ht_sdRing`, `ht_coverage`; uses
   `fwidth`, so it doesn't compile in a vertex shader). Functions only, `ht_`
   prefixed, parameters instead of uniforms. The stock trail and idle shaders
-  are built on them. Source in `shaders/helpers/`.
-- Plugin-provided per-instance data (vertex contract, `shaders/trail.vert`):
+  are built on them. Source in `hyprtail/shaders/helpers/`.
+- Plugin-provided per-instance data (vertex contract, `hyprtail/shaders/trail.vert`):
   `a_prevPos/Flags`, `a_p0Pos/BirthMs/Vel/Flags`, `a_p1Pos/BirthMs/Vel/Flags`,
   `a_nextPos/Flags` at fixed locations 0-11. Uniforms: `proj`, `nowMs`,
   `fadeMs`, `widthPx`, `miterLimit`, `speedRef`, `colorSlow`, `colorFast`.
@@ -499,7 +499,7 @@ this file states the decision and marks what's still a placeholder.
   (§13.3, §13.4) with its own shader program and damage lifecycle, keyed on
   current pointer position and time since last movement, not point history.
   (Historical: before phase 2 this was "a second, independent pass element
-  and shader slot" with `idle_*` config keys, `shaders/idle.{vert,frag}` and
+  and shader slot" with `idle_*` config keys, `hyprtail/shaders/idle.{vert,frag}` and
   `src/IdlePassElement.*`; none of those exist any more.)
   - **Design: a quad around the pointer, drawn by the fragment shader**
     (decided; replaces the earlier synthetic-point idea). One instance, a
@@ -524,14 +524,14 @@ this file states the decision and marks what's still a placeholder.
     `cursor:invisible`), drawing around it defeats the hide. This
     deliberately differs from the trail, which follows motion regardless of
     visibility.
-  - **Settings:** the `idle` layer of `prefab:classic` (`presets/classic.conf`):
+  - **Settings:** the `idle` layer of `prefab:classic` (`hyprtail/presets/classic.conf`):
     `idle:enabled` (false), `idle:start_ms` (500), `idle:duration_ms` (1500),
     `idle:radius` (24 px), `idle:draw_when_cursor_hidden` (false),
     `idle:color`. Shared with every layer: `damage_padding` (§9) and
     `#pragma hyprtail padding` (§5, §13.5). `prefab:subtle` has no idle
     layer.
   - **Shader contract** (contract 2, quad topology; §13.2-13.3, prelude
-    `shaders/prelude/quad.glsl`): no vertex attributes; `ht_corner()`
+    `hyprtail/shaders/prelude/quad.glsl`): no vertex attributes; `ht_corner()`
     returns the corner (-1..1) from `gl_VertexID`, and the geometry shader
     places it at `ht_anchor + corner * ht_extentPx` (`ht_anchor` = pointer,
     global px; `ht_extentPx` = the layer's padding expression plus
@@ -540,7 +540,7 @@ this file states the decision and marks what's still a placeholder.
     so most users only replace the fragment shader. Other uniforms:
     `ht_proj`, `ht_stillMs` (time since the pointer last moved), the reserved
     `start_ms` / `duration_ms`, and the layer's own color-managed params.
-    Premultiplied output. Stock look (`shaders/ring.frag`): a single ring in
+    Premultiplied output. Stock look (`hyprtail/shaders/ring.frag`): a single ring in
     `color`, expanding from a quarter of the radius to the edge and fading
     out over the duration (looping with a 1.2 s period when the duration is
     0).
@@ -600,7 +600,7 @@ this file states the decision and marks what's still a placeholder.
 > Hyprland's own "unknown config key" error, not a plugin one. What
 > replaces each is in §13.7/§13.8: shader identity and per-layer parameter
 > defaults move into a preset file (`prefab:subtle`, `prefab:classic`, or a
-> user's own `presets/<name>.conf`); `preset = "<name>"` selects one; `layer1_vertex` ..
+> user's own `presets/<name>.conf`); `trail = "<name>"` selects one; `layer1_vertex` ..
 > `layer4_fragment` still override a layer's shader by config; the `params`
 > string still overrides a layer's parameters by config. **Also removed, now
 > that phase 6 is built:** `interpolate_warps`, replaced by `warp =
@@ -800,7 +800,7 @@ this file states the decision and marks what's still a placeholder.
 **Status:** phases 0-2 of §13.16 are built; phase 3's checks and config
 front end (`params`, `layer1_vertex`..`layer4_fragment`, `expects`, the
 pre-link varying check), phase 4's presets/config-surface-v2
-(the preset file format, `preset =`, the old-key removal), phase 6's pointer
+(the preset file format, `trail =`, the old-key removal), phase 6's pointer
 features (`emit_from`, `emit_offset`, `warp`), and phase 7's screenshare
 exclude (moved up ahead of phase 5) are also built. Phases 2-4, 6 and 7
 are untested (not yet run in any compositor). Built parts are
@@ -908,7 +908,7 @@ second ring, a second upload or a second damage lifecycle.
 lifecycle (`CLayer::damage`) inside the one pass element, so damage stays
 exact per layer instead of one union box. Presets are manifest files since
 phase 4 (§13.7): the shipped `prefab:subtle` and `prefab:classic` are
-`presets/*.conf`, embedded by `src/Preset.cpp`.
+`hyprtail/presets/*.conf`, embedded by `src/Preset.cpp`.
 
 ### 13.2 Nodes and the shader-side contract
 
@@ -943,7 +943,7 @@ phase 4 (§13.7): the shipped `prefab:subtle` and `prefab:classic` are
   0-1 (pos, bits), p0 2-6 and p1 7-11 (pos, birth, velocity, dist, bits),
   next 12-13 (pos, bits). GLES 3.0 guarantees 16. The bits attribute uses
   `glVertexAttribIPointer` and is read as `uint`.
-- Prelude (`shaders/prelude/`, embedded): `common.glsl` (precision highp for
+- Prelude (`hyprtail/shaders/prelude/`, embedded): `common.glsl` (precision highp for
   float and int, built-in uniforms `ht_proj`, `ht_nowMs`, `ht_stillMs`,
   `ht_anchor`, `ht_extentPx`, and the reserved lifecycle uniforms `fade_ms`,
   `start_ms`, `duration_ms`), `vertex.glsl` (standard varyings as `out`,
@@ -1025,7 +1025,7 @@ a fragment shader or include is refused.
   1..64) and `expectsMismatch()` the fragment's kinds against the vertex
   topology, both called from `programInfo()` (`ShaderSlot.cpp`) and unit
   tested. `topologyText()` gives `instanced 8` / `instanced copies`.
-- **Prelude** (`shaders/prelude/instanced.glsl`): one node's attributes at
+- **Prelude** (`hyprtail/shaders/prelude/instanced.glsl`): one node's attributes at
   locations 0-4 (pos, birth, velocity, dist, bits), `ht_node()`,
   `ht_instance()`, `ht_corner()`, and the `ht_K` uniform. The program
   contract check accepts exactly locations 0-4 for this topology and the
@@ -1230,7 +1230,7 @@ would have linked fine.
   `~/.config/hypr/hyprtail/presets/`; the "hyprtail config root" below),
   and fails with a clear error naming the path if the file is missing; it
   never falls back to a built-in. The default is `prefab:subtle`, since a
-  fresh install has no `presets/` directory. `presets/subtle.conf` is both
+  fresh install has no `presets/` directory. `hyprtail/presets/subtle.conf` is both
   the embedded prefab and a copy-and-edit starting point: dropped
   unchanged into the user's `presets/` as `subtle.conf`, it behaves
   identically.
@@ -1275,7 +1275,7 @@ would have linked fine.
   program's declared params, so it's deferred to `CLayer::resolve()`
   (`params:<layer>`, entry ignored) same as always. Any failure loading
   the *selected* preset (file not found, parse error, bad shader reference)
-  is reported (`preset:<name>`, naming the path looked up) and falls back
+  is reported (`trail:<name>`, naming the path looked up) and falls back
   to the embedded `prefab:subtle` manifest, guaranteed to parse since it
   ships with the plugin. That fallback is degradation after a clear error,
   not resolution: a bare name never resolves to a built-in.
@@ -1308,8 +1308,9 @@ would have linked fine.
     chain keeping the head end, as for the ring.
   - **Built-in:** `prefab:spring`, one ribbon layer over the spring source.
 - **Selection and overrides:**
-  - `preset = "<name>"` selects a preset. **Built (phase 4)**
-    (`plugin:hyprtail:preset`, `Config.*`): default `prefab:subtle`.
+  - `trail = "<name>"` selects a preset. **Built (phase 4)**
+    (`plugin:hyprtail:trail`, `Config.*`; formerly `preset`, renamed
+    before any release, no alias): default `prefab:subtle`.
   - **Hyprtail config root:** `$XDG_CONFIG_HOME/hypr/hyprtail/`, fallback
     `~/.config/hypr/hyprtail/` (`cfg::hyprtailRoot()`). Every relative
     path hyprtail reads from the user's config resolves against it: a
@@ -1319,6 +1320,14 @@ would have linked fine.
     (and previously this plugin's `layerN_*` did too): one base inside
     hyprtail, at the cost of that one setting's familiarity. `-c` no
     longer redirects it. `layerN_*` take paths only (no `prefab:` form).
+  - **Shipped layout:** the repository's `hyprtail/` directory (`hyprtail/presets/`,
+    `hyprtail/shaders/`) mirrors the config root's contents, so a user
+    installs by copying that one directory into `~/.config/hypr/`. The same
+    files are embedded into the plugin at build time (`#embed`, listed in
+    the Makefile), so a run with no files on disk still works; only
+    `hyprtail/presets/*.conf` and the main shaders are meant to be copied and
+    edited, `shaders/prelude/` and `shaders/helpers/` stay built-in
+    (`#include "helpers/..."` resolves to the embedded copy, never the disk).
   - Per-stage shader overrides, static keys indexed by the layer's position
     in the preset's `layers` list: `layer1_vertex`, `layer1_fragment`, up to
     `layer4_*` (layers are capped at four). `""` = the preset's shader. An
@@ -1339,7 +1348,7 @@ would have linked fine.
   function, so layers never change GL blend state.
 - **Shipped:**
   - `prefab:subtle` (default): one narrow `path` layer, short fade, neutral
-    low alpha, no idle layer. **Built (phase 4)** (`presets/subtle.conf`):
+    low alpha, no idle layer. **Built (phase 4)** (`hyprtail/presets/subtle.conf`):
     reuses `prefab:ribbon.*` rather than a new shader -- see NOTES "Phase 4" for
     why pinning `color_slow`/`color_fast` equal is presented here as an
     interim stand-in for a genuine single-color mode, not a hidden detail.
@@ -1347,12 +1356,12 @@ would have linked fine.
     `quad` idle pulse. **Not built**: needs a real glow shader and a
     speed-based palette, out of scope for a config-surface phase.
   - Optional `classic` (today's stock look), which makes migration easy.
-    **Built (phase 4)** (`presets/classic.conf`, `prefab:classic`): reproduces today's hardcoded
+    **Built (phase 4)** (`hyprtail/presets/classic.conf`, `prefab:classic`): reproduces today's hardcoded
     defaults exactly, proving the manifest system is behavior-preserving.
 
 #### 13.7.1 Preset rework: the shader kit (slice 1 built, untested on host)
 
-The prefabs are immutable built-in designs; `presets/*.conf` are the same
+The prefabs are immutable built-in designs; `hyprtail/presets/*.conf` are the same
 trails exposed for users to copy and tune. Prefabs should cover every
 capability (topologies, uniforms, both sources, spring motion), span
 intensity (professional to flashy) and cost (iGPU-safe to heavy), and be
@@ -1394,13 +1403,13 @@ docs only (registering a built-in in `ShaderSource.cpp`/`Preset.cpp` aside).
 
 ### 13.8 Config surface v2
 
-- **All keys are registered once, at init** (as today): `preset`,
+- **All keys are registered once, at init** (as today): `trail`,
   `params`, `layer1_vertex` ... `layer4_vertex`, `layer1_fragment` ...
   `layer4_fragment`, `capacity`, `min_spacing`, `emit_from`, `emit_offset`,
   `warp`, `screenshare`, `damage_padding`. No runtime registration, no
   state file, no extra reload; the first-parse caveat (§9) is unchanged.
 
-  **Built (phase 4):** `preset`, `params`, the eight `layerN_*` keys,
+  **Built (phase 4):** `trail` (was `preset`), `params`, the eight `layerN_*` keys,
   `capacity`, `min_spacing`, `damage_padding` (`Config.*`). **Built (phase
   6):** `emit_from`, `emit_offset`, `warp`. `screenshare` is built too,
   under phase 7 (§13.12). Every key this list names is now registered.

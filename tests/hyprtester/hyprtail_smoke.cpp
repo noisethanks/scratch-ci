@@ -103,7 +103,7 @@ namespace {
 
     void writePluginSettings(const std::string& preset, const std::string& params, int capacity) {
         std::ofstream out(pluginSettingsFile(), std::ios::trunc);
-        out << "preset=" << preset << "\nparams=" << params << "\n";
+        out << "trail=" << preset << "\nparams=" << params << "\n";
         if (capacity > 0)
             out << "capacity=" << capacity << "\n";
     }

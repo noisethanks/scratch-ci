@@ -3,9 +3,9 @@ PLUGIN_NAME := hyprtail
 SOURCE_FILES := $(wildcard src/*.cpp)
 HEADER_FILES := $(wildcard src/*.hpp)
 # Embedded into the plugin with #embed (src/ShaderSource.cpp).
-SHADER_FILES := $(wildcard shaders/*.vert shaders/*.frag shaders/*/*.glsl)
+SHADER_FILES := $(wildcard hyprtail/shaders/*.vert hyprtail/shaders/*.frag hyprtail/shaders/*/*.glsl)
 # Embedded built-in preset manifests, #embed (src/Preset.cpp).
-PRESET_FILES := $(wildcard presets/*.conf)
+PRESET_FILES := $(wildcard hyprtail/presets/*.conf)
 
 # Which Hyprland checkout DEV=1 builds against (default: the pin).
 #   make DEV=1 HYPRLAND_DIR=external/Hyprland-main

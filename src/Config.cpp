@@ -38,7 +38,7 @@ namespace hyprtail::cfg {
             SP<CFloatValue>                 minSpacing, damagePadding;
             SP<CIntValue>                   capacity;
             SP<CStringValue>                warp;
-            SP<CStringValue>                preset;
+            SP<CStringValue>                trail;
             std::array<SP<CStringValue>, 4> layerVertex, layerFragment;
             SP<CStringValue>                params;
             SP<CStringValue>                screenshare;
@@ -103,10 +103,10 @@ namespace hyprtail::cfg {
                                                    warpModeName(DEFAULTS.warp));
         r.damagePadding = makeShared<CFloatValue>("plugin:hyprtail:damage_padding", "extra damage padding on top of the stock extent and shader-declared padding, px",
                                                   DEFAULTS.damagePaddingPx, SFloatValueOptions{.min = 0.F, .max = 4096.F});
-        r.preset   = makeShared<CStringValue>("plugin:hyprtail:preset",
-                                              "which preset to use (SPEC section 13.7): \"prefab:<name>\" (built-in: subtle, classic, jitter, spray, vivid, comet, embers, spring, ink) "
+        r.trail    = makeShared<CStringValue>("plugin:hyprtail:trail",
+                                              "which trail to use (SPEC section 13.7): \"prefab:<name>\" (built-in: subtle, classic, jitter, spray, vivid, comet, embers, spring, ink) "
                                               "or a bare \"<name>\" for <hyprtail root>/presets/<name>.conf",
-                                              DEFAULTS.preset.c_str());
+                                              DEFAULTS.trail.c_str());
         r.emitFrom = makeShared<CStringValue>("plugin:hyprtail:emit_from",
                                               "where on the cursor image trail points are emitted from: \"hotspot\" (default), or a normalized \"x y\" position in "
                                               "the cursor image box, each in 0..1 (0 0 = top-left, 0.5 0.5 = center) (SPEC section 13.9)",
@@ -137,7 +137,7 @@ namespace hyprtail::cfg {
 
         bool ok = true;
         for (const SP<IValue>& v :
-             std::initializer_list<SP<IValue>>{r.capacity, r.minSpacing, r.warp, r.damagePadding, r.preset, r.params, r.screenshare, r.emitFrom, r.emitOffset})
+             std::initializer_list<SP<IValue>>{r.capacity, r.minSpacing, r.warp, r.damagePadding, r.trail, r.params, r.screenshare, r.emitFrom, r.emitOffset})
             ok = add(handle, v) && ok;
         for (size_t i = 0; i < 4; ++i) {
             ok = add(handle, r.layerVertex[i]) && ok;
@@ -170,8 +170,8 @@ namespace hyprtail::cfg {
             const auto text = checkEnum(r.warp, {"break", "line", "curve"}, warpModeName(previous.warp));
             v.warp          = text == "line" ? eWarpMode::LINE : text == "curve" ? eWarpMode::CURVE : eWarpMode::BREAK;
         }
-        if (r.preset)
-            v.preset = r.preset->value();
+        if (r.trail)
+            v.trail = r.trail->value();
 
         if (r.emitFrom) {
             const auto  text = r.emitFrom->value();

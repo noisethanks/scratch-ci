@@ -837,7 +837,7 @@ so no compatibility shim.
 - **Prelude contract check.** The instanced program may use attribute locations 0-4 and the `ht_K` uniform; `preludeUniforms()` lists `ht_K` for every topology (a path shader that declares its own `ht_K` is refused as a reserved-prefix name anyway). A unit test scans the injected prelude for `layout(location = N) in` and compares with `preludeAttribLocations()` for path and instanced, so the two can't drift.
 - **`ht_rand(float seed, uint salt)`, not `(uint seedBits, ...)`.** The node's `seed` reaches the shader as a float (`HtNode.seed`, 0..1); rebuilding the 31 bits from it would lose the low ones. `ht_rand` hashes `floatBitsToUint(seed)`, which is stable per node and distinct enough (24 mantissa bits). The prelude's `HtNode` is unchanged, so contract 2 is unchanged.
 - **Padding disciplines in the shipped shaders.** `jitter.vert`: fixed offset <= `spread`, size <= `size`; padding `spread + size + 1`. `spray.vert`: heading from the node's seed, leaned toward `-vel/|vel|` (direction only, so reach doesn't depend on pointer speed), speed <= `speed` px/s, age capped at `fade_ms` in the shader, sideways wobble <= `wobble`; padding `speed * fade_ms / 1000 + wobble + size + 1`. `fade_ms` is allowed in padding because it is a reserved name (`programInfo`'s padding check accepts reserved names). If a user sets `fade_ms` through `params`, the padding follows on the next resolve. GPU-side and CPU-side `fade_ms` can differ by float rounding at the last frame of a node's life; the +1 in the padding and the cap cover it.
-- **Manifest check in the unit tests.** `preset::parse` needs Hyprland headers (Diagnostics), so it isn't in the unit build. `testPresetManifests` re-reads `presets/*.conf` with the same line rules and checks each layer's shaders are built-ins that preprocess, `expects` fits, K is valid, and every other key is a parameter of the paired program with a value of its type and range. That is the class of mistake that otherwise only shows up as a runtime warning (`params:<layer>`).
+- **Manifest check in the unit tests.** `preset::parse` needs Hyprland headers (Diagnostics), so it isn't in the unit build. `testPresetManifests` re-reads `hyprtail/presets/*.conf` (was `presets/*.conf` before the `hyprtail/` move) with the same line rules and checks each layer's shaders are built-ins that preprocess, `expects` fits, K is valid, and every other key is a parameter of the paired program with a value of its type and range. That is the class of mistake that otherwise only shows up as a runtime warning (`params:<layer>`).
 - **What unit tests and the build prove, and what they can't.** Proven here (all run): pragma grammar (K literal, param, bounds, `path 4`, missing K), K validation, `expects` with `instanced`, the prelude/contract locations, `visibleCount`/bounds, manifest values, glslang compile of every built-in and glslang link of all 12 vertex x fragment pairs, both Makefile modes and `test-compat`. Not provable without a GL context: that the VAO state, integer attribute re-pointing and the divisor behave on a real driver, and rendering.
 - **Nested test (step 4b in `hyprtail_smoke.cpp`), prepared, not run by me** (see CLAUDE.md; the user runs it). State only: liveness after every step, `errors.log` clean, and the status naming the layers compiled and neither `DISABLED` nor `NODE BUFFER FAILED`. It needs the smoke config to change plugin settings mid-run. Mechanism, verified in source at `efb5099`: `smoke.lua` reads `$XDG_STATE_HOME/hyprtail-smoke-plugin.conf` (`os.getenv`/`io.open`: the Lua config state opens the standard libraries, `config/lua/ConfigManager.cpp:520`, and the reload's `package.loaded` clearing skips `io` and `os`, `:660`); the test rewrites that file and sends `/reload`, which reloads and runs the main config file again (`ConfigManager.cpp:634`, `luaL_loadfile` at `:682`) and emits `config.reloaded` (`:852`), the event the plugin's `applyConfig` listens to. A plugin loaded over IPC stays loaded across reloads (`PluginSystem.cpp:207-215` only unloads plugins with `m_loadedWithConfig`, set at `:235` for config-listed ones). `/reload` from hyprtester: `persistent.cpp:48` in the checkout. Stacked layers use a user preset written under a scratch `XDG_CONFIG_HOME` (`cfg::hyprtailRoot()`, `Config.cpp:230`), added to the Makefile's and `nix/smoke.nix`'s environment. Not verified by running: that a headless output renders during the test (the status assertions wait up to 3 s for the layers to compile, and fail with the status text if they never do), and the smoke Lua file (no Lua syntax checker was permitted here; the C++ was syntax-checked against the hyprtester headers).
 - **Stability risk, stated per CLAUDE.md:** this phase is new GL resource handling (a VAO with a divisor above 1, an integer attribute re-pointed every draw, up to 64 x 4096 instances in a draw), so a nested run is warranted and is the user's. Scope: load each instanced preset; change K live across 1..64; resize `capacity` (2..4096) under a showing layer; unplug an output while one draws; stack path, quad and instanced; switch presets mid-run.
@@ -1048,6 +1048,53 @@ Interface only, no spring math. Reasoning:
   code taken. The article page wasn't readable from here (HTTP 403); OGL
   itself is Unlicense (github.com/oframe/ogl). The demo's own license wasn't
   found.
+
+## Setting rename `preset` -> `trail`, and the `hyprtail/` directory (built; compiled and unit-tested only)
+
+Two structural changes, done together before any release, so no deprecation
+alias and no compatibility shim.
+
+- **`preset` setting renamed `trail`** (`plugin:hyprtail:trail`,
+  `SValues::trail`, `hyprctl hyprtail` field `trail`, text and JSON). The
+  value is resolved exactly as before (`preset::load`, `Preset.cpp:266-293`):
+  `prefab:<name>` is an embedded manifest, a bare `<name>` (no `/`,
+  `Preset.cpp:279`) is `<hyprtail root>/presets/<name>.conf`
+  (`Preset.cpp:285`). Strings that name the setting changed (the
+  load-failure report is now `trail "<name>": ...`, diag key `trail:<name>`;
+  the smoke test's state file and `smoke.lua` use `trail=`). Left alone, the
+  word `preset` still names the concept (a manifest file) or a symbol:
+  namespace `hyprtail::preset`, `Preset.{hpp,cpp}`, `SPreset`,
+  `SResolved`, `pendingPreset`/`activePreset`, `s_preset`,
+  `presetReleaseGpu`, the `presets/` directory, `PRESET_FILES` in the
+  Makefile, `testPresetManifests`, the "prefab preset" wording in errors,
+  and the `idle`/`trail` layer names (a layer called `trail` is unrelated to
+  the setting).
+- **`presets/` and `shaders/` moved under `hyprtail/`** (`git mv`, history
+  follows). The repository's `hyprtail/` is the content of the config root
+  (`cfg::hyprtailRoot()`, `Config.cpp:240-248`), so installing is copying
+  that one directory into `~/.config/hypr/`. Updated: the Makefile
+  (`SHADER_FILES`, `PRESET_FILES`, both feed the object dependency rule),
+  every `#embed` (`"../hyprtail/shaders/..."` in `ShaderSource.cpp`,
+  `"../hyprtail/presets/..."` in `Preset.cpp`), and `testPresetManifests`
+  (reads `hyprtail/presets` from the repo root). Not changed, because they
+  never named the old paths: `.gitignore`, `hyprpm.toml`, `run_dev.sh`,
+  `check-pin`, the flake and CI files.
+- **No doubled path.** The request worried about `hyprtail/shaders/hyprtail/`.
+  There is none: no shipped shader contains `#include "hyprtail/..."` (Phase
+  4b renamed that library to `helpers/`), and `helpers/` includes never touch
+  the disk: `resolveInclude` (`ShaderSource.cpp:232-237`) looks the name up
+  in the embedded `prefabs()` table. The move therefore cannot change how any
+  include resolves. A user file's relative include is still resolved against
+  the including file (`ShaderSource.cpp:242-244`).
+- **Relative paths** still resolve against the hyprtail config root, not
+  the main Hyprland config directory (`resolveShaderPath`,
+  `Config.cpp:223-238`; SPEC 13.7). Unchanged.
+- **Embedded fallback unchanged:** a run with no files under the config root
+  loads `prefab:subtle` from the embedded copy.
+- **Checked:** `make all` and `make DEV=1 all` build; both `.so` files hold
+  `plugin:hyprtail:trail` (no `plugin:hyprtail:preset`), the embedded
+  manifests and the shader helpers; `make test-unit` passes (307 checks plus
+  the glslangValidator pass). Nothing was loaded into any Hyprland instance.
 
 ## Open questions
 

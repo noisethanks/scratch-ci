@@ -17,7 +17,7 @@ specific to a **stage** (vertex or fragment) and, for the vertex stage, to a
 **topology** (`path`, `quad` or `instanced`): a common piece (precision,
 built-in uniforms) for both stages, plus the fragment piece for a fragment
 shader, or the vertex piece and then the `path`, `quad` or `instanced` piece
-for a vertex shader. The prelude is internal (`shaders/prelude/`); don't copy
+for a vertex shader. The prelude is internal (`hyprtail/shaders/prelude/`); don't copy
 or edit it.
 
 Three topologies are implemented: `path` (the trail ribbon), `quad` (a fixed
@@ -314,7 +314,7 @@ GLSL ES has no `#include`; the loader resolves it before compiling:
 - `helpers/<name>` is always hyprtail's embedded, immutable helper. Any other
   path is your own file. This is the same rule as `prefab:` in presets
   (CONFIG.md): a prefix means embedded, anything else is yours.
-- To edit a helper, copy it from `shaders/helpers/` in the repository and
+- To edit a helper, copy it from `hyprtail/shaders/helpers/` in the repository and
   include your copy by a relative path that does **not** start with the bare
   `helpers/` prefix, e.g. `#include "./helpers/ribbon.glsl"` (or put the copy
   somewhere else). A plain `"helpers/ribbon.glsl"` is always the built-in,
@@ -489,8 +489,8 @@ Line by line:
   required.
 
 To use it: save it as `~/.config/hypr/hyprtail/solid.frag`. Then either
-write a preset of your own (CONFIG.md's quickstart: copy `presets/subtle.conf`
-to `~/.config/hypr/hyprtail/presets/mine.conf`, set `preset = "mine"`) and in
+write a preset of your own (CONFIG.md's quickstart: copy `hyprtail/presets/subtle.conf`
+to `~/.config/hypr/hyprtail/presets/mine.conf`, set `trail = "mine"`) and in
 it change:
 
 ```

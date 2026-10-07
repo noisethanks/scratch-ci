@@ -14,7 +14,7 @@
 //
 //   #pragma hyprtail contract 2  required, right after #version, before any
 //                                other hyprtail pragma or #include; replaced
-//                                by the prelude (shaders/prelude/)
+//                                by the prelude (hyprtail/shaders/prelude/)
 //   #pragma hyprtail topology <path|quad|instanced <K>>
 //                                geometry (vertex) shaders only, main file,
 //                                exactly once. K (instanced only) is an

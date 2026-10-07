@@ -38,7 +38,7 @@ namespace hyprtail::status {
     };
 
     struct SSnapshot {
-        std::string rev, builtHash, runningHash, preset, screenshare;
+        std::string rev, builtHash, runningHash, trail, screenshare;
         bool        cursorHook = false, warpHook = false, captureHook = false;
         uint64_t    renders = 0;
 
