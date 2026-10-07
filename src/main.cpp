@@ -1084,7 +1084,7 @@ static void applyConfig() {
     p.emitFromNorm    = s_config.emitFromNorm;
     p.emitOffsetPx    = s_config.emitOffsetPx;
 
-    p.pendingPreset = hyprtail::preset::load(s_config.preset);
+    p.pendingPreset = hyprtail::preset::load(s_config.trail);
 
     // Keeps the newest points; the VBO is reallocated at the next draw
     // (CNodeBuffer::ensure), where GL is current.
@@ -1107,7 +1107,7 @@ static hyprtail::status::SSnapshot statusSnapshot() {
     s.warpHook    = s_warpHook != nullptr;
     s.captureHook = s_captureHook != nullptr;
     s.renders     = s_frames;
-    s.preset      = s_preset ? s_preset->activePreset.name : "";
+    s.trail       = s_preset ? s_preset->activePreset.name : "";
     s.screenshare = s_config.screenshare;
 
     s.suppress.locked      = sessionLocked();

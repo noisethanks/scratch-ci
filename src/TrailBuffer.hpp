@@ -31,7 +31,7 @@ struct SCursorNode {
 constexpr uint32_t GPU_BIT_SEGMENT_START = 1u;
 
 // One trail point as uploaded to the VBO. Field order and offsets are the
-// vertex attribute layout (CNodeBuffer, shaders/prelude/path.glsl). birthMs
+// vertex attribute layout (CNodeBuffer, hyprtail/shaders/prelude/path.glsl). birthMs
 // is relative to a reference time chosen at upload, so it stays small and
 // precise as float; the shader gets ht_nowMs relative to the same reference,
 // only the difference (age) is meaningful. distPx is within the node's

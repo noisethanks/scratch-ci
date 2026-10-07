@@ -256,7 +256,7 @@ static void testShaderSource() {
     }
 }
 
-// The built-in preset manifests (presets/*.conf, run from the repo root):
+// The built-in preset manifests (hyprtail/presets/*.conf, run from the repo root):
 // every layer names built-in shaders that preprocess, and every other key
 // is a parameter of the paired program (or a reserved one) with a value of
 // its type inside its range. preset::parse() itself needs Hyprland headers,
@@ -264,7 +264,7 @@ static void testShaderSource() {
 // it's the part that would otherwise only show up as a runtime warning.
 static void testPresetManifests() {
     namespace fs = std::filesystem;
-    if (!fs::is_directory("presets"))
+    if (!fs::is_directory("hyprtail/presets"))
         return;
 
     const auto trim = [](std::string s) {
@@ -280,7 +280,7 @@ static void testPresetManifests() {
     std::map<std::string, Layers>      byPreset;   // file stem -> layer -> key -> value
     std::map<std::string, std::string> layerOrder; // file stem -> its "layers = ..." value
     std::map<std::string, std::string> sourceOf;   // file stem -> its "source = ..." value, if any
-    for (const auto& entry : fs::directory_iterator("presets")) {
+    for (const auto& entry : fs::directory_iterator("hyprtail/presets")) {
         if (entry.path().extension() != ".conf")
             continue;
         ++manifests;

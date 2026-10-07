@@ -34,14 +34,14 @@ hl.config({
 -- reload that clears it.
 --
 -- classic (not the default, "subtle" is) has the idle ring layer, off by
--- default in that preset's own manifest (presets/classic.conf); turn
+-- default in that preset's own manifest (hyprtail/presets/classic.conf); turn
 -- it on here with a params override rather than editing the preset, so this
 -- file is the one thing that needs changing to get the idle layer active
 -- for nested testing.
 hl.config({
     plugin = {
         hyprtail = {
-            preset            = "prefab:classic",
+            trail             = "prefab:classic",
             params            = "idle:enabled=true",
             --             capacity          = 64,
             --             min_spacing       = 2,

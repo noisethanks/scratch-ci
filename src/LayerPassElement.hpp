@@ -24,7 +24,7 @@
 //
 // Four bindings of the same VBO, divisor 1, at consecutive node offsets, so
 // instance i sees prev = n(i-1), p0 = n(i), p1 = n(i+1), next = n(i+2)
-// (shaders/prelude/path.glsl):
+// (hyprtail/shaders/prelude/path.glsl):
 //   locations 0..1    prev  (offset 0 nodes)  pos, bits
 //   locations 2..6    p0    (1 node)          pos, birth, velocity, dist, bits
 //   locations 7..11   p1    (2 nodes)         pos, birth, velocity, dist, bits

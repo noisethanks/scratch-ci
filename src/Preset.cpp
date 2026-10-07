@@ -147,31 +147,31 @@ namespace hyprtail::preset {
 
     namespace {
         constexpr unsigned char SUBTLE_CONF[] = {
-#embed "../presets/subtle.conf"
+#embed "../hyprtail/presets/subtle.conf"
         };
         constexpr unsigned char CLASSIC_CONF[] = {
-#embed "../presets/classic.conf"
+#embed "../hyprtail/presets/classic.conf"
         };
         constexpr unsigned char JITTER_CONF[] = {
-#embed "../presets/jitter.conf"
+#embed "../hyprtail/presets/jitter.conf"
         };
         constexpr unsigned char SPRAY_CONF[] = {
-#embed "../presets/spray.conf"
+#embed "../hyprtail/presets/spray.conf"
         };
         constexpr unsigned char VIVID_CONF[] = {
-#embed "../presets/vivid.conf"
+#embed "../hyprtail/presets/vivid.conf"
         };
         constexpr unsigned char COMET_CONF[] = {
-#embed "../presets/comet.conf"
+#embed "../hyprtail/presets/comet.conf"
         };
         constexpr unsigned char EMBERS_CONF[] = {
-#embed "../presets/embers.conf"
+#embed "../hyprtail/presets/embers.conf"
         };
         constexpr unsigned char SPRING_CONF[] = {
-#embed "../presets/spring.conf"
+#embed "../hyprtail/presets/spring.conf"
         };
         constexpr unsigned char INK_CONF[] = {
-#embed "../presets/ink.conf"
+#embed "../hyprtail/presets/ink.conf"
         };
 
         template <size_t N>
@@ -325,12 +325,12 @@ namespace hyprtail::preset {
     }
 
     SResolved load(const std::string& name) {
-        const auto key = "preset:" + name;
+        const auto key = "trail:" + name;
         if (auto r = loadInner(name)) {
             diag::resetKey(key);
             return std::move(*r);
         } else
-            diag::report(eSeverity::ERR, key, std::format("preset \"{}\": {}\nUsing \"{}\" instead.", name, r.error(), FALLBACK_PRESET));
+            diag::report(eSeverity::ERR, key, std::format("trail \"{}\": {}\nUsing \"{}\" instead.", name, r.error(), FALLBACK_PRESET));
 
         if (name == FALLBACK_PRESET)
             return hardcodedFallback();

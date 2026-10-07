@@ -18,61 +18,61 @@ namespace hyprtail::shader {
         // Makefile lists them as dependencies). Keep them ASCII: GLSL ES
         // drivers aren't reliable with UTF-8, even in comments.
         constexpr unsigned char GEOM_RIBBON_VERT[] = {
-#embed "../shaders/ribbon.vert"
+#embed "../hyprtail/shaders/ribbon.vert"
         };
         constexpr unsigned char GEOM_SCATTER_VERT[] = {
-#embed "../shaders/scatter.vert"
+#embed "../hyprtail/shaders/scatter.vert"
         };
         constexpr unsigned char GEOM_DRIFT_VERT[] = {
-#embed "../shaders/drift.vert"
+#embed "../hyprtail/shaders/drift.vert"
         };
         constexpr unsigned char GEOM_HALO_VERT[] = {
-#embed "../shaders/halo.vert"
+#embed "../hyprtail/shaders/halo.vert"
         };
         constexpr unsigned char LOOK_GRADIENT_FRAG[] = {
-#embed "../shaders/gradient.frag"
+#embed "../hyprtail/shaders/gradient.frag"
         };
         constexpr unsigned char LOOK_DOTS_FRAG[] = {
-#embed "../shaders/dots.frag"
+#embed "../hyprtail/shaders/dots.frag"
         };
         constexpr unsigned char LOOK_PULSE_FRAG[] = {
-#embed "../shaders/pulse.frag"
+#embed "../hyprtail/shaders/pulse.frag"
         };
         constexpr unsigned char LOOK_SIZZLE_FRAG[] = {
-#embed "../shaders/sizzle.frag"
+#embed "../hyprtail/shaders/sizzle.frag"
         };
         constexpr unsigned char PRELUDE_COMMON[] = {
-#embed "../shaders/prelude/common.glsl"
+#embed "../hyprtail/shaders/prelude/common.glsl"
         };
         constexpr unsigned char PRELUDE_VERTEX[] = {
-#embed "../shaders/prelude/vertex.glsl"
+#embed "../hyprtail/shaders/prelude/vertex.glsl"
         };
         constexpr unsigned char PRELUDE_PATH[] = {
-#embed "../shaders/prelude/path.glsl"
+#embed "../hyprtail/shaders/prelude/path.glsl"
         };
         constexpr unsigned char PRELUDE_QUAD[] = {
-#embed "../shaders/prelude/quad.glsl"
+#embed "../hyprtail/shaders/prelude/quad.glsl"
         };
         constexpr unsigned char PRELUDE_INSTANCED[] = {
-#embed "../shaders/prelude/instanced.glsl"
+#embed "../hyprtail/shaders/prelude/instanced.glsl"
         };
         constexpr unsigned char PRELUDE_FRAGMENT[] = {
-#embed "../shaders/prelude/fragment.glsl"
+#embed "../hyprtail/shaders/prelude/fragment.glsl"
         };
         constexpr unsigned char PREFAB_RIBBON[] = {
-#embed "../shaders/helpers/ribbon.glsl"
+#embed "../hyprtail/shaders/helpers/ribbon.glsl"
         };
         constexpr unsigned char PREFAB_FADE[] = {
-#embed "../shaders/helpers/fade.glsl"
+#embed "../hyprtail/shaders/helpers/fade.glsl"
         };
         constexpr unsigned char PREFAB_SDF[] = {
-#embed "../shaders/helpers/sdf.glsl"
+#embed "../hyprtail/shaders/helpers/sdf.glsl"
         };
         constexpr unsigned char PREFAB_NOISE[] = {
-#embed "../shaders/helpers/noise.glsl"
+#embed "../hyprtail/shaders/helpers/noise.glsl"
         };
         constexpr unsigned char PREFAB_PALETTE[] = {
-#embed "../shaders/helpers/palette.glsl"
+#embed "../hyprtail/shaders/helpers/palette.glsl"
         };
 
         template <size_t N>
