@@ -48,9 +48,11 @@ The two ways a Nix user installs hyprtail, both at the pin:
 
 Both use `NIX_PIN`, a fixed set of `--override-input` flags: the flake's
 `hyprland` input at the pinned tag and the nixpkgs the glaze workaround needs
-("Nix: pinned nixpkgs"). The repo commits no `flake.lock`. It doesn't need
-one for determinism: Hyprland's own `flake.lock` at the tag pins everything
-below it, and this flake's `nixpkgs` and `systems` follow Hyprland's.
+("Nix: pinned nixpkgs"). `flake.nix` names the tag too, and `flake.lock`
+locks it, so a plain `nix build` gets the pinned Hyprland. Only the nixpkgs
+override is CI-only: a lock can't carry it, so a plain build of v0.56.2 fails
+on glaze. Users who set `inputs.hyprland.follows` use their own Hyprland and
+are unaffected by either.
 
 ### `ci-gate`
 
@@ -72,17 +74,22 @@ and a required check that never reports blocks the merge.
 
 ## Re-pinning
 
-The pin lives in four places. Move them together, in one PR:
+The pin lives in five places. Move them together, in one PR:
 
 1. `SPEC.md` §2 and the Makefile's `HYPRLAND_PIN`.
-2. `ci.yml` `ARCH_SNAPSHOT`: the first Arch Linux Archive date whose `extra`
+2. `flake.nix` `hyprland.url`: the tag. Then regenerate `flake.lock` with
+   `nix flake lock` (no Nix on the host:
+   `docker run --rm --network host -v "$PWD":/src -w /src nixos/nix nix --extra-experimental-features 'nix-command flakes' flake lock`,
+   run on a copy of `flake.nix`, then copy the lock back) and check
+   `jq .nodes.hyprland.locked.rev flake.lock` is the pinned commit.
+3. `ci.yml` `ARCH_SNAPSHOT`: the first Arch Linux Archive date whose `extra`
    repo has the new Hyprland package. Check with
    `curl -s https://archive.archlinux.org/repos/YYYY/MM/DD/extra/os/x86_64/extra.db | tar -tz | grep '^hyprland-'`.
    Also confirm the snapshot's `clang` matches the local `clang-format`
    major version, or the format step disagrees with `make format`.
-3. `ci.yml` and `smoke.yml` `NIX_PIN`: the tag. Drop the `hyprland/nixpkgs`
+4. `ci.yml` and `smoke.yml` `NIX_PIN`: the tag. Drop the `hyprland/nixpkgs`
    override if the new tag's own lock builds (see next section).
-4. `upstream.yml` `pin_tag`/`pin_nixpkgs`, same rule.
+5. `upstream.yml` `pin_tag`/`pin_nixpkgs`, same rule.
 
 ## Nix: pinned nixpkgs
 
@@ -107,20 +114,18 @@ pinned tag builds without it.
 
 `nix/consumer/flake.nix` is a downstream flake: `hyprland` as its own input,
 `nixpkgs` and hyprtail's `hyprland` both following it, as the README's Nix
-section recommends. CI points its `hyprtail` input at the checkout
-(`git+file://$GITHUB_WORKSPACE`), which is why `nix-pin` checks out with
-`fetch-depth: 0`: Nix refuses `revCount` on a shallow clone.
+section recommends. It applies Hyprland's `overlays.hyprland-packages`, then
+hyprtail's `overlays.default`, which adds only the plugin. CI points its
+`hyprtail` input at the checkout (`git+file://$GITHUB_WORKSPACE`), which is
+why `nix-pin` checks out with `fetch-depth: 0`: Nix refuses `revCount` on a
+shallow clone.
 
-- **What it proves:** evaluation fails unless `overlays.default` replaced the
-  consumer's `hyprland` with the flake's own (same `version` as
-  `legacyPackages.<system>.hyprland`), then the plugin builds against it.
-  That catches an overlay that falls back to nixpkgs' Hyprland (an older
-  `hyprland.pc` without `-I<prefix>/hyprland/src`, an older stdenv).
-- **What it does not prove:** that a consumer with its own, unrelated
-  `nixpkgs` builds. Under the overlay, Hyprland's dependencies, glaze
-  included, come from the consumer's nixpkgs. A consumer whose nixpkgs ships
-  glaze 8 hits the glaze conflict above against v0.56.2. A consumer's nixpkgs
-  must also provide `gcc16Stdenv`.
+- **What it proves:** the overlay builds the plugin against the consumer's
+  `hyprland`, and that `hyprland` is the same one hyprtail's own `packages`
+  use (same `version` as `legacyPackages.<system>.hyprland`).
+- **What it does not prove:** that the overlay builds against nixpkgs' own
+  `hyprland`, without Hyprland's overlay. That works only when nixpkgs'
+  Hyprland is 0.55.0 or newer; older ones fail in `make check-headers`.
 
 ## `upstream.yml`: drift watch
 

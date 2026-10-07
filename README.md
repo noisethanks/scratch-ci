@@ -25,6 +25,41 @@ hyprpm add https://github.com/noisethanks/hyprtail
 hyprpm enable hyprtail
 ```
 
+### Nix
+
+A plugin only loads into the exact Hyprland it was built against, so build
+hyprtail against your own Hyprland flake input:
+
+```nix
+inputs = {
+  hyprland.url = "github:hyprwm/Hyprland";
+  hyprtail = {
+    url = "github:noisethanks/hyprtail";
+    inputs.hyprland.follows = "hyprland";
+  };
+};
+```
+
+With Home Manager:
+
+```nix
+{ inputs, pkgs, ... }:
+{
+  wayland.windowManager.hyprland = {
+    enable = true;
+    plugins = [
+      inputs.hyprtail.packages.${pkgs.stdenv.hostPlatform.system}.hyprtail
+    ];
+  };
+}
+```
+
+Without Home Manager, load `lib/libhyprtail.so` from that package with
+`hyprctl plugin load`.
+
+`overlays.default` adds `hyprlandPlugins.hyprtail`, built against whatever
+`hyprland` your pkgs has. hyprtail needs Hyprland 0.55.0 or newer.
+
 ## Configuring
 
 ```
