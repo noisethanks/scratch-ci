@@ -114,7 +114,7 @@ layer can draw is 64 copies x 4096 points.
 
 ### Settings
 
-All keys live under `plugin:hyprtail:` (hyprlang) or `plugin.hyprtail` (Lua).
+All keys live under `plugin.hyprtail` in your hyprland lua config.
 Out-of-range or invalid values are rejected, reported as a plugin warning, and
 the previous value is kept. Values are re-read on every config reload.
 

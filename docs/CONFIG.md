@@ -1,26 +1,19 @@
 # hyprtail configuration
 
-All keys live under `plugin.hyprtail` in Lua config.
-
-```
-# Lua
-hl.config({ plugin = { hyprtail = { preset = "prefab:classic", capacity = 128 } } })
-```
-
-- The **hyprtail config root** is `$XDG_CONFIG_HOME/hypr/hyprtail/`
-  (`~/.config/hypr/hyprtail/` if `XDG_CONFIG_HOME` is unset). Every
-  relative path hyprtail reads from your config resolves against it.
 
 
 ## Terms
 
 - A **layer** is one draw layer of a shader. For example `trail` and `idle` in the shipped presets. 
-- Prefabs are default shader styles, internally defined by hyprtail. They can be referenced in the configs as such:
+- **Prefabs** are default shader styles, internally defined by hyprtail. They can be referenced in the configs as such:
 ```
 preset = "prefab:subtle"
 ```
 Prefabs are always available and cannot be edited.
-- ***Presets*** refer to identical copies of the prefabs. These copies are intended to provide a simple starting point for basic configurations, such as changing color or tail width. This document focuses on these kinds of basic customizations.
+- ***Presets*** are identical copies of the prefabs. These copies are intended to provide a simple starting point for basic configurations, such as changing color or tail width. This document focuses on these kinds of basic customizations.
+- The **hyprtail config root** is `$XDG_CONFIG_HOME/hypr/hyprtail/`
+  (`~/.config/hypr/hyprtail/` if `XDG_CONFIG_HOME` is unset). Every
+  relative path hyprtail reads from your config resolves against it.
 
 
 ## Getting started with Presets
@@ -28,12 +21,12 @@ Prefabs are always available and cannot be edited.
 1. Begin with downloading the presets and shaders directory from the project root and placing them in `~/.config/hypr/hyprtail/` 
 2. Edit the files freely. Presets are re-read on every Hyprland config reload,
    not when the preset file itself changes.
-3. Presets are composed of built in shaders. These built in shaders are referenced as such:
+3. Presets are composed of prefab shaders. These built in shaders are referenced as such:
 ```
     trail:vertex = prefab:ribbon.vert
 ```
 4. To modify a preset shader, reference them by path. Relative paths resolves
-    against the hyprtail config root; `~` and absolute paths also work.
+    against the hyprtail config root. `~` and absolute paths also work.
     See SHADERS.md for more detailed documentation about shader definitions.
 
 ### Preset file format
@@ -45,8 +38,9 @@ contract    = 2
 description = Thin neutral trail
 layers      = core
 
-core:vertex   = prefab:ribbon.vert   # embedded shader, or a path (see below)
-core:fragment = solid.frag           # your file, ~/.config/hypr/hyprtail/solid.frag
+core:vertex   = prefab:ribbon.vert   # can be a prefab shader, or
+core:fragment = /shaders/solid.frag  # your file, relative to `#XDG_CONFIG_HOME/hypr/hyprtail`
+# core:fragment = ~/.config/hypr/hyprtail/shaders/solid.frag # or absolute path
 core:fade_ms  = 350                  # any other key sets a layer parameter
 core:width    = 4
 core:color    = rgba(ffffffa0)
@@ -54,7 +48,7 @@ core:color    = rgba(ffffffa0)
 
 - `contract = 2` is required.
 - `layers = <name>[, <name>...]` lists 1–4 layer names, draw order first =
-  bottom. No duplicates. `source` can't be a layer name.
+  bottom. No duplicates allowed. `source` can't be a layer name.
 - `source = pointer | spring` (optional, default `pointer`) picks what
   produces the trail's points, see "Sources" below.
 - `source:<name> = <value>` sets a setting of that source, see below.
