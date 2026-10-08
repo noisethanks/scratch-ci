@@ -274,8 +274,8 @@ this file states the decision and marks what's still a placeholder.
   stated "fade time" requirement. Built: the stock vertex shader computes
   `ht_life(age, fade_ms)` (`helpers/fade.glsl`, linear) per node and passes
   it as the `ht_vLife` varying; the fragment shader applies it to alpha. The
-  duration is the reserved `fade_ms` layer parameter (§13.4), 300 ms in
-  `prefab:subtle`, 500 ms in `prefab:classic`.
+  duration is the reserved `fade_ms` layer parameter (§13.4), 420 ms in
+  `prefab:ink`.
 
 ## 5. Shader extensibility contract
 
@@ -415,7 +415,7 @@ this file states the decision and marks what's still a placeholder.
 
 > **Superseded in part by §13.4 and §13.7 (built, phases 2-4 and 6).** The
 > idle/presence effect is no longer a separate slot with its own config keys:
-> it is the `idle` quad layer of the `classic` preset (§13.4, §13.7), and its
+> it is the `idle` quad layer of the `ink` preset (§13.4, §13.7), and its
 > settings are layer parameters (`idle:enabled`, `idle:start_ms`,
 > `idle:duration_ms`, `idle:radius`, `idle:draw_when_cursor_hidden`), set in a
 > preset file or the `params` string (§13.5), not config keys. Warps are
@@ -561,12 +561,12 @@ this file states the decision and marks what's still a placeholder.
     `cursor:invisible`), drawing around it defeats the hide. This
     deliberately differs from the trail, which follows motion regardless of
     visibility.
-  - **Settings:** the `idle` layer of `prefab:classic` (`hyprtail/presets/classic.conf`):
+  - **Settings:** the `idle` layer of `prefab:ink` (`hyprtail/presets/ink.conf`):
     `idle:enabled` (false), `idle:start_ms` (500), `idle:duration_ms` (1500),
     `idle:radius` (24 px), `idle:draw_when_cursor_hidden` (false),
     `idle:color`. Shared with every layer: `damage_padding` (§9) and
-    `#pragma hyprtail padding` (§5, §13.5). `prefab:subtle` has no idle
-    layer.
+    `#pragma hyprtail padding` (§5, §13.5). Disabled by default
+    in the shipped preset.
   - **Shader contract** (contract 2, quad topology; §13.2-13.3, prelude
     `hyprtail/shaders/prelude/quad.glsl`): no vertex attributes; `ht_corner()`
     returns the corner (-1..1) from `gl_VertexID`, and the geometry shader
@@ -630,13 +630,13 @@ this file states the decision and marks what's still a placeholder.
 ## 9. Config surface
 
 > **Superseded in part by phase 4 of §13.16 (built).** The key table below
-> and its "feed the built-in classic preset" paragraph describe contract-1
+> and its "feed the built-in preset" paragraph describe contract-1
 > config keys that no longer exist: `fade_ms`, `width`, `miter_limit`,
 > `color_slow`, `color_fast`, `vertex_shader`, `fragment_shader`, and all
 > `idle_*` keys are removed outright (§13.8), with no compatibility shim --
 > Hyprland's own "unknown config key" error, not a plugin one. What
 > replaces each is in §13.7/§13.8: shader identity and per-layer parameter
-> defaults move into a preset file (`prefab:subtle`, `prefab:classic`, or a
+> defaults move into a preset file (`prefab:ink`, or a
 > user's own `presets/<name>.conf`); `trail = "prefab:<name>"` or
 > `trail = "presets/<name>.conf"` selects one; `layer1_vertex` ..
 > `layer4_fragment` still override a layer's shader by config; the `params`
@@ -713,7 +713,7 @@ this file states the decision and marks what's still a placeholder.
   | `idle_vertex_shader` | path | `""` = built-in | |
   | `idle_fragment_shader` | path | `""` = built-in | |
 
-  Since phase 2 of §13 these keys feed the built-in `classic` preset:
+  Since phase 2 of §13 these keys feed the built-in (since removed) `classic` preset:
   `fade_ms`, `width`, `miter_limit`, `color_slow`, `color_fast` and the
   `vertex_shader` / `fragment_shader` paths go to its `trail` layer;
   `idle_enabled`, `idle_delay_ms` (`start_ms`), `idle_duration_ms`,
@@ -807,7 +807,7 @@ this file states the decision and marks what's still a placeholder.
 - Hyprland pin chosen (`efb5099`, v0.56.2, §2); re-pin on every host package upgrade
 - Default tuning (§9, §13.7): `capacity` (64) and `min_spacing` (2) are
   still the original placeholders; fade and width now live in the shipped
-  presets (`subtle`: 300 ms, 3 px; `classic`: 500 ms, 8 px)
+  presets (`ink`: 420 ms, 7 px)
 - **Blocked: direct scanout verification (§4).** mpv fullscreen with
   `render:direct_scanout = 1` fails with a Wayland protocol error
   (`wl_surface.attach` invalid arguments) with or without the plugin loaded,
@@ -849,8 +849,8 @@ plugin-validated `params` string, and per-layer shader overrides are static
 keys indexed by layer number (§13.5, §13.8; NOTES "Phase 0 spikes", S2);
 screenshare late drawing accepted with its
 tradeoffs; the quad layer anchors to the pointer, not the newest node; no
-compatibility with the current contract; `subtle` default, `classic`
-optional; the preset file format is plain `key = value` lines; padding
+compatibility with the current contract; `ink` default;
+the preset file format is plain `key = value` lines; padding
 expressions are numbers, parameter names, `+ - * /` and parentheses only.
 Where a **built** part contradicts §5, §7 or §9, this section wins (each
 carries a pointer); where a part is still proposal, those sections describe
@@ -945,7 +945,7 @@ second ring, a second upload or a second damage lifecycle.
 **Built (phase 2), difference:** each layer keeps its own per-monitor damage
 lifecycle (`CLayer::damage`) inside the one pass element, so damage stays
 exact per layer instead of one union box. Presets are manifest files since
-phase 4 (§13.7): the shipped `prefab:subtle` and `prefab:classic` are
+phase 4 (§13.7): the shipped `prefab:ink` is
 `hyprtail/presets/*.conf`, embedded by `src/Preset.cpp`.
 
 ### 13.2 Nodes and the shader-side contract
@@ -1086,7 +1086,7 @@ a fragment shader or include is refused.
   `spread + size + 1`), `spray.vert` (K particles per node drifting with
   age, reach grows: padding `speed * fade_ms / 1000 + wobble + size + 1`),
   `dots.frag` (`expects quad,instanced`), and the presets `prefab:jitter` and
-  `prefab:spray`, deliberately two: they show the two padding disciplines
+  `prefab:spray` (since removed), deliberately two: they show the two padding disciplines
   (a constant bound vs. growth with age) that an instanced shader has to get
   right for damage to be correct.
 
@@ -1126,7 +1126,7 @@ timers:
 **Built (phase 2):** reserved `enabled`, `draw_when_cursor_hidden`,
 `fade_ms`, `start_ms`, `duration_ms` (`shader::reservedParams()`), resolved
 per layer (`CLayer::resolve`). A layer with `enabled = false` isn't
-compiled. The idle effect is the classic preset's `idle` quad layer,
+compiled. The idle effect is the ink preset's `idle` quad layer,
 anchored at the pointer; the stillness timer arms for the earliest
 `start_ms` across enabled quad layers. Not built: the quad layer's own
 offset (`offset_from`/`offset`; not part of phase 6, see §13.9).
@@ -1206,7 +1206,7 @@ offset (`offset_from`/`offset`; not part of phase 6, see §13.9).
   outside 0..4096 is a plugin warning (the declaration is ignored or
   clamped).
 - Parameter values come from the pragma defaults and, in this phase, the
-  classic preset's mapping of the current config keys. The `params` string
+  (since removed) classic preset's mapping of the current config keys. The `params` string
   is phase 3.
 
 **Built (phase 3):** the `params` config string (`Params::parseParamsString`,
@@ -1265,17 +1265,17 @@ would have linked fine.
   either `prefab:<name>`, always the embedded built-in, ignoring any local
   file of that name, or the path of a `.conf` file, with its extension,
   resolved by `cfg::resolveShaderPath()` (`Config.cpp:223`): relative ones
-  against the hyprtail config root (below), e.g. `presets/subtle.conf`;
+  against the hyprtail config root (below), e.g. `presets/ink.conf`;
   `~` and absolute as given. That is the one path resolver for every file
   hyprtail reads from the user's config; the preset loader has no second
   one. A value that is neither (the removed bare form, `trail = "subtle"`,
   or a path without `.conf`) is an error that says what to write instead
   (`notATrail`, `Preset.cpp:281`); a missing file is an error naming the
   path; neither falls back to a built-in except through the reported
-  fallback below. The default is `prefab:subtle`, since a fresh install has
-  no `hyprtail/` folder. `hyprtail/presets/subtle.conf` is both the
+  fallback below. The default is `prefab:ink`, since a fresh install has
+  no `hyprtail/` folder. `hyprtail/presets/ink.conf` is both the
   embedded prefab and a copy-and-edit starting point: copied with its
-  folder into `~/.config/hypr/` and selected as `presets/subtle.conf`, it
+  folder into `~/.config/hypr/` and selected as `presets/ink.conf`, it
   behaves identically (a unit test pins that the shaders it names are
   byte-identical to the embedded ones).
 - **Manifest:** a `<name>.conf` file, plain `key = value` lines, `#` comments,
@@ -1328,7 +1328,7 @@ would have linked fine.
   (`params:<layer>`, entry ignored) same as always. Any failure loading
   the *selected* preset (file not found, parse error, bad shader reference)
   is reported (`trail:<name>`, naming the path looked up) and falls back
-  to the embedded `prefab:subtle` manifest, guaranteed to parse since it
+  to the embedded `prefab:ink` manifest, guaranteed to parse since it
   ships with the plugin. That fallback is degradation after a clear error,
   not resolution: a bare name never resolves to a built-in.
   **One exception, built:** a file preset that parses but names a shader
@@ -1374,7 +1374,7 @@ would have linked fine.
     a preset (see "Where" above). **Built (phase 4)**
     (`plugin:hyprtail:trail`, `Config.*`; formerly `preset`, and formerly
     also taking a bare `<name>`, both changed before any release, no
-    alias): default `prefab:subtle`.
+    alias): default `prefab:ink`.
   - **Hyprtail config root:** `$XDG_CONFIG_HOME/hypr/hyprtail/`, fallback
     `~/.config/hypr/hyprtail/` (`cfg::hyprtailRoot()`). Every relative
     path hyprtail reads from the user's config resolves against it: a
@@ -1411,17 +1411,13 @@ would have linked fine.
   alpha 0 with nonzero rgb gets additive light (glow) through the same blend
   function, so layers never change GL blend state.
 - **Shipped:**
-  - `prefab:subtle` (default): one narrow `path` layer, short fade, neutral
-    low alpha, no idle layer. **Built (phase 4)** (`hyprtail/presets/subtle.conf`):
-    reuses `prefab:ribbon.*` rather than a new shader -- see NOTES "Phase 4" for
-    why pinning `color_slow`/`color_fast` equal is presented here as an
-    interim stand-in for a genuine single-color mode, not a hidden detail.
+  - `prefab:ink` (default): one calligraphy `path` layer plus an `idle`
+    ring layer that ships disabled (`enabled = false`). **Built**
+    (`hyprtail/presets/ink.conf`). It replaced the earlier `subtle` and
+    `classic` presets, whose only unique piece, the idle ring, moved here.
   - `vivid`: `path` core plus a wide soft glow layer, speed-based palette,
     `quad` idle pulse. **Not built**: needs a real glow shader and a
     speed-based palette, out of scope for a config-surface phase.
-  - Optional `classic` (today's stock look), which makes migration easy.
-    **Built (phase 4)** (`hyprtail/presets/classic.conf`, `prefab:classic`): reproduces today's hardcoded
-    defaults exactly, proving the manifest system is behavior-preserving.
 
 #### 13.7.1 Preset rework: the shader kit (slice 1 built, untested on host)
 
@@ -1460,9 +1456,9 @@ docs only (registering a built-in in `ShaderSource.cpp`/`Preset.cpp` aside).
   (`main.cpp` runLifecycle: damage every frame while `quadInWindow`); the
   shader and preset comments say so and point at a finite `duration_ms`.
   No frame-rate cap for now.
-- **Slice 1 prefabs:** `subtle` (unchanged look), `ink` (new), `comet`
-  (tail + sparks), `embers` (rising embers + idle crackle). `classic`,
-  `jitter`, `spray`, `vivid`, `spring` are migrated to the new names only,
+- **Slice 1 prefabs:** `ink` (new, now the default; carries the old
+  `classic` idle ring, disabled), `comet`
+  (tail + sparks), `embers` (rising embers + idle crackle). `jitter`, `vivid`, `spring` are migrated to the new names only,
   pending the lineup rework.
 
 ### 13.8 Config surface v2
@@ -1769,18 +1765,18 @@ compositor).
    - Contract 2: prelude, `contract` and `topology` pragmas, param pragmas,
      padding expressions, standard varyings.
    - The node grows seed and distance (28 bytes, integer attribute).
-   - Today's look ships as the built-in `classic` preset; the current
-     config keys map onto it, so behavior should be unchanged.
+   - Today's look shipped as a built-in preset (since removed); the current
+     config keys mapped onto it, so behavior should be unchanged.
    - `make test-unit`: unit tests and glslangValidator over the built-ins.
 3. **Checks and the config front end (built, untested).** The `params`
    string, the `layer1_vertex` ... `layer4_fragment` keys, `expects`, and
    the pre-link varying check with plain messages.
 4. **Presets and config surface v2 (built, untested).** Manifest parser,
-   user preset files, `prefab:subtle` and `prefab:classic`. Not built: `vivid`
+   user preset files, shipped prefabs. Not built: `vivid`
    (needs a real glow shader, out of scope for this phase), migration
    notes in the README (the SPEC §9 note above covers it for now).
 5. **Topologies.** `instanced K` **(built, untested; see §13.3)** with two
-   demo presets, `prefab:jitter` and `prefab:spray`. Not built: `path smooth
+   demo presets, `prefab:jitter` and `prefab:spray` (since removed). Not built: `path smooth
    N` with exact Bezier bounds.
 6. **Pointer features (built, untested).** Emit offset with the
    shape-change break, `warp = curve`. Per-layer `offset_from`/`offset`

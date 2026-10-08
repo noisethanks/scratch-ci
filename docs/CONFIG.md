@@ -3,7 +3,7 @@
 ## Terms
 - **Prefabs** are default trail styles, internal to hyprtail. They can be referenced in the configs as such:
 ```
-trail = "prefab:subtle"
+trail = "prefab:ink"
 ```
 - **Presets** are identical copies of the prefabs. These copies are intended to provide a simple starting point for basic configurations, such as changing color or tail width. This document focuses on these kinds of basic customizations.
 - A **stage** is one step in the rendering pipeline of a shader. A shader willl always have a vertex stage, and, in hyprtail, will always have a fragment stage.

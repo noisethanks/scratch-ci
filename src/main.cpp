@@ -1276,7 +1276,7 @@ static PLUGIN_DESCRIPTION_INFO pluginInit() {
     const uint64_t     seedBase = (static_cast<uint64_t>(rd()) << 32) ^ rd();
 
     // `layers` starts empty: applyConfig() below queues the configured
-    // preset (default "prefab:subtle"), and the first prepareLayers() (the first
+    // preset (default "prefab:ink"), and the first prepareLayers() (the first
     // render, GL current) builds it -- the same path a later preset switch
     // takes, see applyPendingState().
     s_preset                        = makeUnique<SPreset>(s_config.capacity, seedBase);

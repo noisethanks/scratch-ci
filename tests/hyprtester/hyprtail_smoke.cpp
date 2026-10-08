@@ -50,7 +50,7 @@ namespace {
     constexpr int         OUT_X       = 20000;
     constexpr int         OUT_Y       = 0;
 
-    // Matches trail:fade_ms in the plugin.hyprtail.params string in smoke.lua.
+    // Matches ink:fade_ms in the plugin.hyprtail.params string in smoke.lua.
     constexpr int FADE_MS = 500;
 
     // Marker of our entry in `/plugin list` (HyprCtl.cpp dispatchPlugin).
@@ -275,23 +275,23 @@ TEST_CASE(hyprtailLifecycle) {
     {
         // Every step below keeps trail:fade_ms at FADE_MS so the waits hold.
         const std::string fade       = std::format("trail:fade_ms={}", FADE_MS);
-        const std::string subtleFade = std::format("thread:fade_ms={}", FADE_MS); // prefab:subtle's one layer
+        const std::string inkFade    = std::format("ink:fade_ms={}", FADE_MS); // prefab:ink's calligraphy layer
 
         // Each instanced preset loads, compiles and draws.
-        for (const std::string preset : {"prefab:jitter", "prefab:spray"}) {
+        for (const std::string preset : {"prefab:jitter"}) {
             const auto step = "instanced preset " + preset;
             HYPRTAIL_CONFIGURE(step, preset, fade, 0);
-            // The status names the K param (jitter: copies, spray: count), so
+            // The status names the K param (jitter: copies), so
             // it only matches once this preset's own program is active.
-            HYPRTAIL_EXPECT_STATUS(step, preset == "prefab:jitter" ? "topology instanced copies" : "topology instanced count");
+            HYPRTAIL_EXPECT_STATUS(step, "topology instanced copies");
             sleepMs(FADE_MS + 200);
             HYPRTAIL_HEALTHY(step);
         }
 
         // K changes live through `params` on a config reload, across its
-        // whole range, for a K param named in the pragma (jitter: copies,
-        // spray: count). The status lists the layer's resolved values.
-        const std::pair<std::string, std::string> kParams[] = {{"prefab:jitter", "copies"}, {"prefab:spray", "count"}};
+        // whole range, for a K param named in the pragma (jitter: copies).
+        // The status lists the layer's resolved values.
+        const std::pair<std::string, std::string> kParams[] = {{"prefab:jitter", "copies"}};
         for (const auto& [preset, param] : kParams) {
             for (const int k : {32, 64, 1, 8}) {
                 const auto step  = std::format("{} {}={}", preset, param, k);
@@ -315,7 +315,7 @@ TEST_CASE(hyprtailLifecycle) {
         }
 
         // An output unplugged while an instanced layer draws on it.
-        HYPRTAIL_CONFIGURE("spray before the hotplug rounds", "prefab:spray", fade + " trail:count=16", 0);
+        HYPRTAIL_CONFIGURE("jitter before the hotplug rounds", "prefab:jitter", fade + " trail:copies=16", 0);
         for (int round = 1; round <= 2; ++round) {
             const auto step = std::format("instanced hotplug round {}", round);
 
@@ -368,10 +368,10 @@ TEST_CASE(hyprtailLifecycle) {
 
         // Presets switched while a trail is still on screen, in an order
         // that swaps instanced <-> path <-> quad state under the same VBO.
-        for (const std::string preset : {"prefab:jitter", "prefab:classic", "prefab:spray", "presets/smoke-stack.conf", "prefab:subtle", "prefab:jitter"}) {
+        for (const std::string preset : {"prefab:jitter", "prefab:ink", "presets/smoke-stack.conf", "prefab:ink", "prefab:jitter"}) {
             const auto step = "switch to " + preset;
             OK(moveAlong(700, 400, 1200, 700, 12));
-            HYPRTAIL_CONFIGURE(step, preset, preset == "prefab:subtle" ? subtleFade : fade, 0);
+            HYPRTAIL_CONFIGURE(step, preset, preset == "prefab:ink" ? inkFade : fade, 0);
             OK(moveAlong(1200, 700, 800, 500, 12));
             HYPRTAIL_HEALTHY(step);
         }
@@ -391,7 +391,7 @@ TEST_CASE(hyprtailLifecycle) {
     // header comment.
     {
         const std::string fade       = std::format("trail:fade_ms={}", FADE_MS);
-        const std::string subtleFade = std::format("thread:fade_ms={}", FADE_MS); // prefab:subtle's one layer
+        const std::string inkFade    = std::format("ink:fade_ms={}", FADE_MS); // prefab:ink's calligraphy layer
 
         // Loads, draws, moves, and once the pointer is still the chain comes
         // to rest: the status stops reporting its points as moving. (That
@@ -439,10 +439,10 @@ TEST_CASE(hyprtailLifecycle) {
         // Presets switched while the chain is moving, in and out of the
         // spring source (a new source replaces the old one, the same kind
         // keeps it).
-        for (const std::string preset : {"prefab:subtle", "prefab:spring", "prefab:jitter", "presets/smoke-spring-stack.conf", "prefab:spring", "prefab:spring"}) {
+        for (const std::string preset : {"prefab:ink", "prefab:spring", "prefab:jitter", "presets/smoke-spring-stack.conf", "prefab:spring", "prefab:spring"}) {
             const auto step = "switch to " + preset;
             OK(moveAlong(700, 400, 1200, 700, 12));
-            HYPRTAIL_CONFIGURE(step, preset, preset == "prefab:subtle" ? subtleFade : fade, 0);
+            HYPRTAIL_CONFIGURE(step, preset, preset == "prefab:ink" ? inkFade : fade, 0);
             HYPRTAIL_EXPECT_STATUS(step, preset.contains("spring") ? "source: spring" : "source: pointer");
             OK(moveAlong(1200, 700, 800, 500, 12));
             HYPRTAIL_HEALTHY(step);

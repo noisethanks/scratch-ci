@@ -33,15 +33,15 @@ hl.config({
 -- Hyprland shows a config error until then; loading the plugin triggers a
 -- reload that clears it.
 --
--- classic (not the default, "subtle" is) has the idle ring layer, off by
--- default in that preset's own manifest (hyprtail/presets/classic.conf); turn
+-- ink (the default) has the idle ring layer, off by
+-- default in that preset's own manifest (hyprtail/presets/ink.conf); turn
 -- it on here with a params override rather than editing the preset, so this
 -- file is the one thing that needs changing to get the idle layer active
 -- for nested testing.
 hl.config({
     plugin = {
         hyprtail = {
-            trail             = "prefab:classic",
+            trail             = "prefab:ink",
             params            = "idle:enabled=true",
             --             capacity          = 64,
             --             min_spacing       = 2,

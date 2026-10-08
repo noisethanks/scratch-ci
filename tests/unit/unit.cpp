@@ -406,7 +406,7 @@ static void testPresetManifests() {
             }
         }
     }
-    CHECK(manifests >= 9); // classic, subtle, jitter, spray, vivid, comet, embers, spring, ink
+    CHECK(manifests >= 6); // jitter, vivid, comet, embers, spring, ink
 
     // The shipped presets that are built purely from other shipped parts:
     // each exists, lists the layers it should, and pairs the shaders it should.
@@ -442,36 +442,32 @@ static void testPresetManifests() {
         CHECK(alpha("vivid", "core", key) == 0xff);
     }
 
-    // subtle: one flat-colored ribbon (color_a == color_b).
-    CHECK(layerOrder["subtle"] == "thread" && ribbon("subtle", "thread"));
-    CHECK(val("subtle", "thread", "color_a") == val("subtle", "thread", "color_b"));
-
-    // ink: one ribbon drawn with a flat nib, colored by life.
-    CHECK(layerOrder["ink"] == "ink" && ribbon("ink", "ink"));
+    // ink: one ribbon drawn with a flat nib, colored by life, plus an idle
+    // ring that ships disabled.
+    CHECK(layerOrder["ink"] == "ink, idle" && ribbon("ink", "ink"));
+    CHECK(val("ink", "idle", "vertex") == "shaders/halo.vert" && val("ink", "idle", "fragment") == "shaders/pulse.frag" && val("ink", "idle", "enabled") == "false");
     CHECK(num("ink", "ink", "nib") > 0.0 && num("ink", "ink", "color_by") == 1.0);
 
     // comet: sparks under a narrow ribbon tail with a short fade and a higher
     // speed_ref than the ribbon default (2).
     CHECK(layerOrder["comet"] == "sparks, tail" && ribbon("comet", "tail"));
     CHECK(val("comet", "sparks", "vertex") == "shaders/drift.vert" && val("comet", "sparks", "fragment") == "shaders/dots.frag");
-    CHECK(num("comet", "tail", "width") > 0.0 && num("comet", "tail", "width") < num("classic", "trail", "width"));
-    CHECK(num("comet", "tail", "fade_ms") < num("subtle", "thread", "fade_ms"));
+    CHECK(num("comet", "tail", "width") > 0.0 && num("comet", "tail", "width") < num("ink", "ink", "width"));
+    CHECK(num("comet", "tail", "fade_ms") < num("ink", "ink", "fade_ms"));
     CHECK(num("comet", "tail", "speed_ref") > 2.0);
 
     // embers: rising drift particles plus an idle crackle, and its own count,
-    // speed and fade rather than a copy of spray's.
+    // speed and fade rather than a copy of another particle preset's.
     CHECK(layerOrder["embers"] == "embers, crackle");
     CHECK(val("embers", "embers", "vertex") == "shaders/drift.vert" && val("embers", "embers", "fragment") == "shaders/dots.frag");
     CHECK(val("embers", "crackle", "vertex") == "shaders/halo.vert" && val("embers", "crackle", "fragment") == "shaders/sizzle.frag");
     CHECK(num("embers", "embers", "gravity") > 0.0 && val("embers", "embers", "gravity_dir") == "0,-1");
-    for (const auto* key : {"count", "speed", "fade_ms"})
-        CHECK(num("embers", "embers", key) != num("spray", "trail", key));
 
     // Reworked presets name their layers uniquely, so a layer block pasted
     // from one into another never collides.
     {
         std::map<std::string, int> uses;
-        for (const auto* stem : {"subtle", "ink", "comet", "embers"})
+        for (const auto* stem : {"ink", "comet", "embers"})
             for (const auto& [layer, keys] : byPreset[stem])
                 ++uses[layer];
         for (const auto& [layer, n] : uses)

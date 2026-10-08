@@ -489,20 +489,20 @@ Line by line:
   required.
 
 To use it: save it as `~/.config/hypr/hyprtail/solid.frag`. Then either
-write a preset of your own (CONFIG.md's quickstart: copy `hyprtail/presets/subtle.conf`
+write a preset of your own (CONFIG.md's quickstart: copy `hyprtail/presets/ink.conf`
 to `~/.config/hypr/hyprtail/presets/mine.conf`, set `trail = "presets/mine.conf"`) and in
 it change:
 
 ```
-thread:fragment = solid.frag        # bare = your file, relative to ~/.config/hypr/hyprtail/
-thread:color    = rgba(ff2266ff)
+ink:fragment = solid.frag        # bare = your file, relative to ~/.config/hypr/hyprtail/
+ink:color    = rgba(ff2266ff)
 ```
 
 or override it directly without a custom preset:
 
 ```
 plugin:hyprtail:layer1_fragment = ~/.config/hypr/hyprtail/solid.frag
-plugin:hyprtail:params = thread:color=rgba(ff2266ff)
+plugin:hyprtail:params = ink:color=rgba(ff2266ff)
 ```
 
 (`thread` is the name of `prefab:subtle`'s one layer; with another preset,

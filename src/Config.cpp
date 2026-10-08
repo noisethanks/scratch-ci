@@ -104,8 +104,8 @@ namespace hyprtail::cfg {
         r.damagePadding = makeShared<CFloatValue>("plugin:hyprtail:damage_padding", "extra damage padding on top of the stock extent and shader-declared padding, px",
                                                   DEFAULTS.damagePaddingPx, SFloatValueOptions{.min = 0.F, .max = 4096.F});
         r.trail    = makeShared<CStringValue>("plugin:hyprtail:trail",
-                                              "which trail to use (SPEC section 13.7): \"prefab:<name>\" (built-in: subtle, classic, jitter, spray, vivid, comet, embers, spring, ink) "
-                                              "or the path of a .conf file relative to <hyprtail root>, e.g. \"presets/subtle.conf\"",
+                                              "which trail to use (SPEC section 13.7): \"prefab:<name>\" (built-in: jitter, vivid, comet, embers, spring, ink) "
+                                              "or the path of a .conf file relative to <hyprtail root>, e.g. \"presets/ink.conf\"",
                                               DEFAULTS.trail.c_str());
         r.emitFrom = makeShared<CStringValue>("plugin:hyprtail:emit_from",
                                               "where on the cursor image trail points are emitted from: \"hotspot\" (default), or a normalized \"x y\" position in "

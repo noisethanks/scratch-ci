@@ -16,11 +16,11 @@ hl.monitor({ output = "HYPRTAIL-TEST", mode = "1280x720@60", position = "20000x0
 -- /reload, which runs this file again. No file: the defaults below.
 local function plugin_settings()
     local settings = {
-        -- classic has the idle ring layer, off in the preset itself; the
+        -- ink has the idle ring layer, off in the preset itself; the
         -- params string turns it on with a short delay and duration.
-        -- trail:fade_ms is FADE_MS in hyprtail_smoke.cpp.
-        trail    = "prefab:classic",
-        params   = "idle:enabled=true idle:start_ms=50 idle:duration_ms=200 trail:fade_ms=500",
+        -- ink:fade_ms is FADE_MS in hyprtail_smoke.cpp.
+        trail    = "prefab:ink",
+        params   = "idle:enabled=true idle:start_ms=50 idle:duration_ms=200 ink:fade_ms=500",
         capacity = nil,
     }
 

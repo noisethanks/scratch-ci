@@ -28,7 +28,7 @@ namespace hyprtail::cfg {
     const char* warpModeName(eWarpMode m);
 
     struct SValues {
-        std::string trail           = "prefab:subtle"; // SPEC §13.7
+        std::string trail           = "prefab:ink"; // SPEC §13.7
         size_t      capacity        = 64;
         float       minSpacingPx    = 2.F;
         eWarpMode   warp            = eWarpMode::BREAK;

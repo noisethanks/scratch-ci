@@ -531,7 +531,7 @@ namespace hyprtail::shader {
 
             if (!st.contractSeen)
                 return std::unexpected(std::format("{}: missing \"#pragma hyprtail contract {}\" after #version. Shaders written for earlier hyprtail versions need "
-                                                   "porting; the classic preset's shaders are the reference",
+                                                   "porting; the shipped shaders in hyprtail/shaders are the reference",
                                                    displayName, CONTRACT_VERSION));
             if (stage == eStage::VERTEX && !st.out.topology)
                 return std::unexpected(std::format(R"({}: geometry (vertex) shaders need "#pragma hyprtail topology path", "quad" or "instanced <K>")", displayName));

@@ -1632,6 +1632,33 @@ and `run_dev.sh` sets `XDG_CONFIG_HOME=dev_env`, so the root is
 shipped shaders are named `prefab:` in the presets, so nothing else is
 needed. See the report for the commands.
 
+## One shipped default: `subtle` and `classic` folded into `ink` (built; compiled and unit-tested only)
+
+- `hyprtail/presets/subtle.conf` and `classic.conf` are deleted. `prefab:ink`
+  is the default `trail` and the failed-load fallback (`Config.hpp`,
+  `FALLBACK_PRESET` in `Preset.cpp`).
+- `ink.conf` gained classic's `idle` layer, values unchanged, with
+  `idle:enabled = false`. The disable mechanism already existed: `enabled` is
+  a reserved per-layer parameter (`ShaderSource.cpp:467`, read in
+  `CLayer::resolve`, `Layer.cpp:84`). Layer cap is 4 (`Preset.cpp:118`), ink
+  has 2; `idle` collides with no other shipped layer name.
+- Entries above that name `subtle` or `classic` are the record of what was
+  true then and are left as written.
+
+## `spray` removed (built; compiled and unit-tested only)
+
+- `hyprtail/presets/spray.conf` is deleted, with its `#embed` and map entry in
+  `src/Preset.cpp` and its unit and smoke references. `drift.vert` and
+  `dots.frag` stay: `embers.conf` uses both.
+- Compared with `embers`: same shaders and pointer source, but spray was one
+  layer (`trail`) with no idle layer and different values (no gravity, no
+  twinkle, no `color_by`, white to orange, `fade_ms` 700). Not just the idle
+  layer.
+- Smoke (`hyprtail_smoke.cpp`, section 4b) lost its only second instanced
+  preset: the instanced rounds, K-param loop and hotplug now run on
+  `prefab:jitter` alone, so `drift.vert`'s instanced path is no longer
+  exercised there. `embers` could be added back with `embers:` keys.
+
 ## Open questions
 
 - [x] Hyprland commit to pin: `efb5099` (v0.56.2, host package)

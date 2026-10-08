@@ -146,17 +146,8 @@ namespace hyprtail::preset {
     }
 
     namespace {
-        constexpr unsigned char SUBTLE_CONF[] = {
-#embed "../hyprtail/presets/subtle.conf"
-        };
-        constexpr unsigned char CLASSIC_CONF[] = {
-#embed "../hyprtail/presets/classic.conf"
-        };
         constexpr unsigned char JITTER_CONF[] = {
 #embed "../hyprtail/presets/jitter.conf"
-        };
-        constexpr unsigned char SPRAY_CONF[] = {
-#embed "../hyprtail/presets/spray.conf"
         };
         constexpr unsigned char VIVID_CONF[] = {
 #embed "../hyprtail/presets/vivid.conf"
@@ -181,7 +172,7 @@ namespace hyprtail::preset {
 
         std::string_view builtinManifest(std::string_view name) {
             static const std::map<std::string, std::string_view, std::less<>> m{
-                {"subtle", view(SUBTLE_CONF)}, {"classic", view(CLASSIC_CONF)}, {"jitter", view(JITTER_CONF)}, {"spray", view(SPRAY_CONF)}, {"vivid", view(VIVID_CONF)},
+                {"jitter", view(JITTER_CONF)}, {"vivid", view(VIVID_CONF)},
                 {"comet", view(COMET_CONF)},   {"embers", view(EMBERS_CONF)},   {"spring", view(SPRING_CONF)}, {"ink", view(INK_CONF)},
             };
             const auto it = m.find(name);
@@ -298,7 +289,7 @@ namespace hyprtail::preset {
                 embedded           = true;
                 const auto builtin = builtinManifest(std::string_view{name}.substr(PREFAB_PREFIX.size()));
                 if (builtin.empty())
-                    return std::unexpected(std::format("unknown prefab preset \"{}\" (built-in: prefab:subtle, prefab:classic, prefab:jitter, prefab:spray, prefab:vivid, "
+                    return std::unexpected(std::format("unknown prefab preset \"{}\" (built-in: prefab:jitter, prefab:vivid, "
                                                        "prefab:comet, prefab:embers, prefab:spring, prefab:ink)",
                                                        name));
                 text = std::string{builtin};
@@ -339,9 +330,9 @@ namespace hyprtail::preset {
             return out;
         }
 
-        constexpr const char* FALLBACK_PRESET = "prefab:subtle";
+        constexpr const char* FALLBACK_PRESET = "prefab:ink";
 
-        // Absolute last resort if even the embedded "subtle" manifest somehow
+        // Absolute last resort if even the embedded "ink" manifest somehow
         // fails to parse: a single trail layer on pragma defaults. Never
         // expected to actually run -- it exists so a mistake in this
         // codebase's own built-ins degrades instead of throwing/crashing.

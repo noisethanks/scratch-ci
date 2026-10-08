@@ -26,7 +26,7 @@
 //
 // Two namespaces, no shadowing. A preset is "prefab:<name>", an embedded
 // built-in, or the path of a .conf file with its extension, e.g.
-// "presets/subtle.conf" (cfg::resolveShaderPath(): relative ones against
+// "presets/ink.conf" (cfg::resolveShaderPath(): relative ones against
 // <hyprtail root>, cfg::hyprtailRoot(): $XDG_CONFIG_HOME/hypr/hyprtail,
 // fallback ~/.config/hypr/hyprtail). A bare "<name>" is an error.
 //
@@ -81,7 +81,7 @@ namespace hyprtail::preset {
     // above). Any failure (unknown prefab, a bare name or other value that
     // isn't a .conf path, no such file, parse error, an unrecognized shader
     // reference, an unresolvable path) is reported (diag, "trail:<name>")
-    // and falls back to the embedded "prefab:subtle" manifest, which is
+    // and falls back to the embedded "prefab:ink" manifest, which is
     // guaranteed to parse -- it ships with the plugin.
     //
     // One exception: a file preset that parses but names shader files that
