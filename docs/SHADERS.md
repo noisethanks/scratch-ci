@@ -425,7 +425,7 @@ point, so it jumps whenever the pointer moves.
   varying — one declares it, the other doesn't, or with a different type —
   you get a plain message before any raw driver link log, e.g.:
 
-  > `fragment shader glow.frag reads v_glow, which geometry shader ribbon.vert doesn't write (standard varyings: ht_vLocal, ht_vAge, ht_vLife, ht_vSpeed, ht_vDist, ht_vSeed)`
+  > `fragment shader glow.frag reads v_glow, which geometry shader taper.vert doesn't write (standard varyings: ht_vLocal, ht_vAge, ht_vLife, ht_vSpeed, ht_vDist, ht_vSeed)`
 
   Sticking to only the standard varyings avoids this class of error
   entirely and keeps your shader portable (any fragment shader pairs with
@@ -439,7 +439,7 @@ point, so it jumps whenever the pointer moves.
 
 The simplest useful custom shader: replace the default preset's two-color
 fragment shader (`prefab:gradient.frag`) with a single flat color, keeping
-the stock ribbon geometry (`prefab:ribbon.vert`) unchanged.
+the stock ribbon geometry (`prefab:taper.vert`) unchanged.
 
 ```glsl
 #version 300 es

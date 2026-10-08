@@ -1,7 +1,7 @@
 #version 300 es
 #pragma hyprtail contract 2
 #pragma hyprtail topology path
-// hyprtail geometry "ribbon": the trail as one continuous strip. Every
+// hyprtail geometry "taper": the trail as one continuous strip. Every
 // built-in ribbon preset uses this file, so a change to how the strip is
 // built (joins, smoothing) reaches all of them at once. Also the reference
 // for path-topology geometry shaders: copy it and change what you like.
@@ -37,12 +37,15 @@
 // How much the width follows a point's life: 0 = full width until it fades
 // out, 1 = thins with age and pinches to a point at the faded end.
 #pragma hyprtail param float taper 1 0 1
+// Shape of that thinning: the width follows life^tail_power. 1 = a straight
+// cone; above 1 a concave needle (thins sooner); below 1 a convex teardrop.
+#pragma hyprtail param float tail_power 1 0.25 6
 // Calligraphy: 0 = round pen (same width in every direction), 1 = flat nib,
 // full width moving across the nib's edge and thin moving along it.
 #pragma hyprtail param float nib 0 0 1
 // The nib edge's angle on screen, degrees counterclockwise from horizontal.
 #pragma hyprtail param float nib_angle 45 -90 90
-// Widest possible miter, plus the ~1px antialiased edge. taper and nib only
+// Widest possible miter, plus the ~1px antialiased edge. taper, tail_power and nib only
 // ever narrow the ribbon.
 #pragma hyprtail padding width * 0.5 * miter_limit + 1
 
@@ -56,7 +59,8 @@ float halfWidth(float life, vec2 dirIn, vec2 dirOut) {
     vec2  edge   = vec2(cos(a), -sin(a)); // screen y points down
     float across = abs(j.x * edge.y - j.y * edge.x);
     float pen    = mix(1.0, mix(NIB_THIN, 1.0, across), nib);
-    return 0.5 * width * mix(1.0, life, taper) * pen;
+    float body   = life > 0.0 ? pow(life, tail_power) : 0.0;
+    return 0.5 * width * mix(1.0, body, taper) * pen;
 }
 
 void main() {

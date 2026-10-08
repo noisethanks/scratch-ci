@@ -1659,6 +1659,97 @@ needed. See the report for the commands.
   `prefab:jitter` alone, so `drift.vert`'s instanced path is no longer
   exercised there. `embers` could be added back with `embers:` keys.
 
+## `comet.vert` folded into `ribbon.vert` (built; compiled and unit-tested only)
+
+- `demo/hyprtail/shaders/comet.vert` and `demo/hyprtail/presets/demo-comet.conf`
+  are deleted. `ribbon.vert` gained `tail_power` (default 1, 0.25 to 6): the
+  half-width is `0.5 * width * mix(1, life^tail_power, taper) * pen`. At the
+  default it is today's ribbon, so no shipped preset changes. Padding is
+  unchanged: the exponent only narrows the strip.
+- The head swelling (`bulb`, `bulb_ms`) is dropped, not ported: it added 2.5 px
+  of half-width at the defaults and sits under the pointer when it rests.
+- `demo-comet-helix.conf` now uses `prefab:ribbon.vert` (demo presets load from
+  disk, so the embedded shader needs the `prefab:` form) with
+  `core:tail_power = 1`; `curve`, `bulb` and `bulb_ms` are gone, so its head is
+  blunt instead of faintly swollen.
+- Older entries (the demo-layer notes naming `comet.vert`, `demo-comet`) are
+  left as the record.
+- Naming: `tail_power` names the exponent in the width = life^p profile.
+  `taper.vert` still calls the same idea `tail_curve`; the rename pass should
+  settle both together with `taper`.
+
+## `demo-lattice` shipped as `prefab:mosaic` (built; compiled and unit-tested only)
+
+- `demo/hyprtail/shaders/lattice.frag` moved to `hyprtail/shaders/hexagons.frag`
+  and `demo/hyprtail/presets/demo-lattice.conf` to `hyprtail/presets/mosaic.conf`
+  (embedded in `src/ShaderSource.cpp` and `src/Preset.cpp`). Names: the shader
+  names the pattern, the preset the look, the layer stays `scales`, so no two
+  shipped names match.
+- Only the shader's header line changed. The preset now uses
+  `shaders/ribbon.vert` (shipped, embedded) instead of the demo
+  `taper.vert`: `tail_curve = 0.7` became `tail_power = 0.7` and `head_ms`
+  (240) is gone, so the head is blunt instead of ramping up from a point.
+  Everything else is carried over.
+- Unit tests: manifest minimum is 7, `hexagons.frag` joins the built-in
+  fragment list, and mosaic is checked for its layer, shaders and
+  `cell_px * rows == width` (regular hexagons).
+- Older entries naming `lattice.frag` are left as the record.
+
+## `softline.frag` folded into `gradient.frag` (built; compiled and unit-tested only)
+
+- `demo/hyprtail/shaders/softline.frag` is deleted. `gradient.frag` gained
+  `alpha` (default 1, 0 to 1) and `fade_curve` (default 1, 0.25 to 4); opacity
+  is now `c.a * alpha * max(life, 0)^fade_curve * cov`. At the defaults that is
+  the old `c.a * life * cov`, so no shipped preset changes.
+- Softline's life-based color is `color_by = 1` in gradient
+  (`ht_paletteT` returns `1 - life`, so `mix(a, b, 1 - life)` is softline's
+  `mix(b, a, life)`: `helpers/palette.glsl`). Its `soft` is `softness`.
+- `demo-thread`, `demo-helix` (sheath) and `demo-tether` (three layers) now use
+  `prefab:gradient.frag` (the `prefab:` form, since demo presets load from
+  disk) with `color_by = 1` and `softness` in place of `soft`. Their `alpha`
+  and colors were already set explicitly, so nothing else needed carrying.
+- Not carried over: softline's `1e-4` floor on the edge antialiasing width.
+  Gradient keeps its own (`max(softness, fwidth)`); a strip tapering to a point
+  is the case to check on the host.
+- Older entries naming `softline.frag` are left as the record.
+
+## The `demo/` folder dissolved into `hyprtail/` (built; compiled and unit-tested only)
+
+- Moved into `hyprtail/` and embedded (`src/ShaderSource.cpp`, `src/Preset.cpp`):
+  `strands.frag`, `taper.vert`, and the presets `helix` (was `demo-helix`),
+  `tether` (`demo-tether`), `thread` (`demo-thread`) and `ribbon-helix`
+  (`demo-comet-helix`). `demo/` is gone.
+- References changed from the `prefab:<name>` form (disk presets) to the
+  `shaders/<name>` form the shipped manifests require; descriptions and headers
+  lost "demo". Only wording changed, no parameter values.
+- `testDemoPresets` and the demo half of the link matrix are removed
+  (`tests/unit/unit.cpp`). The shipped-manifest loop already runs the same
+  checks (header, layers, shader pairing, parameter names, types, ranges), and
+  the matrix globs `hyprtail/shaders` only. The manifest minimum is 11, the
+  matrix is 5 vertex x 6 fragment, and the layer-uniqueness list now covers the
+  eight reworked presets.
+- Layer `thread` shares its name with preset `thread` (as `ink` and `embers`
+  already do).
+- Older entries naming `demo/hyprtail`, `testDemoPresets` and the `demo-*`
+  presets are left as the record.
+
+## Geometry shader renames: `ribbon.vert` -> `taper.vert`, `taper.vert` -> `convex.vert` (built; compiled and unit-tested only)
+
+- Pure rename, swapped through `git mv` in two steps: contents are unchanged
+  apart from the "hyprtail geometry" name in each header. Every shipped
+  preset, the embedded table (`GEOM_TAPER_VERT`, `GEOM_CONVEX_VERT` in
+  `src/ShaderSource.cpp`), the fallback identity in `src/Preset.cpp`, the unit
+  and smoke tests, SPEC and docs follow the new names.
+- Every entry above this one that says `ribbon.vert` means today's
+  `taper.vert`, and one that says `taper.vert` means today's `convex.vert`.
+  They are left as the record.
+- Not renamed: `helpers/ribbon.glsl`, the `taper` parameter inside the new
+  `taper.vert`, the `ribbon-helix` preset and the word "ribbon" in prose and
+  comments.
+- Follow-up: the `ribbon-helix` preset is now `snake` (`snake.conf`,
+  `prefab:snake`). Older entries that say `ribbon-helix` or `demo-comet-helix`
+  mean it.
+
 ## Open questions
 
 - [x] Hyprland commit to pin: `efb5099` (v0.56.2, host package)

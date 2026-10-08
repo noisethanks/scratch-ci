@@ -14,7 +14,7 @@
 //   - ht_node() is this vertex's node (pos, age, vel, dist, seed,
 //     segmentStart). ht_instance() is its copy, 0 .. K-1, and ht_corner() the
 //     corner of the quad, -1..1 on both axes.
-//   - Everything else is as in ribbon.vert: standard varyings, param and
+//   - Everything else is as in taper.vert: standard varyings, param and
 //     padding pragmas. The padding is how far a copy can get from its node,
 //     counting its own size; it must hold at every age below fade_ms.
 //   - helpers/noise.glsl gives seeded randomness: ht_rand(node.seed, salt)

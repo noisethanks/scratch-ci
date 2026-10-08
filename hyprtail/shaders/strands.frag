@@ -1,7 +1,7 @@
 #version 300 es
 #pragma hyprtail contract 2
 #pragma hyprtail expects path
-// demo look "strands": two thin strands winding around the strip's
+// hyprtail look "strands": two thin strands winding around the strip's
 // centerline, a helix seen from the side. The strand nearer the viewer is
 // drawn over the farther one and a little brighter, and optional thin
 // rungs join the strands.

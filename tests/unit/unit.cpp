@@ -224,9 +224,9 @@ static void testShaderSource() {
     CHECK(!pp("#version 300 es\n#pragma hyprtail contract 2\n#pragma hyprtail glow 1\nvoid main() {}\n", eStage::FRAGMENT));
 
     // Built-ins preprocess.
-    for (const auto* name : {"shaders/ribbon.vert", "shaders/scatter.vert", "shaders/drift.vert", "shaders/halo.vert"})
+    for (const auto* name : {"shaders/taper.vert", "shaders/scatter.vert", "shaders/drift.vert", "shaders/halo.vert", "shaders/convex.vert"})
         CHECK(shader::preprocess(shader::builtin(name), name, {}, eStage::VERTEX).has_value());
-    for (const auto* name : {"shaders/gradient.frag", "shaders/dots.frag", "shaders/pulse.frag", "shaders/sizzle.frag"})
+    for (const auto* name : {"shaders/gradient.frag", "shaders/dots.frag", "shaders/pulse.frag", "shaders/sizzle.frag", "shaders/hexagons.frag", "shaders/strands.frag"})
         CHECK(shader::preprocess(shader::builtin(name), name, {}, eStage::FRAGMENT).has_value());
 
     // The instanced built-ins declare what the loader checks: topology,
@@ -340,13 +340,13 @@ static void testPresetManifests() {
 
             const auto vertKey = keys.find("vertex"), fragKey = keys.find("fragment");
             // Shader references are paths relative to the hyprtail root
-            // (shaders/ribbon.vert), the same string in both modes. Embedded
+            // (shaders/taper.vert), the same string in both modes. Embedded
             // mode: it is a key of shader::builtin(), never read from disk.
             // Disk mode: it is a file under hyprtail/ (this repo's copy of
             // the root) holding the same text as the embedded one, so a
             // copied folder and the prefab: preset draw the same thing.
             if (vertKey == keys.end() || fragKey == keys.end() || vertKey->second.starts_with("prefab:") || fragKey->second.starts_with("prefab:")) {
-                fail("needs vertex and fragment shader paths relative to the hyprtail root (shaders/ribbon.vert), not prefab:");
+                fail("needs vertex and fragment shader paths relative to the hyprtail root (shaders/taper.vert), not prefab:");
                 continue;
             }
             const auto vertName = vertKey->second, fragName = fragKey->second;
@@ -406,7 +406,7 @@ static void testPresetManifests() {
             }
         }
     }
-    CHECK(manifests >= 6); // jitter, vivid, comet, embers, spring, ink
+    CHECK(manifests >= 11); // jitter, vivid, comet, embers, spring, ink, mosaic, snake, helix, tether, thread
 
     // The shipped presets that are built purely from other shipped parts:
     // each exists, lists the layers it should, and pairs the shaders it should.
@@ -423,15 +423,15 @@ static void testPresetManifests() {
         return c ? static_cast<int>(c->argb >> 24) : -1;
     };
     const auto ribbon = [&](const std::string& preset, const std::string& layer) {
-        return val(preset, layer, "vertex") == "shaders/ribbon.vert" && val(preset, layer, "fragment") == "shaders/gradient.frag";
+        return val(preset, layer, "vertex") == "shaders/taper.vert" && val(preset, layer, "fragment") == "shaders/gradient.frag";
     };
 
     // spring: one ribbon layer over the spring source, with its settings
-    // set; every other shipped preset leaves the source at the pointer's.
+    // set; only tether also has a source (spring), the rest keep the pointer's.
     CHECK(sourceOf["spring"] == "spring" && layerOrder["spring"] == "trail" && ribbon("spring", "trail"));
     CHECK(num("spring", "source", "stiffness") > 0.0 && num("spring", "source", "damping") > 0.0 && num("spring", "source", "age_step_ms") > 0.0);
     for (const auto& [stem, kind] : sourceOf)
-        CHECK(stem == "spring" || kind == "pointer");
+        CHECK(stem == "spring" || stem == "tether" || kind == "pointer");
 
     // vivid: a wide faint glow under a narrow opaque core, same ribbon shaders.
     CHECK(layerOrder["vivid"] == "glow, core");
@@ -447,6 +447,18 @@ static void testPresetManifests() {
     CHECK(layerOrder["ink"] == "ink, idle" && ribbon("ink", "ink"));
     CHECK(val("ink", "idle", "vertex") == "shaders/halo.vert" && val("ink", "idle", "fragment") == "shaders/pulse.frag" && val("ink", "idle", "enabled") == "false");
     CHECK(num("ink", "ink", "nib") > 0.0 && num("ink", "ink", "color_by") == 1.0);
+
+    // mosaic: hexagonal cells over the shared ribbon geometry.
+    CHECK(layerOrder["mosaic"] == "scales" && val("mosaic", "scales", "vertex") == "shaders/taper.vert" && val("mosaic", "scales", "fragment") == "shaders/hexagons.frag");
+    CHECK(num("mosaic", "scales", "cell_px") * num("mosaic", "scales", "rows") == num("mosaic", "scales", "width"));
+
+    // The former demo looks: helix pairs its sheath and strands, snake
+    // puts the strands on the shared ribbon, tether stacks three taper
+    // layers over the spring source, thread is one taper layer.
+    CHECK(layerOrder["helix"] == "sheath, strands" && val("helix", "strands", "fragment") == "shaders/strands.frag");
+    CHECK(layerOrder["snake"] == "core" && val("snake", "core", "vertex") == "shaders/taper.vert" && val("snake", "core", "fragment") == "shaders/strands.frag");
+    CHECK(layerOrder["tether"] == "wash, rail_a, rail_b" && sourceOf["tether"] == "spring");
+    CHECK(layerOrder["thread"] == "thread" && val("thread", "thread", "vertex") == "shaders/convex.vert");
 
     // comet: sparks under a narrow ribbon tail with a short fade and a higher
     // speed_ref than the ribbon default (2).
@@ -467,7 +479,7 @@ static void testPresetManifests() {
     // from one into another never collides.
     {
         std::map<std::string, int> uses;
-        for (const auto* stem : {"ink", "comet", "embers"})
+        for (const auto* stem : {"ink", "comet", "embers", "mosaic", "snake", "helix", "tether", "thread"})
             for (const auto& [layer, keys] : byPreset[stem])
                 ++uses[layer];
         for (const auto& [layer, n] : uses)
@@ -1089,16 +1101,13 @@ namespace {
     // A shader as the loader assembles it, written to a file whose extension
     // tells glslangValidator the stage.
     struct SAssembled {
-        std::string     label; // "ribbon.vert", "demo/comet.vert"
+        std::string     label; // "taper.vert", "strands.frag"
         std::string     file;
         shader::SSource src;
     };
 
-    // The shipped shaders are embedded (shader::builtin()); the demo ones
-    // (demo/hyprtail/, same layout as hyprtail/) are files, loaded the way a
-    // user's own shader is.
+    // The shipped shaders are embedded (shader::builtin()).
     constexpr const char* SHIPPED_SHADERS = "hyprtail/shaders";
-    constexpr const char* DEMO_SHADERS    = "demo/hyprtail/shaders";
 
     // File names in dir with the given extension, sorted (run from the repo root).
     std::vector<std::string> globShaders(const char* dir, std::string_view ext) {
@@ -1173,11 +1182,9 @@ namespace {
 }
 
 // Every vertex shader linked with every fragment shader, shipped
-// (hyprtail/shaders) and demo (demo/hyprtail/shaders) alike, found by glob so
-// a new layer joins the matrix without editing this test. Each is assembled by
-// the loader's own preprocessor (the shipped ones from the embedded table as
-// CShaderSlot::builtin() does, the demo ones from disk as CShaderSlot::reload()
-// does), then linked by glslangValidator -l: the dialect is the shader's own
+// (hyprtail/shaders), found by glob so a new layer joins the matrix without
+// editing this test. Each is assembled by the loader's own preprocessor (from
+// the embedded table, as CShaderSlot::builtin() does), then linked by glslangValidator -l: the dialect is the shader's own
 // `#version 300 es`, as for the single-file checks `make test-unit` runs
 // afterwards on the files this leaves in $OUT_DIR. No skip list: a pair that
 // doesn't link fails.
@@ -1219,12 +1226,6 @@ static void testShaderLinkMatrix() {
                 continue;
             }
             if (auto a = assemble(file, shader::preprocess(text, key, {}, stage), file))
-                out->push_back(std::move(*a));
-            else
-                ++s_failed;
-        }
-        for (const auto& file : globShaders(DEMO_SHADERS, ext)) {
-            if (auto a = assemble("demo/" + file, shader::load(fs::path{DEMO_SHADERS} / file, stage), "demo_" + file))
                 out->push_back(std::move(*a));
             else
                 ++s_failed;
@@ -1290,155 +1291,6 @@ static void testShaderLinkMatrix() {
         fs::remove_all(dir);
 }
 
-// The demo presets (demo/hyprtail/presets, not embedded and not shipped): each
-// has a header comment, names layers only from its own `layers`, resolves
-// every shader the way a file preset does (prefab:<name> is the embedded
-// shaders/<name>, anything else a path under demo/hyprtail), pairs stages
-// the loader accepts (expectsMismatch), and sets only parameters that its
-// program declares, with values of the right type inside the declared range.
-// The same rules as the shipped manifests in testPresetManifests, without its
-// embedded-copy comparison.
-static void testDemoPresets() {
-    namespace fs = std::filesystem;
-    const fs::path root = "demo/hyprtail";
-    if (!fs::is_directory(root / "presets"))
-        return;
-
-    const auto trim = [](std::string s) {
-        const auto ws = " \t\r";
-        s.erase(0, s.find_first_not_of(ws));
-        s.erase(s.find_last_not_of(ws) + 1);
-        return s;
-    };
-    const auto resolve = [&root](const std::string& value, shader::eStage stage) -> std::expected<shader::SSource, std::string> {
-        if (value.starts_with("prefab:")) {
-            const auto key = "shaders/" + value.substr(7);
-            if (shader::builtin(key).empty())
-                return std::unexpected(std::format("{} isn't a built-in shader", value));
-            return shader::preprocess(shader::builtin(key), key, {}, stage);
-        }
-        return shader::load(root / value, stage);
-    };
-
-    std::set<std::string> allLayers; // layer names are unique across the demo presets
-    int                   manifests = 0;
-    for (const auto& entry : fs::directory_iterator(root / "presets")) {
-        if (entry.path().extension() != ".conf")
-            continue;
-        ++manifests;
-        const auto name = entry.path().filename().string();
-        const auto fail = [&](const std::string& why) {
-            std::cerr << std::format("demo preset {}: {}\n", name, why);
-            CHECK(false);
-        };
-
-        std::map<std::string, std::map<std::string, std::string>> layers; // layer -> key -> value
-        std::string                                               contract, layerList, kind = std::string{source::DEFAULT_KIND};
-        std::ifstream                                             in(entry.path());
-        std::string                                               line;
-        bool                                                      header = false, first = true;
-        while (std::getline(in, line)) {
-            if (first && !trim(line).empty()) {
-                header = trim(line).starts_with('#');
-                first  = false;
-            }
-            line          = trim(line.substr(0, line.find('#')));
-            const auto eq = line.find('=');
-            if (eq == std::string::npos)
-                continue;
-            const auto key = trim(line.substr(0, eq)), value = trim(line.substr(eq + 1));
-            if (const auto colon = key.find(':'); colon != std::string::npos)
-                layers[trim(key.substr(0, colon))][trim(key.substr(colon + 1))] = value;
-            else if (key == "contract")
-                contract = value;
-            else if (key == "layers")
-                layerList = value;
-            else if (key == "source")
-                kind = value;
-            else if (key != "description")
-                fail(std::format("unknown key \"{}\"", key));
-        }
-        if (!header)
-            fail("must start with a header comment");
-        if (contract != std::to_string(shader::CONTRACT_VERSION))
-            fail("missing or wrong contract");
-        if (!source::known(kind)) {
-            fail(std::format("unknown source \"{}\"", kind));
-            continue;
-        }
-
-        std::vector<std::string> names;
-        std::stringstream        ls(layerList);
-        for (std::string l; std::getline(ls, l, ',');)
-            names.push_back(trim(l));
-        if (names.empty() || names.size() > 4)
-            fail("needs 1 to 4 layers");
-
-        for (const auto& [layer, keys] : layers) {
-            if (layer == source::KEY_PREFIX) {
-                const auto& decls = source::decls(kind);
-                for (const auto& [key, text] : keys) {
-                    const auto decl = std::ranges::find_if(decls, [&](const auto& d) { return d.name == key; });
-                    if (decl == decls.end()) {
-                        fail(std::format("\"{}\" isn't a setting of source {}", key, kind));
-                        continue;
-                    }
-                    auto v = params::parseValue(decl->type, text);
-                    if (v)
-                        if (auto r = params::checkRange(*decl, *v); !r)
-                            v = std::unexpected(r.error());
-                    if (!v)
-                        fail(std::format("source:{} = {}: {}", key, text, v.error()));
-                }
-            } else if (std::ranges::find(names, layer) == names.end())
-                fail(std::format("\"{}:...\" keys given, but \"{}\" isn't in layers", layer, layer));
-        }
-
-        for (const auto& layer : names) {
-            if (!allLayers.insert(layer).second)
-                fail(std::format("layer name \"{}\" is also used by another demo preset", layer));
-            const auto it = layers.find(layer);
-            if (it == layers.end() || !it->second.contains("vertex") || !it->second.contains("fragment")) {
-                fail(std::format("layer {} needs vertex and fragment", layer));
-                continue;
-            }
-            const auto& keys = it->second;
-            const auto  vert = resolve(keys.at("vertex"), shader::eStage::VERTEX);
-            const auto  frag = resolve(keys.at("fragment"), shader::eStage::FRAGMENT);
-            if (!vert || !frag) {
-                fail(std::format("layer {}: {}", layer, !vert ? vert.error() : frag.error()));
-                continue;
-            }
-            if (const auto mismatch = shader::expectsMismatch(*vert, *frag))
-                fail(std::format("layer {}: {}", layer, *mismatch));
-
-            std::vector<params::SDecl> decls;
-            for (const auto& r : shader::reservedParams())
-                decls.push_back(r.decl);
-            for (const auto* src : {&*vert, &*frag})
-                for (const auto& p : src->params)
-                    decls.push_back(p.decl);
-
-            for (const auto& [key, text] : keys) {
-                if (key == "vertex" || key == "fragment")
-                    continue;
-                const auto decl = std::ranges::find_if(decls, [&](const auto& d) { return d.name == key; });
-                if (decl == decls.end()) {
-                    fail(std::format("layer {}: \"{}\" isn't a parameter of {} + {}", layer, key, keys.at("vertex"), keys.at("fragment")));
-                    continue;
-                }
-                auto v = params::parseValue(decl->type, text);
-                if (v)
-                    if (auto r = params::checkRange(*decl, *v); !r)
-                        v = std::unexpected(r.error());
-                if (!v)
-                    fail(std::format("layer {}: {} = {}: {}", layer, key, text, v.error()));
-            }
-        }
-    }
-    CHECK(manifests >= 1);
-}
-
 // A test that throws aborts the run, which is the failure signal.
 // NOLINTNEXTLINE(bugprone-exception-escape)
 int main() {
@@ -1448,7 +1300,6 @@ int main() {
     testParams();
     testShaderSource();
     testPresetManifests();
-    testDemoPresets();
     testCrashGuard();
     testPointerGate();
     testRing();

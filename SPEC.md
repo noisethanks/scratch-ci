@@ -1240,7 +1240,7 @@ kept. Reserved lifecycle parameters and `enabled` are settable the same way
   compares the global `out` declarations of the preprocessed vertex source
   with the fragment source's `in` declarations and reports mismatches
   plainly, e.g. "fragment shader glow.frag reads `v_glow`, which geometry
-  shader ribbon.vert doesn't write (standard varyings: ...)", or a type
+  shader taper.vert doesn't write (standard varyings: ...)", or a type
   mismatch. The driver's link log is only shown if this check passes and
   linking still fails. Its format is driver-specific, so it isn't parsed.
 
@@ -1288,7 +1288,7 @@ would have linked fine.
   description = Thin neutral trail
   layers      = core
 
-  core:vertex   = shaders/ribbon.vert    # a path relative to the hyprtail config root
+  core:vertex   = shaders/taper.vert    # a path relative to the hyprtail config root
   core:fragment = shaders/solid.frag     # your own file, same base
   core:fade_ms  = 350                    # any other key = a parameter of the layer
   core:width    = 4
@@ -1304,7 +1304,7 @@ would have linked fine.
   **Built (phase 4)** (`src/Preset.*`): `contract`/`description`/`layers`
   plus `<layer>:vertex`/`fragment`/`<name>`, `#` comments anywhere on a
   line, blank lines ignored. A shader stage is a path relative to the
-  hyprtail config root (`shaders/ribbon.vert`), whichever kind of preset
+  hyprtail config root (`shaders/taper.vert`), whichever kind of preset
   names it, and the preset kind decides where it is looked up
   (`resolveStage`, `Preset.cpp:224-257`): in an embedded (`prefab:`)
   preset it is a key of the embedded shader table, `shader::builtin()`
@@ -1430,15 +1430,15 @@ plugin code change is part of this rework; it is shaders, manifests and
 docs only (registering a built-in in `ShaderSource.cpp`/`Preset.cpp` aside).
 
 - **Kit, not one shader per preset.** Geometry (vertex) shaders own shape:
-  `ribbon.vert` (path; `width`, `miter_limit`, `taper`, `nib`,
+  `taper.vert` (path; `width`, `miter_limit`, `taper`, `tail_power`, `nib`,
   `nib_angle`), `scatter.vert` (instanced, bounded offset; was
   `jitter.vert`), `drift.vert` (instanced, grows with age, `gravity` +
   `gravity_dir`; was `spray.vert`), `halo.vert` (quad; was `ring.vert`).
   Looks (fragment shaders) own color and material: `gradient.frag` (path;
-  replaces `ribbon.frag`, adds `softness` for glows), `dots.frag` (quad,
+  replaces `ribbon.frag`, adds `softness` for glows, `alpha` and `fade_curve`), `dots.frag` (quad,
   instanced; `shape`, `twinkle`), `pulse.frag` (quad; was `ring.frag`),
   `sizzle.frag` (quad, idle crackle). Every look declares `expects`.
-- **One ribbon geometry.** Every ribbon prefab uses `ribbon.vert`, so a
+- **One ribbon geometry.** Every ribbon prefab uses `taper.vert`, so a
   future change to how the strip is built (Catmull-Rom subdivision) reaches
   all of them by changing that one file.
 - **Shared palette.** Looks color with `color_a`, `color_b`, `color_by`
@@ -1458,7 +1458,7 @@ docs only (registering a built-in in `ShaderSource.cpp`/`Preset.cpp` aside).
   No frame-rate cap for now.
 - **Slice 1 prefabs:** `ink` (new, now the default; carries the old
   `classic` idle ring, disabled), `comet`
-  (tail + sparks), `embers` (rising embers + idle crackle). `jitter`, `vivid`, `spring` are migrated to the new names only,
+  (tail + sparks), `mosaic` (hexagonal cells, `hexagons.frag`), `helix`, `snake`, `tether` and `thread` (the former demo looks, with `strands.frag` and `convex.vert`), `embers` (rising embers + idle crackle). `jitter`, `vivid`, `spring` are migrated to the new names only,
   pending the lineup rework.
 
 ### 13.8 Config surface v2

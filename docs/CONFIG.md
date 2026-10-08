@@ -20,7 +20,7 @@ trail = "prefab:ink"
    not when th$e preset file itself changes. You can use **hyprctl reload**
 3. Preset trails are composed of preset shaders. These built in shaders are referenced by their stage as such:
 ```
-trail:vertex = shaders/ribbon.vert
+trail:vertex = shaders/taper.vert
 trail:fragment = shaders/gradient.frag  
 ```
 4. To modify a preset shader, reference them by path. Relative paths resolves
@@ -36,7 +36,7 @@ contract    = 2
 description = Thin neutral trail
 layers      = core
 
-core:vertex   = prefab:ribbon.vert   # can be a prefab shader, or
+core:vertex   = prefab:taper.vert   # can be a prefab shader, or
 core:fragment = /shaders/solid.frag  # your file, relative to `#XDG_CONFIG_HOME/hypr/hyprtail`
 # core:fragment = ~/.config/hypr/hyprtail/shaders/solid.frag # or absolute path
 core:fade_ms  = 350                  # any other key sets a layer parameter
@@ -53,7 +53,7 @@ core:color    = rgba(ffffffa0)
 - Every other line is `<layer>:<key> = <value>`, where `<layer>` must be one
   of the names in `layers`.
   - `<layer>:vertex` / `<layer>:fragment` pick that layer's shader:
-    `prefab:<name>` for an embedded one (geometry: `prefab:ribbon.vert`,
+    `prefab:<name>` for an embedded one (geometry: `prefab:taper.vert`,
     `prefab:scatter.vert`, `prefab:drift.vert`, `prefab:halo.vert`; looks:
     `prefab:gradient.frag`, `prefab:dots.frag`, `prefab:pulse.frag`,
     `prefab:sizzle.frag`), or

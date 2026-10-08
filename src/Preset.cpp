@@ -164,6 +164,21 @@ namespace hyprtail::preset {
         constexpr unsigned char INK_CONF[] = {
 #embed "../hyprtail/presets/ink.conf"
         };
+        constexpr unsigned char MOSAIC_CONF[] = {
+#embed "../hyprtail/presets/mosaic.conf"
+        };
+        constexpr unsigned char SNAKE_CONF[] = {
+#embed "../hyprtail/presets/snake.conf"
+        };
+        constexpr unsigned char HELIX_CONF[] = {
+#embed "../hyprtail/presets/helix.conf"
+        };
+        constexpr unsigned char TETHER_CONF[] = {
+#embed "../hyprtail/presets/tether.conf"
+        };
+        constexpr unsigned char THREAD_CONF[] = {
+#embed "../hyprtail/presets/thread.conf"
+        };
 
         template <size_t N>
         constexpr std::string_view view(const unsigned char (&data)[N]) {
@@ -173,7 +188,8 @@ namespace hyprtail::preset {
         std::string_view builtinManifest(std::string_view name) {
             static const std::map<std::string, std::string_view, std::less<>> m{
                 {"jitter", view(JITTER_CONF)}, {"vivid", view(VIVID_CONF)},
-                {"comet", view(COMET_CONF)},   {"embers", view(EMBERS_CONF)},   {"spring", view(SPRING_CONF)}, {"ink", view(INK_CONF)},
+                {"comet", view(COMET_CONF)},   {"embers", view(EMBERS_CONF)},   {"spring", view(SPRING_CONF)}, {"ink", view(INK_CONF)}, {"mosaic", view(MOSAIC_CONF)},
+                {"snake", view(SNAKE_CONF)}, {"helix", view(HELIX_CONF)}, {"tether", view(TETHER_CONF)}, {"thread", view(THREAD_CONF)},
             };
             const auto it = m.find(name);
             return it == m.end() ? std::string_view{} : it->second;
@@ -201,7 +217,7 @@ namespace hyprtail::preset {
         // override}; a path override is "" for an embedded shader.
         //  - "prefab:<name>": the embedded shaders/<name>, in any preset.
         //  - anything else in an embedded preset: looked up in the embedded
-        //    shader table by the path as written ("shaders/ribbon.vert"),
+        //    shader table by the path as written ("shaders/taper.vert"),
         //    never on disk. That keeps the zero-file first run working and a
         //    stale copied folder from changing what prefab:<preset> means.
         //  - anything else in a file preset: a path, resolved like
@@ -231,7 +247,7 @@ namespace hyprtail::preset {
 
             if (embedded) {
                 if (shader::builtin(value).empty())
-                    return std::unexpected(std::format(R"(layer "{}": "{}" isn't an embedded shader; a prefab preset names them like "shaders/ribbon.vert")", layerName, value));
+                    return std::unexpected(std::format(R"(layer "{}": "{}" isn't an embedded shader; a prefab preset names them like "shaders/taper.vert")", layerName, value));
                 return std::pair<std::string, std::string>{value, ""};
             }
 
@@ -248,7 +264,7 @@ namespace hyprtail::preset {
 
         std::expected<SLayerSpec, std::string> resolveLayer(const std::string& layerName, const std::map<std::string, std::string>& keys, bool embedded,
                                                             std::vector<std::string>& missing) {
-            auto vert = resolveStage(layerName, keys, embedded, "vertex", "shaders/ribbon.vert", missing);
+            auto vert = resolveStage(layerName, keys, embedded, "vertex", "shaders/taper.vert", missing);
             if (!vert)
                 return std::unexpected(vert.error());
             auto frag = resolveStage(layerName, keys, embedded, "fragment", "shaders/gradient.frag", missing);
@@ -290,7 +306,7 @@ namespace hyprtail::preset {
                 const auto builtin = builtinManifest(std::string_view{name}.substr(PREFAB_PREFIX.size()));
                 if (builtin.empty())
                     return std::unexpected(std::format("unknown prefab preset \"{}\" (built-in: prefab:jitter, prefab:vivid, "
-                                                       "prefab:comet, prefab:embers, prefab:spring, prefab:ink)",
+                                                       "prefab:comet, prefab:embers, prefab:spring, prefab:ink, prefab:mosaic, prefab:snake, prefab:helix, prefab:tether, prefab:thread)",
                                                        name));
                 text = std::string{builtin};
             } else {
@@ -337,7 +353,7 @@ namespace hyprtail::preset {
         // expected to actually run -- it exists so a mistake in this
         // codebase's own built-ins degrades instead of throwing/crashing.
         SResolved hardcodedFallback() {
-            SLayerSpec trail{.name = "trail", .vertBuiltin = "shaders/ribbon.vert", .fragBuiltin = "shaders/gradient.frag"};
+            SLayerSpec trail{.name = "trail", .vertBuiltin = "shaders/taper.vert", .fragBuiltin = "shaders/gradient.frag"};
             return SResolved{.name = FALLBACK_PRESET, .description = "fallback", .layers = {std::move(trail)}};
         }
     }

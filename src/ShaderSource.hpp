@@ -94,10 +94,10 @@ namespace hyprtail::shader {
     };
 
     // Built-in shaders (the prefab presets'), embedded at build time, keyed
-    // by their path relative to the hyprtail root, e.g. "shaders/ribbon.vert"
+    // by their path relative to the hyprtail root, e.g. "shaders/taper.vert"
     // -- the same string a preset's `<layer>:vertex` holds, so a prefab
     // preset's shader reference is looked up here as written. A user preset
-    // may also say "prefab:ribbon.vert", which is "shaders/ribbon.vert" here.
+    // may also say "prefab:taper.vert", which is "shaders/taper.vert" here.
     // Empty view if unknown.
     std::string_view builtin(std::string_view name);
 

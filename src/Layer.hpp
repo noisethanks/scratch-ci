@@ -14,7 +14,7 @@
 namespace hyprtail {
     struct SLayerSpec {
         std::string                        name;
-        std::string                        vertBuiltin, fragBuiltin; // shader::builtin() keys ("shaders/ribbon.vert"); the slot's always-safe identity
+        std::string                        vertBuiltin, fragBuiltin; // shader::builtin() keys ("shaders/taper.vert"); the slot's always-safe identity
         std::string                        vertPath, fragPath;       // preset's own per-stage override, absolute path, "" = use *Builtin above (SPEC §13.7)
         std::map<std::string, std::string> defaults;                 // param name -> value text, from the preset manifest
 

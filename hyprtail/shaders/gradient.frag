@@ -3,7 +3,7 @@
 #pragma hyprtail expects path
 // hyprtail look "gradient": a two-color ribbon, from a crisp line to a soft
 // glow. The base look of every ribbon preset, and the reference for
-// fragment shaders (see the contract summary in ribbon.vert).
+// fragment shaders (see the contract summary in taper.vert).
 //
 // Reads only standard varyings, so it pairs with any path geometry shader
 // that writes them. Output is PREMULTIPLIED alpha. Only color parameters are
@@ -12,6 +12,7 @@
 //
 // Same layer, two jobs: softness 0 is a hard-edged core, softness near 1 with
 // a wide width and low alpha colors is a glow to put under another ribbon.
+// alpha scales the whole layer, and fade_curve shapes how it falls with life.
 
 #include "helpers/palette.glsl"
 
@@ -23,6 +24,10 @@
 #pragma hyprtail param float color_period 200 1 100000
 // 0 = solid to the edge, 1 = fades out from the centerline.
 #pragma hyprtail param float softness 0 0 1
+// Overall opacity on top of the colors' own alpha.
+#pragma hyprtail param float alpha 1 0 1
+// How the opacity falls with life: 1 = linearly, above 1 sooner, below 1 later.
+#pragma hyprtail param float fade_curve 1 0.25 4
 
 void main() {
     // Across the width: 0 at the centerline, 1 at the edge. The ~1px
@@ -36,6 +41,6 @@ void main() {
     float t = ht_paletteT(color_by, ht_vSpeed, ht_vLife, ht_vDist, ht_vSeed, ht_vAge, speed_ref, color_period);
     vec4  c = mix(color_a, color_b, t);
 
-    float a      = c.a * ht_vLife * cov;
+    float a      = c.a * alpha * pow(max(ht_vLife, 0.0), fade_curve) * cov;
     ht_fragColor = vec4(c.rgb * a, a);
 }

@@ -20,7 +20,7 @@
 //   source      = pointer | spring            optional, at most once, default pointer
 //
 //   source:<name>    = <value>                a setting of the source (Source.hpp)
-//   <layer>:vertex   = a shader path, e.g. shaders/ribbon.vert (or prefab:ribbon.vert)
+//   <layer>:vertex   = a shader path, e.g. shaders/taper.vert (or prefab:taper.vert)
 //   <layer>:fragment = a shader path, e.g. shaders/gradient.frag (or prefab:gradient.frag)
 //   <layer>:<name>   = <value>                a parameter default
 //
@@ -66,7 +66,7 @@ namespace hyprtail::preset {
 
     // A resolved preset, ready for CLayer construction: name, description,
     // and up to 4 SLayerSpecs with vertex/fragment already resolved to an
-    // embedded shader::builtin() key ("shaders/ribbon.vert") or an absolute
+    // embedded shader::builtin() key ("shaders/taper.vert") or an absolute
     // path.
     struct SResolved {
         std::string                        name, description;

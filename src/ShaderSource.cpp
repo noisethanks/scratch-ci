@@ -17,14 +17,17 @@ namespace hyprtail::shader {
         // Stock shaders and the prefab library, embedded at build time (the
         // Makefile lists them as dependencies). Keep them ASCII: GLSL ES
         // drivers aren't reliable with UTF-8, even in comments.
-        constexpr unsigned char GEOM_RIBBON_VERT[] = {
-#embed "../hyprtail/shaders/ribbon.vert"
+        constexpr unsigned char GEOM_TAPER_VERT[] = {
+#embed "../hyprtail/shaders/taper.vert"
         };
         constexpr unsigned char GEOM_SCATTER_VERT[] = {
 #embed "../hyprtail/shaders/scatter.vert"
         };
         constexpr unsigned char GEOM_DRIFT_VERT[] = {
 #embed "../hyprtail/shaders/drift.vert"
+        };
+        constexpr unsigned char GEOM_CONVEX_VERT[] = {
+#embed "../hyprtail/shaders/convex.vert"
         };
         constexpr unsigned char GEOM_HALO_VERT[] = {
 #embed "../hyprtail/shaders/halo.vert"
@@ -40,6 +43,12 @@ namespace hyprtail::shader {
         };
         constexpr unsigned char LOOK_SIZZLE_FRAG[] = {
 #embed "../hyprtail/shaders/sizzle.frag"
+        };
+        constexpr unsigned char LOOK_HEXAGONS_FRAG[] = {
+#embed "../hyprtail/shaders/hexagons.frag"
+        };
+        constexpr unsigned char LOOK_STRANDS_FRAG[] = {
+#embed "../hyprtail/shaders/strands.frag"
         };
         constexpr unsigned char PRELUDE_COMMON[] = {
 #embed "../hyprtail/shaders/prelude/common.glsl"
@@ -402,9 +411,11 @@ namespace hyprtail::shader {
 
     std::string_view builtin(std::string_view name) {
         static const std::map<std::string, std::string_view, std::less<>> m{
-            {"shaders/ribbon.vert", view(GEOM_RIBBON_VERT)},     {"shaders/scatter.vert", view(GEOM_SCATTER_VERT)}, {"shaders/drift.vert", view(GEOM_DRIFT_VERT)},
+            {"shaders/taper.vert", view(GEOM_TAPER_VERT)},     {"shaders/scatter.vert", view(GEOM_SCATTER_VERT)}, {"shaders/drift.vert", view(GEOM_DRIFT_VERT)},
             {"shaders/halo.vert", view(GEOM_HALO_VERT)},         {"shaders/gradient.frag", view(LOOK_GRADIENT_FRAG)}, {"shaders/dots.frag", view(LOOK_DOTS_FRAG)},
             {"shaders/pulse.frag", view(LOOK_PULSE_FRAG)},       {"shaders/sizzle.frag", view(LOOK_SIZZLE_FRAG)},
+            {"shaders/hexagons.frag", view(LOOK_HEXAGONS_FRAG)}, {"shaders/strands.frag", view(LOOK_STRANDS_FRAG)},
+            {"shaders/convex.vert", view(GEOM_CONVEX_VERT)},
         };
         const auto it = m.find(name);
         return it == m.end() ? std::string_view{} : it->second;

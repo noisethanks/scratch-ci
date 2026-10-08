@@ -1,7 +1,7 @@
 #version 300 es
 #pragma hyprtail contract 2
 #pragma hyprtail expects path
-// demo look "lattice": the strip tiled with hexagonal cells, laid out in
+// hyprtail look "hexagons": the strip tiled with hexagonal cells, laid out in
 // strip space. Each cell has a hash of its own (computed here, in the
 // fragment shader), which gives it a tint, a flicker phase and a place in
 // the order cells die out as the trail fades.

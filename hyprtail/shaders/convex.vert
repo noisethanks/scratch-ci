@@ -1,7 +1,7 @@
 #version 300 es
 #pragma hyprtail contract 2
 #pragma hyprtail topology path
-// demo geometry "taper": a thin strip along the trail whose width tapers
+// hyprtail geometry "convex": a thin strip along the trail whose width tapers
 // toward BOTH ends, with an optional sideways offset from the path.
 //
 //   - Tail end: the width follows the node's life raised to tail_curve, so the
@@ -14,7 +14,7 @@
 //     moves and relaxes once the newest node ages past head_ms.
 //   - offset moves the whole strip sideways by that many px, positive to the
 //     right of the direction of travel. Several layers with different
-//     width/offset make parallel lines (demo-tether.conf).
+//     width/offset make parallel lines (tether.conf).
 //
 // Writes all six standard varyings, so any path fragment shader pairs with
 // it. ht_vLocal is x 0 at the newer end of a segment, 1 at the older, y -1..1
