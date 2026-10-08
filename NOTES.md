@@ -1281,6 +1281,357 @@ Follows the rename section above, before any release: no alias.
   path not starting with the bare `helpers/`) reads the disk
   (`ShaderSource.cpp:239-255`), and `prelude/` is never a file.
 
+## Shader contract audit and the vert/frag link matrix (report only; compiled and unit-tested, nothing run in a compositor)
+
+Read at the working tree on top of `18b3708`. Nothing here was loaded into
+any Hyprland instance, and no rendering was looked at.
+
+### The link matrix
+
+- **Test:** `testShaderLinkMatrix` (`tests/unit/unit.cpp:1141`). It globs
+  `hyprtail/shaders/*.vert` and `*.frag` (`globShaders`, `:1102`, run from the
+  repo root like `testPresetManifests`), so a new layer joins the matrix by
+  existing. Each shader is assembled by `shader::preprocess(shader::builtin(name),
+  name, {}, stage)`, the call `CShaderSlot::builtin()` makes for the built-in
+  slots (`ShaderSlot.cpp:253-261`), so prelude, topology variant (path, quad,
+  instanced: `ShaderSource.cpp:139-151`) and helper includes are the loader's
+  own. Each vert x frag pair then goes to `glslangValidator -l <vert> <frag>`
+  (`runCapture`, `:1054`); the dialect is the shader's own `#version 300 es`,
+  no extra flags, exactly what the single-file pass in the Makefile uses. A
+  failing pair prints its name and the validator's log with `<id>:<line>`
+  mapped back to file:line through `shader::mapLog`; a glob hit that is not
+  in `shader::builtin()` also fails (it could not be a prefab). No skip list.
+  The shaders are left in `$OUT_DIR` for the Makefile's single-file pass.
+- **Result: 4 x 4 = 16 of 16 pairs link.** Shown to report properly by
+  temporarily breaking `dots.frag` (4 pairs failed, each with `dots.frag:39`
+  and the syntax error); restored.
+- **Not reachable from a unit test:** the loader's `glslCheck`/`varyingCheck`
+  and `programInfo` (`ShaderSlot.cpp:33-247`) are in `ShaderSlot.cpp`, which
+  includes Hyprland's GL headers and needs a current GL context. The test
+  uses the closest GL-free thing: `preprocess` + glslang. It does not run the
+  driver link, `contractCheck` (`ShaderSlot.cpp:33-73`), or `programInfo`'s
+  `expects` / param-consistency checks.
+- **Moved, not added:** the old pair loop in the Makefile (hard-coded list in
+  `main()`, loop in `test-unit`) is gone; the unit binary owns it now.
+- **The matrix is blind to the failure class the brief names.** A control
+  pair (`canary.vert` writes nothing custom, `canary.frag` declares `in float
+  ht_notWritten`) links under `glslangValidator -l`; the test prints a note
+  each run rather than asserting. So a fragment reading a varying no vertex
+  shader declares would pass this matrix and fail in the driver. The loader
+  has a text check for it (`varyingCheck`, `ShaderSlot.cpp:83-119`) but it is
+  anonymous-namespace code in the GL file and only runs after a real link
+  failure. Hoisting it into `ShaderSource.cpp` (GL-free) would let the matrix
+  call the loader's own check; not done, it touches loader code.
+- **The matrix passing says little about pairing.** `expects` is the real
+  gate: by the pragmas (`gradient.frag:3`, `dots.frag:3`, `pulse.frag:3`,
+  `sizzle.frag:3`) only 6 of the 16 pairs are accepted by `expectsMismatch`
+  (`ShaderSource.cpp:413-422`): ribbon+gradient, halo+dots, scatter+dots,
+  drift+dots, halo+pulse, halo+sizzle. Counted from the pragmas, not run.
+  Pairs such as halo.vert + gradient.frag link, and would draw nothing
+  (halo writes no `ht_vLife`, so gradient's alpha is 0) if `expects` did not
+  refuse them.
+
+### Varyings
+
+Declared once per stage by the prelude: out in `prelude/vertex.glsl:4-10`,
+in in `prelude/fragment.glsl:3-8`; `ht_initVaryings()` zeroes all six
+(`vertex.glsl:12-19`) and every built-in vertex shader calls it first
+(`ribbon.vert:63`, `scatter.vert:35`, `drift.vert:41`, `halo.vert:21`). The
+loader's list of them is also in `varyingCheck`'s message
+(`ShaderSlot.cpp:101`).
+
+| Varying | Type, range, unit | ribbon.vert | scatter.vert | drift.vert | halo.vert |
+|---|---|---|---|---|---|
+| `ht_vLocal` | vec2; path x 0 newer end..1 older end, y -1..1 across; else quad -1..1 | `:99` | `:55` (corner) | `:78` (corner) | `:24` (corner) |
+| `ht_vAge` | float, ms | `:100` node age | `:56` node age | `:79` node age | `:25` **`ht_stillMs`**, not a node age |
+| `ht_vLife` | float, 1 to 0 over fade_ms | `:101` | `:57` | `:80` | not written (0) |
+| `ht_vSpeed` | float, px/ms | `:102` `length(vel)` at birth | `:58` same | `:81` the particle's own `v*0.001` | not written (0) |
+| `ht_vDist` | float, px from the segment start | `:103` | `:59` | `:82` | not written (0) |
+| `ht_vSeed` | float, 0..1 | `:104` per node | `:60` per **copy** | `:83` per **copy** | not written (0) |
+
+Fragment reads (all inside the six): `gradient.frag` vLocal.y `:30-31`, the
+other five through `ht_paletteT` `:36` (`helpers/palette.glsl:38-48`) and
+vLife `:39`; `dots.frag` vLocal `:40`, vAge+vSeed `:44`, palette `:45`, vLife
+`:48`; `pulse.frag` vLocal `:28`; `sizzle.frag` vLocal `:61`. Nothing reads a
+custom varying, and none exists.
+
+### What shaders get today
+
+- **Uniforms:** `ht_proj` (mat3), `ht_nowMs`, `ht_stillMs`, `ht_anchor`
+  (vec2), `ht_extentPx`, `fade_ms`, `start_ms`, `duration_ms`
+  (`prelude/common.glsl:10-20`); `ht_K` (int, instanced,
+  `prelude/instanced.glsl:13`). Both stages see all of them (`common.glsl` is
+  in the fragment prelude too, `ShaderSource.cpp:139-142`). Set per layer at
+  `LayerPassElement.cpp:288-297`. Declared params become `uniform float|int|
+  bool|vec2|vec4` (`ShaderSource.cpp:333`, set at `LayerPassElement.cpp:
+  299-312`). The allowed set is `preludeUniforms()` (`ShaderSource.cpp:
+  441-444`); any other active uniform fails the program (`ShaderSlot.cpp:
+  47-48`).
+- **Attributes (vertex only):** path, 14 at locations 0-13: prev (pos, bits),
+  p0 and p1 (pos, birth, vel, dist, bits), next (pos, bits)
+  (`prelude/path.glsl:6-19`); instanced, 5 at 0-4 (`instanced.glsl:7-11`);
+  quad, none (`ShaderSource.cpp:446-456`). Plus `gl_VertexID`,
+  `gl_InstanceID`. Shaders do not touch them directly, only through
+  `ht_prev()` etc.
+- **Buffers:** one VBO of 28-byte `SGpuNode` per preset (`TrailBuffer.hpp:
+  39-52`), `capacity + 2` nodes (front and back pad, `LayerPassElement.cpp:
+  45`), `glBufferSubData` on a generation change (`:123-141`). Path binds the
+  same VBO four times, shifted one node each, divisor 1 (`:82-92`);
+  instanced re-points five attributes at the first visible node with divisor
+  K (`:108-120`). **No uniform array, UBO, SSBO, texture or sampler exists**
+  (grep for `glTexImage`, `glGenTextures`, `UniformBlock`, `glBindBufferBase`,
+  `sampler2D`, `texelFetch` in `src/` and `hyprtail/`: no hits). Node data
+  reaches the vertex stage only, as per-instance attributes. The fragment
+  stage sees the six interpolated varyings, the uniforms above, and
+  `gl_FragCoord` (unused today).
+- **Max node count:** `capacity` 2..4096 (`Config.cpp:160-166`), default 64
+  (`Config.hpp:32`); spring size is always `capacity` once seeded
+  (`SPEC.md` 13.1). At 4096 the VBO is 4098 x 28 = 114,744 B. Path draws
+  `size()-1` instances (`LayerPassElement.cpp:257`); instanced draws at most
+  `visible x K` = 4096 x 64 = 262,144 (`SPEC.md:1076`). At most 4 layers
+  (`Preset.cpp:118-119`).
+- **A per-pixel loop over nodes in a fragment shader** has no data to read
+  today; it needs a new texture (RGBA32F, 1-2 texels per node, `texelFetch`)
+  or a UBO. GLES 3.0's guaranteed minima (spec, not in the repo; Hyprland
+  asks for 3.2 with a 3.0 fallback, `SPEC.md:958` citing `OpenGL.cpp:
+  199-220`) are 224 fragment uniform vectors and a 16 KB uniform block, so a
+  uniform array holds on the order of 100-200 nodes (one or two vec4 each) and
+  a UBO about 500-585, neither the 4096 cap; a texture holds all. Cost is arithmetic, not
+  measured: iterations per fragment = visible nodes N, times fragments in the
+  layer's draw (damage box x strip overdraw, since each path segment or
+  instanced quad is its own strip and a pixel under k strips runs the loop k
+  times). At roughly 10 ALU per iteration: N=64 (default) is about 640 ops per
+  fragment; N=512, 5k; N=4096, 41k. Over a 600x600 box (0.36 Mpx): 23 M, 184 M
+  and 1.5 G iterations per frame; over 1920x1080 (2.07 Mpx) at N=4096, 8.5 G
+  per frame. Only the visible newest nodes need looping (`visibleCount`,
+  `TrailBuffer.hpp`), so the practical N is `fade_ms` x insert rate, not
+  `capacity`; but the spring source keeps all `capacity` nodes visible while
+  moving. A spring chain also re-uploads every frame (`SpringChain.cpp:203`),
+  so the texture would too (4096 x 32 B = 128 KB).
+
+### Candidate varyings
+
+A varying added to both preludes and to `ht_initVaryings()` is declared and
+zeroed in every vertex shader that calls `ht_initVaryings()` (all four
+built-ins), so no vertex shader is forced to change to keep linking, and the
+matrix still passes. The brief's premise ("any varying a frag reads must be
+written by every vert, or the matrix fails") holds only for custom varyings
+outside the prelude (`SPEC.md:1238`), and per the control above this matrix
+would not catch those either. What a new varying forces is semantic: a vertex
+shader that does not write it leaves 0, which a fragment reading it
+mistakes for a value. It is additive, so no contract bump
+(`CONTRACT_VERSION`, `ShaderSource.hpp:57`). GLES 3.0 guarantees 15 varying
+vectors; the six use 7 components.
+
+| Candidate | Exists? | Cost to add / notes |
+|---|---|---|
+| age | Yes: `ht_vAge`, ms, written by all four vertex shaders (halo: stillMs) | Nothing. Linear between segment ends. |
+| arc length along the path | Yes: `ht_vDist`, px from the segment start. Ring: accumulates `prev.dist + hypot` (`TrailBuffer.cpp:22`), restarts at a break, is not rebased when old nodes are evicted; spring: recomputed from the tail every rebuild (`SpringChain.cpp:218-231`), so it changes each frame | Nothing for px along the polyline. A 0..1 position along the whole trail needs the total length: one new uniform (`common.glsl`, `preludeUniforms`, `LayerPassElement.cpp:288-297`), no vertex change. |
+| speed | Yes: `ht_vSpeed`, px/ms at birth, `|vel|` against the previous node (`TrailBuffer.cpp:17-21`), 0 at a segment start; drift writes the particle's own speed instead | Nothing. |
+| across-width coordinate | Yes for path: `ht_vLocal.y`, -1..1 (`ribbon.vert:99`). In px it is not available: the half-width (`ribbon.vert:92-93`) never leaves the vertex stage | One more float (`ht_vHalfWidthPx`): prelude both stages, `ht_initVaryings`, one write in `ribbon.vert`. Others stay 0. |
+| per-node hash | Partly: `ht_vSeed` is per node at the endpoints and interpolated, so across a ribbon segment it is a smooth blend of two hashes, not a constant. Instanced shaders overwrite it per copy (`scatter.vert:60`, `drift.vert:83`) | A constant per segment would be a `flat out` varying written the same on all four vertices (the `varyingCheck` regex already accepts `flat`, `ShaderSlot.cpp:84-85`). Same cost shape as above. GLES `flat` rules are from the spec, not checked in the repo. |
+
+### ribbon.vert with coincident nodes
+
+No `normalize()` appears anywhere under `hyprtail/` (grep). Every direction
+goes through `ht_dirBetween` (`helpers/ribbon.glsl:20-24`), which divides
+only when the length is above `HT_EPS` (1e-3, `:9`) and otherwise returns the
+fallback.
+
+- Coincident p0/p1 (`length < HT_EPS`): returns before any direction is
+  computed, all four vertices take the same branch (it depends on per-instance
+  attributes only), `gl_Position` is `ht_collapsedPosition()` (2,2,2,1,
+  outside the clip volume) and the varyings are already zeroed
+  (`ribbon.vert:63`, `:78-81`). Draws nothing.
+- Coincident prev/p0 or p1/next, and the trail ends (prev/next are copies of
+  the end node, `path.glsl:4`): `dirPrev`/`dirNext` fall back to the
+  segment's own `dir` (`ribbon.vert:83-85`).
+- `halfWidth` sums two unit directions that cancel on a full reversal; the
+  length is then 0 and `ht_dirBetween` returns its fallback (`:54`).
+  `ht_jointOffset` returns `nOut * hw` when `|m| < HT_EPS`
+  (`ribbon.glsl:34-35`) and clamps the miter divisor by `1/miter_limit`
+  (`:38`), `miter_limit` min 1 (`ribbon.vert:36`). `ht_life` divides by
+  `fade_ms`, min 1 (`ShaderSource.cpp:471`).
+- One edge: a length exactly equal to `HT_EPS` passes the `<` at `:78` but
+  gets the fallback `(1,0)` from `ht_dirBetween` (`>`); still a unit vector,
+  no NaN.
+
+So a zero-length tangent cannot reach a division, and the result for a
+stationary pointer is a collapsed, undrawn segment. Where coincident nodes
+come from: the ring with `min_spacing` 0 (allowed, `Config.cpp:157`; the gate
+is `>= min_spacing`, `main.cpp:316`, so every render inserts a node);
+`min_spacing` 2 (default) avoids it. The spring chain at rest: settled points
+snap onto their target (`SpringChain.cpp:100-103`), so the whole settled chain
+is one point and every ribbon segment collapses. Not run on a GPU.
+
+### Spring source against the "head spring, followers lerp" model
+
+Model: the head springs toward the pointer with its own spring constant,
+friction and offset; each later point lerps a fixed factor toward the one
+before it; no timestamps, no fade.
+
+- **Already covered:**
+  - Head spring: closed-form damped spring per axis, dt-based, via
+    `advanceSpring` (`SpringChain.cpp:27-33`, `:92-93`; the solve is in
+    `external/hyprutils/src/animation/Spring.cpp`, whose checkout version was
+    not checked here; `SPEC.md:898` cites v0.14.2). Spring constant =
+    `stiffness`, friction = `damping`, plus `mass` (`Source.cpp:19-24`,
+    `SPEC.md:1354-1356`), live (`SPEC.md:1359-1360`).
+  - Offset: `emit_from` / `emit_offset` shift the position handed to
+    `insert` (`main.cpp:287-294`), so the head target and the whole chain move
+    by it. It is a plugin-wide setting (`SPEC.md` 13.9), not a spring setting.
+  - Chain length is `capacity`; a ribbon, dots and glow layer can stack on the
+    chain (`SPEC.md:940-943`).
+- **Differs:**
+  - Followers are springs, not lerps: each point chases the already-advanced
+    point before it with the same curve (`SpringChain.cpp:87`, `:107`). One
+    `SSpringCurve` for the whole chain (`SpringChain.hpp`, `m_curve`), so the
+    head cannot have different constants from the followers.
+  - Births: a point has a synthetic birth `activeMs - k * age_step_ms`
+    (`SpringChain.cpp:229`), because visibility, damage and `isSettled` are
+    all built on birth times and `fade_ms` (`TrailBuffer.hpp`, `visibleCountOf`).
+    `age_step_ms` 0 (range 0..1000, `Source.cpp:22`) removes the taper but not
+    the fade.
+- **New if wanted:**
+  - A lerp follower: a `follow` setting or a third source kind. The tick loop
+    (`SpringChain.cpp:88-107`) swaps `advanceAxis` for `p += (target - p) * f`
+    for k >= 1; a fixed per-frame factor is frame-rate dependent, so a dt-based
+    `1 - exp(-dt/tau)` is the safe form. Separate head constants: a second
+    curve and four settings in `Source.cpp`. Small, no shader or GL change.
+  - No fade: not supported. `fade_ms` is 1..60000 (`ShaderSource.cpp:471`),
+    and `m_activeMs` freezes when the chain settles (`SpringChain.cpp:110-113`),
+    so the chain disappears at most 60 s after it stops; the settled chain is
+    also a single point for ribbons. A node set that never expires needs a
+    flag on `ISource` read by `visibleCount`, `visibleBounds` and
+    `isSettled` and by `ht_life`'s callers: a cross-cutting change.
+  - **Several layers with different spring parameters: no.** A preset has one
+    source (`LayerPassElement.hpp:84`) and one `CNodeBuffer` (`:86`); spring
+    settings are `source:<name>` keys of the preset, not layer params, by
+    design (`SPEC.md:1357-1358`). Layers can differ in shape and color, not
+    in motion. Per-layer motion would mean a source and a node buffer per
+    layer (or per distinct parameter set): its own tick, upload generation
+    (`LayerPassElement.cpp:123-141`), `needsContinuousUpload`, and a manifest
+    key to bind a layer to a source. Damage is already per layer
+    (`SPEC.md:945-947`), which helps. Medium-sized, touches `SPreset`,
+    `drawLayer`, `main.cpp`'s tick and sample, and `Preset.cpp`.
+
+## Pairing gate and the demo layers (compiled and unit-tested; nothing run in a compositor)
+
+### What the loader does on an `expects` mismatch
+
+- **It refuses the pair; it does not warn or draw it.** `expectsMismatch`
+  (`ShaderSource.cpp:413-422`) is called first thing in `programInfo`
+  (`ShaderSlot.cpp:211-215`); its text becomes the error of
+  `compileAndActivate` (`:299-302`), before any GL call. `prepare()`
+  (`:338-363`) then reports it (key `shader:<layer>`, `WARN` for a pair with
+  a user file, `ERR` for a built-in pair) and either keeps the last working
+  program of the same files, or destroys the active one and falls back to the
+  slot's built-in pair (`:366-374`). If that built-in pair fails too,
+  `prepare()` returns an error and `main.cpp:266-268` disables the layer.
+- **The fallback pair is not always safe.** A stage given as a path falls back
+  to `shaders/ribbon.vert` / `shaders/gradient.frag`; a stage given as
+  `prefab:<name>` falls back to that prefab (`Preset.cpp:231-235`, `:260`,
+  `:263`). So a user vertex shader paired with `prefab:dots.frag` falls back
+  to `ribbon.vert` + `dots.frag`, which `expects` refuses again, and the
+  layer is disabled with an `ERR`. Read from the code, not run.
+- **Nothing is checked when the preset is read**: `resolveStage` only checks
+  the files exist. The refusal appears when the layer's program is first
+  prepared, in a GL context.
+
+### What each clause protects
+
+- `gradient.frag:3` `expects path`: reads `ht_vLocal.y` as the position
+  across a strip (`:30-32`) and `ht_vLife` (`:39`). `halo.vert` writes only
+  `ht_vLocal` and `ht_vAge` (`:24-25`), so with it alpha is 0 and nothing
+  draws; with instanced geometry `ht_vLocal` is a quad coordinate and the
+  look is a clipped band.
+- `dots.frag:3` `expects quad,instanced`: `shapeDistance(ht_vLocal)`
+  (`:31-41`) needs quad coordinates, -1..1 on both axes. On a strip,
+  `ht_vLocal.x` is 0 or 1 and the shape is a sliver.
+- `pulse.frag:3`, `sizzle.frag:3` `expects quad`: they take
+  `ht_vLocal * ht_extentPx` as px from the pointer (`pulse.frag:28`,
+  `sizzle.frag:61`) and time from `ht_stillMs` with `start_ms` /
+  `duration_ms` (`pulse.frag:20-21`, `sizzle.frag:48`). That holds only for the
+  square around `ht_anchor` (`halo.vert:8-10,23-26`, `quad.glsl`), and a quad
+  layer is visible and damaged by those parameters and by the pointer, not by
+  node ages and node bounds (`SPEC.md:1105-1110`). On other geometry the
+  effect would be misplaced and its damage box wrong.
+
+### Matrix test, now with the gate
+
+`testShaderLinkMatrix` (`tests/unit/unit.cpp`) covers the shipped shaders
+(embedded, `shader::builtin()`) and `demo/hyprtail/shaders/` (loaded from disk
+with `shader::load`, as `CShaderSlot::reload` does), links every vertex shader
+with every fragment shader, evaluates the real `expectsMismatch` for each pair
+and prints the table. Link failures fail the test; an `expects` refusal is
+only a table entry. `testDemoPresets` checks each demo preset: header
+comment, contract, layer names (unique across the demo presets), shader
+references resolved as a file preset does (`prefab:<name>` embedded, anything
+else under `demo/hyprtail/`), `expectsMismatch`, and every parameter name,
+type and range. Not covered by any unit test, so checked once by a scratch
+script: a parameter declared in both stages with different declarations
+(`ShaderSlot.cpp:217-228`) and padding names (`:234-245`); none found. The
+table, 6 vertex x 7 fragment = 42 pairs: 17 ok, 25 refused, 0 link failures.
+
+### Demo layers (`demo/hyprtail/`, not embedded, not in any Makefile list)
+
+All path topology, all contract 2 unchanged (no new varying, uniform,
+texture or prelude change). Shader mains are written from scratch; they
+include only the contract's own `helpers/` (ribbon.glsl joins and the
+degenerate-segment guard, fade.glsl, noise.glsl `ht_hash2`).
+
+- **Why every new fragment shader is `expects path`:** each reads
+  `ht_vLocal.y` as across-width and/or `ht_vDist` as arc length, which mean
+  that only for a connected strip. Dropping `expects` would let them pair with
+  quad and instanced geometry, where they draw bands. So the new shaders pair
+  with the three path vertex shaders (ribbon, comet, taper) and nothing else:
+  12 of 42 pairs; the rest of the table is the shipped quad and instanced
+  group.
+- **Head taper is a time ramp.** The contract has no distance from the head:
+  `ht_vDist` counts from the other end (`TrailBuffer.cpp:22`). `taper.vert`
+  ramps the width over `head_ms` of a node's age, which is sharp while moving
+  and relaxes once the newest node ages.
+- **Helix and lattice are drawn per pixel in strip space** from `ht_vDist`
+  (path px) and `ht_vLocal.y` (-1..1 of the local half-width), so they do not
+  alias with node spacing. The strand distance uses the screen-space
+  derivatives of those two varyings, which are per device pixel: `strand_px`
+  is in device pixels. The lattice cannot see the strip's px width, so
+  `cell_px` and `rows` are set together by the preset.
+- **Sideways offset** of `taper.vert` is the path shifted along the miter
+  normal by `offset` (one `ht_jointOffset` call; it is linear in its width
+  argument). Its padding uses the top of the range (24), since padding
+  expressions have no absolute value.
+
+### Contract requests (not made; each with what it would unlock)
+
+1. **Strip half-width in px as a varying** (`ht_vHalfWidthPx`): regular
+   lattice cells whatever the taper (`lattice.frag`), px-exact amplitude and
+   rungs (`strands.frag`), and a minimum-coverage correction so a strip thinner
+   than a pixel fades instead of shimmering (`demo-thread`, the rails of
+   `demo-tether`).
+2. **Distance from the head** (arc length from the newest node, or the trail's
+   total length as a uniform): a spatial head taper in `taper.vert` and a
+   comet whose length does not depend on pointer speed (`comet.vert`,
+   `demo-comet`, `demo-comet-helix`).
+3. **Global position of the fragment as a varying** (with `ht_anchor`, which
+   fragment shaders can already read): cells or strands that brighten near the
+   pointer (`lattice.frag`), a head glow (`softline.frag`).
+4. **Output scale as a uniform:** hairlines of the same logical thickness on
+   1x and 2x outputs (`strands.frag`, `softline.frag` edges).
+5. **`path smooth N`** (`SPEC.md:1038`, not built): smooth curves between
+   sparse nodes for `demo-thread`, `demo-comet`, the rails of `demo-tether`;
+   today corners are miter joins.
+6. **Per-layer source or per-layer spring settings** (`SPEC.md:1357-1358`
+   keeps them per preset): rails that lag differently in `demo-tether`.
+
+### Previewing
+
+The nested instance reads its hyprtail root from `$XDG_CONFIG_HOME/hypr/hyprtail`
+and `run_dev.sh` sets `XDG_CONFIG_HOME=dev_env`, so the root is
+`dev_env/hypr/hyprtail`. Link `demo/hyprtail` there (untracked, remove after);
+shipped shaders are named `prefab:` in the presets, so nothing else is
+needed. See the report for the commands.
+
 ## Open questions
 
 - [x] Hyprland commit to pin: `efb5099` (v0.56.2, host package)

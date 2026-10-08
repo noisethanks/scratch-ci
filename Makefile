@@ -191,9 +191,11 @@ unload:
 	hyprctl plugin unload $(CURDIR)/$(OUTPUT)
 
 # Unit tests for the Hyprland-free parts (parameter pragmas, padding
-# expressions, shader preprocessing, node ring), then the preprocessed
-# built-in shaders through glslangValidator (GLSL ES 3.00 syntax and
-# semantics, no GPU). No compositor involved.
+# expressions, shader preprocessing, node ring). The unit binary also links
+# every hyprtail/shaders/*.vert with every *.frag through glslangValidator
+# (testShaderLinkMatrix) and leaves the preprocessed shaders in
+# $(UNIT_OUT)/glsl, each of which is then run through glslangValidator alone
+# here (GLSL ES 3.00 syntax and semantics, no GPU). No compositor involved.
 # `make test-unit SANITIZE=1` builds with AddressSanitizer and UBSan.
 UNIT_OUT := out/unit
 UNIT_FLAGS := $(if $(filter 1,$(SANITIZE)),-O0 -fsanitize=address -fsanitize=undefined,)
@@ -209,11 +211,7 @@ test-unit:
 	@command -v glslangValidator >/dev/null || { echo "glslangValidator not found, skipping the GLSL check" >&2; exit 0; }; \
 	status=0; for f in $(UNIT_OUT)/glsl/*; do \
 		if glslangValidator "$$f" >$$f.log 2>&1; then echo "glsl ok: $$f"; else echo "glsl FAILED: $$f" >&2; cat $$f.log >&2; status=1; fi; \
-	done; \
-	for v in $(UNIT_OUT)/glsl/*.vert; do for fr in $(UNIT_OUT)/glsl/*.frag; do \
-		if glslangValidator -l "$$v" "$$fr" >$(UNIT_OUT)/glsl/link.log 2>&1; then echo "glsl link ok: $$(basename $$v) + $$(basename $$fr)"; \
-		else echo "glsl link FAILED: $$v + $$fr" >&2; cat $(UNIT_OUT)/glsl/link.log >&2; status=1; fi; \
-	done; done; exit $$status
+	done; exit $$status
 
 # Compile-only check of src/compat.hpp against the selected Hyprland headers
 # (`make test-compat`, `make DEV=1 test-compat [HYPRLAND_DIR=...]`): every

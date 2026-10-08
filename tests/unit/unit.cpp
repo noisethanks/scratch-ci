@@ -16,8 +16,10 @@
 #include <map>
 #include <optional>
 #include <regex>
+#include <set>
 #include <sstream>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include "../../src/ConfigParse.hpp"
@@ -1048,6 +1050,399 @@ static void testEmitConfig() {
     CHECK(resolveEmitOffset(500, 0, SPair{5.0, -7.0}) == SPair({5.0, -7.0}));
 }
 
+// Runs argv with stdout and stderr merged. Returns the exit status (127 if the
+// program can't be started) and everything it printed.
+static std::pair<int, std::string> runCapture(const std::vector<std::string>& argv) {
+    int fds[2];
+    if (pipe(fds) != 0)
+        return {127, "pipe failed"};
+
+    const pid_t pid = fork();
+    if (pid < 0) {
+        close(fds[0]);
+        close(fds[1]);
+        return {127, "fork failed"};
+    }
+    if (pid == 0) {
+        dup2(fds[1], STDOUT_FILENO);
+        dup2(fds[1], STDERR_FILENO);
+        close(fds[0]);
+        close(fds[1]);
+        std::vector<char*> args;
+        for (const auto& a : argv)
+            args.push_back(const_cast<char*>(a.c_str()));
+        args.push_back(nullptr);
+        execvp(args[0], args.data());
+        _exit(127);
+    }
+
+    close(fds[1]);
+    std::string out;
+    char        buf[4096];
+    ssize_t     n = 0;
+    while ((n = read(fds[0], buf, sizeof(buf))) > 0)
+        out.append(buf, static_cast<size_t>(n));
+    close(fds[0]);
+
+    int status = 0;
+    waitpid(pid, &status, 0);
+    return {WIFEXITED(status) ? WEXITSTATUS(status) : 128, out};
+}
+
+namespace {
+    // A shader as the loader assembles it, written to a file whose extension
+    // tells glslangValidator the stage.
+    struct SAssembled {
+        std::string     label; // "ribbon.vert", "demo/comet.vert"
+        std::string     file;
+        shader::SSource src;
+    };
+
+    // The shipped shaders are embedded (shader::builtin()); the demo ones
+    // (demo/hyprtail/, same layout as hyprtail/) are files, loaded the way a
+    // user's own shader is.
+    constexpr const char* SHIPPED_SHADERS = "hyprtail/shaders";
+    constexpr const char* DEMO_SHADERS    = "demo/hyprtail/shaders";
+
+    // File names in dir with the given extension, sorted (run from the repo root).
+    std::vector<std::string> globShaders(const char* dir, std::string_view ext) {
+        std::vector<std::string> names;
+        if (!std::filesystem::is_directory(dir))
+            return names;
+        for (const auto& e : std::filesystem::directory_iterator(dir)) {
+            if (e.is_regular_file() && e.path().extension() == ext)
+                names.push_back(e.path().filename().string());
+        }
+        std::ranges::sort(names);
+        return names;
+    }
+
+    // The validator's log for a failed pair, indented, with "<source-id>:<line>"
+    // mapped back to file:line through the stage the log is currently about
+    // (glslang prints each file's name before its messages).
+    std::string readableLog(const std::string& log, const SAssembled& v, const SAssembled& f) {
+        const shader::SSource* current = nullptr;
+        std::string            out;
+        std::istringstream     in{log};
+        std::string            line;
+        while (std::getline(in, line)) {
+            if (line.empty())
+                continue;
+            if (line == v.file || line == f.file) {
+                current = line == v.file ? &v.src : &f.src;
+                continue;
+            }
+            out += "      " + (current ? shader::mapLog(line, *current) : line) + "\n";
+        }
+        return out;
+    }
+
+    enum class ePair : uint8_t {
+        OK,           // links, and the loader accepts the pairing
+        EXPECTS,      // links, but the fragment shader's `expects` refuses the vertex shader's topology
+        LINK_FAILED,  // glslangValidator -l fails
+    };
+
+    std::string expectsText(const shader::SSource& frag) {
+        std::string out;
+        for (const auto k : frag.expects)
+            out += (out.empty() ? "" : ",") + std::string{shader::topologyName(k)};
+        return out.empty() ? "any" : out;
+    }
+
+    void printPairTable(const std::vector<SAssembled>& verts, const std::vector<SAssembled>& frags, const std::vector<ePair>& result) {
+        std::vector<std::string> rowLabels;
+        size_t                   width = 0;
+        for (const auto& v : verts) {
+            rowLabels.push_back(std::format("{} ({})", v.label, shader::topologyText(v.src.topology.value_or(shader::eTopology::PATH), v.src.instances)));
+            width = std::max(width, rowLabels.back().size());
+        }
+
+        std::cout << "shader pairs: ok = links and passes expects, expects = links but the loader refuses the pair (not a failure), LINK = does not link\n";
+        for (size_t j = 0; j < frags.size(); ++j)
+            std::cout << std::format("  F{:<2} {} (expects {})\n", j + 1, frags[j].label, expectsText(frags[j].src));
+        std::cout << std::format("  {:<{}}", "", width);
+        for (size_t j = 0; j < frags.size(); ++j)
+            std::cout << std::format(" {:>7}", std::format("F{}", j + 1));
+        std::cout << "\n";
+        for (size_t i = 0; i < verts.size(); ++i) {
+            std::cout << std::format("  {:<{}}", rowLabels[i], width);
+            for (size_t j = 0; j < frags.size(); ++j) {
+                const auto r = result[i * frags.size() + j];
+                std::cout << std::format(" {:>7}", r == ePair::OK ? "ok" : r == ePair::EXPECTS ? "expects" : "LINK");
+            }
+            std::cout << "\n";
+        }
+    }
+}
+
+// Every vertex shader linked with every fragment shader, shipped
+// (hyprtail/shaders) and demo (demo/hyprtail/shaders) alike, found by glob so
+// a new layer joins the matrix without editing this test. Each is assembled by
+// the loader's own preprocessor (the shipped ones from the embedded table as
+// CShaderSlot::builtin() does, the demo ones from disk as CShaderSlot::reload()
+// does), then linked by glslangValidator -l: the dialect is the shader's own
+// `#version 300 es`, as for the single-file checks `make test-unit` runs
+// afterwards on the files this leaves in $OUT_DIR. No skip list: a pair that
+// doesn't link fails.
+//
+// For every pair the loader's own expectsMismatch() is also evaluated and the
+// whole matrix printed. An `expects` refusal is reported in the table and is
+// not a failure: it is the loader declining a pairing that links.
+//
+// Not covered, because it lives in ShaderSlot.cpp and needs GL: the rest of
+// the loader's pair checks (param consistency, padding names) and the
+// driver's own link.
+static void testShaderLinkMatrix() {
+    namespace fs = std::filesystem;
+    if (!fs::is_directory(SHIPPED_SHADERS))
+        return;
+
+    const char*    outDir = std::getenv("OUT_DIR");
+    const fs::path dir    = outDir ? fs::path{outDir} : fs::temp_directory_path() / std::format("hyprtail-glsl-{}", getpid());
+    fs::create_directories(dir);
+
+    const auto assemble = [&dir](const std::string& label, std::expected<shader::SSource, std::string> src, const std::string& stem) -> std::optional<SAssembled> {
+        if (!src) {
+            std::cerr << std::format("{} doesn't preprocess: {}\n", label, src.error());
+            return std::nullopt;
+        }
+        const auto file = (dir / stem).string();
+        std::ofstream(file) << src->text;
+        return SAssembled{.label = label, .file = file, .src = std::move(*src)};
+    };
+
+    std::vector<SAssembled> vertShaders, fragShaders;
+    for (const auto& [ext, stage, out] : {std::tuple{".vert", shader::eStage::VERTEX, &vertShaders}, std::tuple{".frag", shader::eStage::FRAGMENT, &fragShaders}}) {
+        for (const auto& file : globShaders(SHIPPED_SHADERS, ext)) {
+            const auto key  = "shaders/" + file;
+            const auto text = shader::builtin(key);
+            if (text.empty()) {
+                std::cerr << std::format("hyprtail/{} exists but isn't in the embedded table (shader::builtin(), src/ShaderSource.cpp)\n", key);
+                ++s_failed;
+                continue;
+            }
+            if (auto a = assemble(file, shader::preprocess(text, key, {}, stage), file))
+                out->push_back(std::move(*a));
+            else
+                ++s_failed;
+        }
+        for (const auto& file : globShaders(DEMO_SHADERS, ext)) {
+            if (auto a = assemble("demo/" + file, shader::load(fs::path{DEMO_SHADERS} / file, stage), "demo_" + file))
+                out->push_back(std::move(*a));
+            else
+                ++s_failed;
+        }
+    }
+    CHECK(!vertShaders.empty() && !fragShaders.empty());
+
+    if (runCapture({"glslangValidator", "--version"}).first == 127) {
+        std::cerr << "glslangValidator not found, skipping the GLSL link matrix\n";
+        if (!outDir)
+            fs::remove_all(dir);
+        return;
+    }
+
+    // Control, reported and not asserted: a fragment input the vertex stage
+    // doesn't declare is the failure class the driver's link rejects (see
+    // varyingCheck, ShaderSlot.cpp). If glslangValidator -l accepts it, this
+    // matrix can't see that class, and says so.
+    {
+        const auto cv = assemble("canary.vert", pp("#version 300 es\n#pragma hyprtail contract 2\n#pragma hyprtail topology quad\nvoid main() { ht_initVaryings(); gl_Position = ht_toClip(ht_anchor); }\n",
+                                                   shader::eStage::VERTEX),
+                                 "canary.vert");
+        const auto cf = assemble("canary.frag", pp("#version 300 es\n#pragma hyprtail contract 2\nin float ht_notWritten;\nvoid main() { ht_fragColor = vec4(ht_notWritten); }\n", shader::eStage::FRAGMENT),
+                                 "canary.frag");
+        CHECK(cv && cf);
+        if (cv && cf) {
+            const auto [status, log] = runCapture({"glslangValidator", "-l", cv->file, cf->file});
+            if (status == 0)
+                std::cerr << "note: glslangValidator -l links a fragment input the vertex shader never declares (control pair canary.vert + canary.frag): this matrix "
+                             "cannot detect a fragment shader reading a varying that a vertex shader lacks\n";
+            fs::remove(cv->file);
+            fs::remove(cf->file);
+        }
+    }
+
+    std::vector<ePair> result;
+    size_t             refused = 0, failed = 0;
+    for (const auto& v : vertShaders) {
+        for (const auto& f : fragShaders) {
+            const auto [status, log] = runCapture({"glslangValidator", "-l", v.file, f.file});
+            if (status != 0) {
+                ++s_failed;
+                ++failed;
+                result.push_back(ePair::LINK_FAILED);
+                std::cerr << std::format("GLSL link FAILED: {} + {}\n{}", v.label, f.label, readableLog(log, v, f));
+                continue;
+            }
+            ++s_passed;
+            if (shader::expectsMismatch(v.src, f.src)) {
+                ++refused;
+                result.push_back(ePair::EXPECTS);
+            } else
+                result.push_back(ePair::OK);
+        }
+    }
+
+    printPairTable(vertShaders, fragShaders, result);
+    const size_t pairs = vertShaders.size() * fragShaders.size();
+    std::cout << std::format("{} vertex x {} fragment = {} pairs: {} ok, {} refused by expects, {} failed to link\n", vertShaders.size(), fragShaders.size(), pairs, pairs - refused - failed,
+                             refused, failed);
+
+    if (!outDir)
+        fs::remove_all(dir);
+}
+
+// The demo presets (demo/hyprtail/presets, not embedded and not shipped): each
+// has a header comment, names layers only from its own `layers`, resolves
+// every shader the way a file preset does (prefab:<name> is the embedded
+// shaders/<name>, anything else a path under demo/hyprtail), pairs stages
+// the loader accepts (expectsMismatch), and sets only parameters that its
+// program declares, with values of the right type inside the declared range.
+// The same rules as the shipped manifests in testPresetManifests, without its
+// embedded-copy comparison.
+static void testDemoPresets() {
+    namespace fs = std::filesystem;
+    const fs::path root = "demo/hyprtail";
+    if (!fs::is_directory(root / "presets"))
+        return;
+
+    const auto trim = [](std::string s) {
+        const auto ws = " \t\r";
+        s.erase(0, s.find_first_not_of(ws));
+        s.erase(s.find_last_not_of(ws) + 1);
+        return s;
+    };
+    const auto resolve = [&root](const std::string& value, shader::eStage stage) -> std::expected<shader::SSource, std::string> {
+        if (value.starts_with("prefab:")) {
+            const auto key = "shaders/" + value.substr(7);
+            if (shader::builtin(key).empty())
+                return std::unexpected(std::format("{} isn't a built-in shader", value));
+            return shader::preprocess(shader::builtin(key), key, {}, stage);
+        }
+        return shader::load(root / value, stage);
+    };
+
+    std::set<std::string> allLayers; // layer names are unique across the demo presets
+    int                   manifests = 0;
+    for (const auto& entry : fs::directory_iterator(root / "presets")) {
+        if (entry.path().extension() != ".conf")
+            continue;
+        ++manifests;
+        const auto name = entry.path().filename().string();
+        const auto fail = [&](const std::string& why) {
+            std::cerr << std::format("demo preset {}: {}\n", name, why);
+            CHECK(false);
+        };
+
+        std::map<std::string, std::map<std::string, std::string>> layers; // layer -> key -> value
+        std::string                                               contract, layerList, kind = std::string{source::DEFAULT_KIND};
+        std::ifstream                                             in(entry.path());
+        std::string                                               line;
+        bool                                                      header = false, first = true;
+        while (std::getline(in, line)) {
+            if (first && !trim(line).empty()) {
+                header = trim(line).starts_with('#');
+                first  = false;
+            }
+            line          = trim(line.substr(0, line.find('#')));
+            const auto eq = line.find('=');
+            if (eq == std::string::npos)
+                continue;
+            const auto key = trim(line.substr(0, eq)), value = trim(line.substr(eq + 1));
+            if (const auto colon = key.find(':'); colon != std::string::npos)
+                layers[trim(key.substr(0, colon))][trim(key.substr(colon + 1))] = value;
+            else if (key == "contract")
+                contract = value;
+            else if (key == "layers")
+                layerList = value;
+            else if (key == "source")
+                kind = value;
+            else if (key != "description")
+                fail(std::format("unknown key \"{}\"", key));
+        }
+        if (!header)
+            fail("must start with a header comment");
+        if (contract != std::to_string(shader::CONTRACT_VERSION))
+            fail("missing or wrong contract");
+        if (!source::known(kind)) {
+            fail(std::format("unknown source \"{}\"", kind));
+            continue;
+        }
+
+        std::vector<std::string> names;
+        std::stringstream        ls(layerList);
+        for (std::string l; std::getline(ls, l, ',');)
+            names.push_back(trim(l));
+        if (names.empty() || names.size() > 4)
+            fail("needs 1 to 4 layers");
+
+        for (const auto& [layer, keys] : layers) {
+            if (layer == source::KEY_PREFIX) {
+                const auto& decls = source::decls(kind);
+                for (const auto& [key, text] : keys) {
+                    const auto decl = std::ranges::find_if(decls, [&](const auto& d) { return d.name == key; });
+                    if (decl == decls.end()) {
+                        fail(std::format("\"{}\" isn't a setting of source {}", key, kind));
+                        continue;
+                    }
+                    auto v = params::parseValue(decl->type, text);
+                    if (v)
+                        if (auto r = params::checkRange(*decl, *v); !r)
+                            v = std::unexpected(r.error());
+                    if (!v)
+                        fail(std::format("source:{} = {}: {}", key, text, v.error()));
+                }
+            } else if (std::ranges::find(names, layer) == names.end())
+                fail(std::format("\"{}:...\" keys given, but \"{}\" isn't in layers", layer, layer));
+        }
+
+        for (const auto& layer : names) {
+            if (!allLayers.insert(layer).second)
+                fail(std::format("layer name \"{}\" is also used by another demo preset", layer));
+            const auto it = layers.find(layer);
+            if (it == layers.end() || !it->second.contains("vertex") || !it->second.contains("fragment")) {
+                fail(std::format("layer {} needs vertex and fragment", layer));
+                continue;
+            }
+            const auto& keys = it->second;
+            const auto  vert = resolve(keys.at("vertex"), shader::eStage::VERTEX);
+            const auto  frag = resolve(keys.at("fragment"), shader::eStage::FRAGMENT);
+            if (!vert || !frag) {
+                fail(std::format("layer {}: {}", layer, !vert ? vert.error() : frag.error()));
+                continue;
+            }
+            if (const auto mismatch = shader::expectsMismatch(*vert, *frag))
+                fail(std::format("layer {}: {}", layer, *mismatch));
+
+            std::vector<params::SDecl> decls;
+            for (const auto& r : shader::reservedParams())
+                decls.push_back(r.decl);
+            for (const auto* src : {&*vert, &*frag})
+                for (const auto& p : src->params)
+                    decls.push_back(p.decl);
+
+            for (const auto& [key, text] : keys) {
+                if (key == "vertex" || key == "fragment")
+                    continue;
+                const auto decl = std::ranges::find_if(decls, [&](const auto& d) { return d.name == key; });
+                if (decl == decls.end()) {
+                    fail(std::format("layer {}: \"{}\" isn't a parameter of {} + {}", layer, key, keys.at("vertex"), keys.at("fragment")));
+                    continue;
+                }
+                auto v = params::parseValue(decl->type, text);
+                if (v)
+                    if (auto r = params::checkRange(*decl, *v); !r)
+                        v = std::unexpected(r.error());
+                if (!v)
+                    fail(std::format("layer {}: {} = {}: {}", layer, key, text, v.error()));
+            }
+        }
+    }
+    CHECK(manifests >= 1);
+}
+
 // A test that throws aborts the run, which is the failure signal.
 // NOLINTNEXTLINE(bugprone-exception-escape)
 int main() {
@@ -1057,25 +1452,14 @@ int main() {
     testParams();
     testShaderSource();
     testPresetManifests();
+    testDemoPresets();
     testCrashGuard();
     testPointerGate();
     testRing();
 
-    // Preprocessed built-ins for the GLSL validator.
-    if (const char* dir = std::getenv("OUT_DIR")) {
-        std::filesystem::create_directories(dir);
-        const std::pair<const char*, shader::eStage> builtins[] = {
-            {"shaders/ribbon.vert", shader::eStage::VERTEX},  {"shaders/scatter.vert", shader::eStage::VERTEX},    {"shaders/drift.vert", shader::eStage::VERTEX},
-            {"shaders/halo.vert", shader::eStage::VERTEX},    {"shaders/gradient.frag", shader::eStage::FRAGMENT}, {"shaders/dots.frag", shader::eStage::FRAGMENT},
-            {"shaders/pulse.frag", shader::eStage::FRAGMENT}, {"shaders/sizzle.frag", shader::eStage::FRAGMENT},
-        };
-        for (const auto& [name, stage] : builtins) {
-            auto src = shader::preprocess(shader::builtin(name), name, {}, stage);
-            if (!src)
-                continue;
-            std::ofstream(std::filesystem::path{dir} / std::filesystem::path{name}.filename()) << src->text;
-        }
-    }
+    // Also leaves the assembled built-ins in $OUT_DIR for the single-file
+    // validator pass in the Makefile.
+    testShaderLinkMatrix();
 
     std::cout << std::format("unit: {} passed, {} failed\n", s_passed, s_failed);
     return s_failed ? 1 : 0;
