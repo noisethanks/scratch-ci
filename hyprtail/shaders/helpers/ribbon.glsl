@@ -1,4 +1,4 @@
-// hyprtail prefab: ribbon geometry helpers for trail vertex shaders.
+// hyprtail builtin: ribbon geometry helpers for trail vertex shaders.
 //
 //   #include "helpers/ribbon.glsl"
 //

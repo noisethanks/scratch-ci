@@ -1,4 +1,4 @@
-// hyprtail prefab: signed-distance helpers for drawing shapes in a fragment
+// hyprtail builtin: signed-distance helpers for drawing shapes in a fragment
 // shader (the idle/presence slot, or anything else quad-based).
 //
 //   #include "helpers/sdf.glsl"

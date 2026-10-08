@@ -20,11 +20,11 @@
 //   source      = pointer | spring            optional, at most once, default pointer
 //
 //   source:<name>    = <value>                a setting of the source (Source.hpp)
-//   <layer>:vertex   = a shader path, e.g. shaders/taper.vert (or prefab:taper.vert)
-//   <layer>:fragment = a shader path, e.g. shaders/gradient.frag (or prefab:gradient.frag)
+//   <layer>:vertex   = a shader path, e.g. shaders/taper.vert (or builtin:taper.vert)
+//   <layer>:fragment = a shader path, e.g. shaders/gradient.frag (or builtin:gradient.frag)
 //   <layer>:<name>   = <value>                a parameter default
 //
-// Two namespaces, no shadowing. A preset is "prefab:<name>", an embedded
+// Two namespaces, no shadowing. A preset is "builtin:<name>", an embedded
 // built-in, or the path of a .conf file with its extension, e.g.
 // "presets/ink.conf" (cfg::resolveShaderPath(): relative ones against
 // <hyprtail root>, cfg::hyprtailRoot(): $XDG_CONFIG_HOME/hypr/hyprtail,
@@ -34,7 +34,7 @@
 // preset names them: in an embedded preset they are looked up in the
 // embedded shader table by that string and never touch the disk; in a file
 // preset they are files, and a missing one is a warning (load() below).
-// "prefab:<name>" in a file preset is the embedded "shaders/<name>".
+// "builtin:<name>" in a file preset is the embedded "shaders/<name>".
 //
 // The source is the one thing every layer of a preset draws from, so it is
 // declared once, by the preset, and its settings live under the reserved
@@ -77,11 +77,11 @@ namespace hyprtail::preset {
         bool                               operator==(const SResolved&) const = default;
     };
 
-    // Resolves `name`: "prefab:<name>" or the path of a .conf file (see
-    // above). Any failure (unknown prefab, a bare name or other value that
+    // Resolves `name`: "builtin:<name>" or the path of a .conf file (see
+    // above). Any failure (unknown builtin, a bare name or other value that
     // isn't a .conf path, no such file, parse error, an unrecognized shader
     // reference, an unresolvable path) is reported (diag, "trail:<name>")
-    // and falls back to the embedded "prefab:ink" manifest, which is
+    // and falls back to the embedded "builtin:ink" manifest, which is
     // guaranteed to parse -- it ships with the plugin.
     //
     // One exception: a file preset that parses but names shader files that

@@ -275,7 +275,7 @@ this file states the decision and marks what's still a placeholder.
   `ht_life(age, fade_ms)` (`helpers/fade.glsl`, linear) per node and passes
   it as the `ht_vLife` varying; the fragment shader applies it to alpha. The
   duration is the reserved `fade_ms` layer parameter (§13.4), 420 ms in
-  `prefab:ink`.
+  `builtin:ink`.
 
 ## 5. Shader extensibility contract
 
@@ -287,7 +287,7 @@ this file states the decision and marks what's still a placeholder.
 > has `ht_startsSegment` (nodes carry `segmentStart`). Still true: separate
 > `.vert`/`.frag` paths, the contract check (now against the prelude and the
 > program's own params), the fallback policy, the include preprocessor and
-> prefabs, and color management (now for every `color` param).
+> builtins, and color management (now for every `color` param).
 
 - Shader authors may supply custom vertex and/or fragment shaders.
 - **Shader files:** standalone GLSL ES 3.00 `.vert`/`.frag` files, laid out
@@ -324,13 +324,13 @@ this file states the decision and marks what's still a placeholder.
   immutable); any other path is relative to the including file (absolute and
   `~/` also work). The bare `helpers/` prefix is reserved for the embedded
   library: a user's own copy of a helper is included as
-  `"./helpers/<name>"`. (Same rule as `prefab:` in §13.7: prefixed =
+  `"./helpers/<name>"`. (Same rule as `builtin:` in §13.7: prefixed =
   embedded, otherwise your own file.) Each file is included at most once,
   cycles are errors, depth is limited to 16, included files must not
   contain `#version`. Built-in shaders may only include `helpers/` built-ins.
   Every inclusion is wrapped in
   `#line <n> <source-id>`, so GLSL errors are reported as `file:line`.
-  Include prefabs after the `precision` statement (fragment shaders have no
+  Include builtins after the `precision` statement (fragment shaders have no
   default float precision).
 - **Helper library:** `helpers/ribbon.glsl` (`ht_startsSegment`,
   `ht_collapsedPosition`, `ht_dirBetween`, `ht_jointOffset`, `HT_EPS`) and
@@ -561,7 +561,7 @@ this file states the decision and marks what's still a placeholder.
     `cursor:invisible`), drawing around it defeats the hide. This
     deliberately differs from the trail, which follows motion regardless of
     visibility.
-  - **Settings:** the `idle` layer of `prefab:ink` (`hyprtail/presets/ink.conf`):
+  - **Settings:** the `idle` layer of `builtin:ink` (`hyprtail/presets/ink.conf`):
     `idle:enabled` (false), `idle:start_ms` (500), `idle:duration_ms` (1500),
     `idle:radius` (24 px), `idle:draw_when_cursor_hidden` (false),
     `idle:color`. Shared with every layer: `damage_padding` (§9) and
@@ -636,8 +636,8 @@ this file states the decision and marks what's still a placeholder.
 > `idle_*` keys are removed outright (§13.8), with no compatibility shim --
 > Hyprland's own "unknown config key" error, not a plugin one. What
 > replaces each is in §13.7/§13.8: shader identity and per-layer parameter
-> defaults move into a preset file (`prefab:ink`, or a
-> user's own `presets/<name>.conf`); `trail = "prefab:<name>"` or
+> defaults move into a preset file (`builtin:ink`, or a
+> user's own `presets/<name>.conf`); `trail = "builtin:<name>"` or
 > `trail = "presets/<name>.conf"` selects one; `layer1_vertex` ..
 > `layer4_fragment` still override a layer's shader by config; the `params`
 > string still overrides a layer's parameters by config. **Also removed, now
@@ -816,7 +816,7 @@ this file states the decision and marks what's still a placeholder.
   unverified until some client actually gets direct-scanned.
 - Fade curve (§4): linear in the stock shader (`ht_life`); duration is the
   reserved `fade_ms` layer parameter (§13.4). Other curves are a
-  shader/prefab matter, not a setting
+  shader/builtin matter, not a setting
 - Rotated outputs (§8): transform 1 (90°) is confirmed on the host. Still
   unverified: transform 4 (flipped; the host froze when it was applied, cause
   not isolated, NOTES "Freeze analysis"), and the other transforms and rotated
@@ -945,7 +945,7 @@ second ring, a second upload or a second damage lifecycle.
 **Built (phase 2), difference:** each layer keeps its own per-monitor damage
 lifecycle (`CLayer::damage`) inside the one pass element, so damage stays
 exact per layer instead of one union box. Presets are manifest files since
-phase 4 (§13.7): the shipped `prefab:ink` is
+phase 4 (§13.7): the shipped `builtin:ink` is
 `hyprtail/presets/*.conf`, embedded by `src/Preset.cpp`.
 
 ### 13.2 Nodes and the shader-side contract
@@ -1085,8 +1085,8 @@ a fragment shader or include is refused.
   `jitter.vert` (K copies at fixed random offsets, bounded reach: padding
   `spread + size + 1`), `spray.vert` (K particles per node drifting with
   age, reach grows: padding `speed * fade_ms / 1000 + wobble + size + 1`),
-  `dots.frag` (`expects quad,instanced`), and the presets `prefab:jitter` and
-  `prefab:spray` (since removed), deliberately two: they show the two padding disciplines
+  `dots.frag` (`expects quad,instanced`), and the presets `builtin:jitter` and
+  `builtin:spray` (since removed), deliberately two: they show the two padding disciplines
   (a constant bound vs. growth with age) that an instanced shader has to get
   right for damage to be correct.
 
@@ -1262,7 +1262,7 @@ would have linked fine.
 ### 13.7 Presets
 
 - **Where, two explicit namespaces (no shadowing):** the `trail` value is
-  either `prefab:<name>`, always the embedded built-in, ignoring any local
+  either `builtin:<name>`, always the embedded built-in, ignoring any local
   file of that name, or the path of a `.conf` file, with its extension,
   resolved by `cfg::resolveShaderPath()` (`Config.cpp:223`): relative ones
   against the hyprtail config root (below), e.g. `presets/ink.conf`;
@@ -1272,9 +1272,9 @@ would have linked fine.
   or a path without `.conf`) is an error that says what to write instead
   (`notATrail`, `Preset.cpp:281`); a missing file is an error naming the
   path; neither falls back to a built-in except through the reported
-  fallback below. The default is `prefab:ink`, since a fresh install has
+  fallback below. The default is `builtin:ink`, since a fresh install has
   no `hyprtail/` folder. `hyprtail/presets/ink.conf` is both the
-  embedded prefab and a copy-and-edit starting point: copied with its
+  embedded builtin and a copy-and-edit starting point: copied with its
   folder into `~/.config/hypr/` and selected as `presets/ink.conf`, it
   behaves identically (a unit test pins that the shaders it names are
   byte-identical to the embedded ones).
@@ -1306,29 +1306,29 @@ would have linked fine.
   line, blank lines ignored. A shader stage is a path relative to the
   hyprtail config root (`shaders/taper.vert`), whichever kind of preset
   names it, and the preset kind decides where it is looked up
-  (`resolveStage`, `Preset.cpp:224-257`): in an embedded (`prefab:`)
+  (`resolveStage`, `Preset.cpp:224-257`): in an embedded (`builtin:`)
   preset it is a key of the embedded shader table, `shader::builtin()`
   (`ShaderSource.cpp:403-410`, keyed by exactly that string), and never
   touches the disk -- so a run with no files on disk works and a stale
-  copied folder can't change what `prefab:` means (`Preset.cpp:241-244`);
+  copied folder can't change what `builtin:` means (`Preset.cpp:241-244`);
   in a file preset it is resolved by the same `cfg::resolveShaderPath()`
-  and read from disk. `prefab:<name>` as a stage value (a file preset
+  and read from disk. `builtin:<name>` as a stage value (a file preset
   only needs it to pin an embedded shader) is shorthand for the embedded
   `shaders/<name>` in any preset (`Preset.cpp:231-236`). `helpers/` and
   `prelude/` are not stage paths: includes are unchanged (§5; `helpers/`
   is embedded and keyed relative to `shaders/`, so editing the on-disk
-  copy has no effect). (Prefab presets and `helpers/` includes, §5, are
+  copy has no effect). (Builtin presets and `helpers/` includes, §5, are
   the same pattern applied to presets, main shaders and include files:
   embedded and immutable, otherwise the user's own copy.)
   Structural mistakes (unknown top-level key, a `<layer>:` key for a layer
   not in `layers`, a bad/missing `contract`, `layers` empty/duplicated/over
-  4, an unrecognized `prefab:` shader name, a stage in a prefab preset that
+  4, an unrecognized `builtin:` shader name, a stage in a builtin preset that
   isn't in the embedded table) are load-time errors; an unknown *parameter* name needs the compiled
   program's declared params, so it's deferred to `CLayer::resolve()`
   (`params:<layer>`, entry ignored) same as always. Any failure loading
   the *selected* preset (file not found, parse error, bad shader reference)
   is reported (`trail:<name>`, naming the path looked up) and falls back
-  to the embedded `prefab:ink` manifest, guaranteed to parse since it
+  to the embedded `builtin:ink` manifest, guaranteed to parse since it
   ships with the plugin. That fallback is degradation after a clear error,
   not resolution: a bare name never resolves to a built-in.
   **One exception, built:** a file preset that parses but names a shader
@@ -1368,13 +1368,13 @@ would have linked fine.
     sees the new source's (empty) extent and damages the old box away once.
   - **`capacity`** is the chain length for `spring`. Changing it resizes the
     chain keeping the head end, as for the ring.
-  - **Built-in:** `prefab:spring`, one ribbon layer over the spring source.
+  - **Built-in:** `builtin:spring`, one ribbon layer over the spring source.
 - **Selection and overrides:**
-  - `trail = "prefab:<name>"` or `trail = "presets/<name>.conf"` selects
+  - `trail = "builtin:<name>"` or `trail = "presets/<name>.conf"` selects
     a preset (see "Where" above). **Built (phase 4)**
     (`plugin:hyprtail:trail`, `Config.*`; formerly `preset`, and formerly
     also taking a bare `<name>`, both changed before any release, no
-    alias): default `prefab:ink`.
+    alias): default `builtin:ink`.
   - **Hyprtail config root:** `$XDG_CONFIG_HOME/hypr/hyprtail/`, fallback
     `~/.config/hypr/hyprtail/` (`cfg::hyprtailRoot()`). Every relative
     path hyprtail reads from the user's config resolves against it: a
@@ -1383,7 +1383,7 @@ would have linked fine.
     resolves relative paths against the main Hyprland config directory
     (and previously this plugin's `layerN_*` did too): one base inside
     hyprtail, at the cost of that one setting's familiarity. `-c` no
-    longer redirects it. `layerN_*` take paths only (no `prefab:` form).
+    longer redirects it. `layerN_*` take paths only (no `builtin:` form).
   - **Shipped layout:** the repository's `hyprtail/` directory (`hyprtail/presets/`,
     `hyprtail/shaders/`) mirrors the config root's contents, so a user
     installs by copying that one directory into `~/.config/hypr/`. The same
@@ -1411,7 +1411,7 @@ would have linked fine.
   alpha 0 with nonzero rgb gets additive light (glow) through the same blend
   function, so layers never change GL blend state.
 - **Shipped:**
-  - `prefab:ink` (default): one calligraphy `path` layer plus an `idle`
+  - `builtin:ink` (default): one calligraphy `path` layer plus an `idle`
     ring layer that ships disabled (`enabled = false`). **Built**
     (`hyprtail/presets/ink.conf`). It replaced the earlier `subtle` and
     `classic` presets, whose only unique piece, the idle ring, moved here.
@@ -1421,11 +1421,11 @@ would have linked fine.
 
 #### 13.7.1 Preset rework: the shader kit (slice 1 built, untested on host)
 
-The prefabs are immutable built-in designs; `hyprtail/presets/*.conf` are the same
-trails exposed for users to copy and tune. Prefabs should cover every
+The builtins are immutable built-in designs; `hyprtail/presets/*.conf` are the same
+trails exposed for users to copy and tune. Builtins should cover every
 capability (topologies, uniforms, both sources, spring motion), span
 intensity (professional to flashy) and cost (iGPU-safe to heavy), and be
-mixable: a user preset can combine layer blocks from several prefabs. No
+mixable: a user preset can combine layer blocks from several builtins. No
 plugin code change is part of this rework; it is shaders, manifests and
 docs only (registering a built-in in `ShaderSource.cpp`/`Preset.cpp` aside).
 
@@ -1438,7 +1438,7 @@ docs only (registering a built-in in `ShaderSource.cpp`/`Preset.cpp` aside).
   replaces `ribbon.frag`, adds `softness` for glows, `alpha` and `fade_curve`), `dots.frag` (quad,
   instanced; `shape`, `twinkle`), `pulse.frag` (quad; was `ring.frag`),
   `sizzle.frag` (quad, idle crackle). Every look declares `expects`.
-- **One ribbon geometry.** Every ribbon prefab uses `taper.vert`, so a
+- **One ribbon geometry.** Every ribbon builtin uses `taper.vert`, so a
   future change to how the strip is built (Catmull-Rom subdivision) reaches
   all of them by changing that one file.
 - **Shared palette.** Looks color with `color_a`, `color_b`, `color_by`
@@ -1446,7 +1446,7 @@ docs only (registering a built-in in `ShaderSource.cpp`/`Preset.cpp` aside).
   `color_period`, all declared alike (`helpers/palette.glsl`;
   `color_slow`/`color_fast` and ring's `color` are gone). A layer's colors
   survive swapping one look for another.
-- **Unique layer names** across reworked prefabs (`thread`, `ink`, `tail`,
+- **Unique layer names** across reworked builtins (`thread`, `ink`, `tail`,
   `sparks`, `embers`, `crackle`), so a block pasted from one preset into
   another never collides and a `params` entry names exactly one layer. The
   cost: a `params` entry doesn't follow the user from one preset to another
@@ -1456,7 +1456,7 @@ docs only (registering a built-in in `ShaderSource.cpp`/`Preset.cpp` aside).
   (`main.cpp` runLifecycle: damage every frame while `quadInWindow`); the
   shader and preset comments say so and point at a finite `duration_ms`.
   No frame-rate cap for now.
-- **Slice 1 prefabs:** `ink` (new, now the default; carries the old
+- **Slice 1 builtins:** `ink` (new, now the default; carries the old
   `classic` idle ring, disabled), `comet`
   (tail + sparks), `mosaic` (hexagonal cells, `hexagons.frag`), `helix`, `snake`, `tether` and `thread` (the former demo looks, with `strands.frag` and `convex.vert`), `embers` (rising embers + idle crackle). `jitter`, `vivid`, `spring` are migrated to the new names only,
   pending the lineup rework.
@@ -1732,7 +1732,7 @@ screenshare fields arrive with their phases.
 ### 13.15 What stays as is
 
 The damage lifecycle (§6), the draw-order hook and fallback (§4, §7), color
-management of declared colors (§5), the include preprocessor and prefabs
+management of declared colors (§5), the include preprocessor and builtins
 (§5, now also carrying the prelude), hot reload and file watching (§9), and
 the diagnostics path (§9). Everything on the §12 list stays open.
 
@@ -1772,11 +1772,11 @@ compositor).
    string, the `layer1_vertex` ... `layer4_fragment` keys, `expects`, and
    the pre-link varying check with plain messages.
 4. **Presets and config surface v2 (built, untested).** Manifest parser,
-   user preset files, shipped prefabs. Not built: `vivid`
+   user preset files, shipped builtins. Not built: `vivid`
    (needs a real glow shader, out of scope for this phase), migration
    notes in the README (the SPEC §9 note above covers it for now).
 5. **Topologies.** `instanced K` **(built, untested; see §13.3)** with two
-   demo presets, `prefab:jitter` and `prefab:spray` (since removed). Not built: `path smooth
+   demo presets, `builtin:jitter` and `builtin:spray` (since removed). Not built: `path smooth
    N` with exact Bezier bounds.
 6. **Pointer features (built, untested).** Emit offset with the
    shape-change break, `warp = curve`. Per-layer `offset_from`/`offset`

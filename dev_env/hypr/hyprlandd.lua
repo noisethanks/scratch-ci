@@ -41,7 +41,7 @@ hl.config({
 hl.config({
     plugin = {
         hyprtail = {
-            trail             = "prefab:ink",
+            trail             = "builtin:ink",
             params            = "idle:enabled=true",
             --             capacity          = 64,
             --             min_spacing       = 2,

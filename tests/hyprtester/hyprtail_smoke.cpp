@@ -275,10 +275,10 @@ TEST_CASE(hyprtailLifecycle) {
     {
         // Every step below keeps trail:fade_ms at FADE_MS so the waits hold.
         const std::string fade       = std::format("trail:fade_ms={}", FADE_MS);
-        const std::string inkFade    = std::format("ink:fade_ms={}", FADE_MS); // prefab:ink's calligraphy layer
+        const std::string inkFade    = std::format("ink:fade_ms={}", FADE_MS); // builtin:ink's calligraphy layer
 
         // Each instanced preset loads, compiles and draws.
-        for (const std::string preset : {"prefab:jitter"}) {
+        for (const std::string preset : {"builtin:jitter"}) {
             const auto step = "instanced preset " + preset;
             HYPRTAIL_CONFIGURE(step, preset, fade, 0);
             // The status names the K param (jitter: copies), so
@@ -291,7 +291,7 @@ TEST_CASE(hyprtailLifecycle) {
         // K changes live through `params` on a config reload, across its
         // whole range, for a K param named in the pragma (jitter: copies).
         // The status lists the layer's resolved values.
-        const std::pair<std::string, std::string> kParams[] = {{"prefab:jitter", "copies"}};
+        const std::pair<std::string, std::string> kParams[] = {{"builtin:jitter", "copies"}};
         for (const auto& [preset, param] : kParams) {
             for (const int k : {32, 64, 1, 8}) {
                 const auto step  = std::format("{} {}={}", preset, param, k);
@@ -309,13 +309,13 @@ TEST_CASE(hyprtailLifecycle) {
         for (const int capacity : {512, 8, 4096, 2, 64}) {
             const auto step = std::format("capacity {} under an instanced layer", capacity);
             OK(moveAlong(700, 400, 1200, 700, 20));
-            HYPRTAIL_CONFIGURE(step, "prefab:jitter", fade + " trail:copies=64", capacity);
+            HYPRTAIL_CONFIGURE(step, "builtin:jitter", fade + " trail:copies=64", capacity);
             HYPRTAIL_EXPECT_STATUS(step, "topology instanced copies");
             HYPRTAIL_HEALTHY(step);
         }
 
         // An output unplugged while an instanced layer draws on it.
-        HYPRTAIL_CONFIGURE("jitter before the hotplug rounds", "prefab:jitter", fade + " trail:copies=16", 0);
+        HYPRTAIL_CONFIGURE("jitter before the hotplug rounds", "builtin:jitter", fade + " trail:copies=16", 0);
         for (int round = 1; round <= 2; ++round) {
             const auto step = std::format("instanced hotplug round {}", round);
 
@@ -348,15 +348,15 @@ TEST_CASE(hyprtailLifecycle) {
             std::ofstream(userPresetsDir() / "smoke-stack.conf") << "contract = 2\n"
                                                                     "description = smoke test: path, quad and instanced layers\n"
                                                                     "layers = trail, idle, sparks\n"
-                                                                    "trail:vertex = prefab:taper.vert\n"
-                                                                    "trail:fragment = prefab:gradient.frag\n"
-                                                                    "idle:vertex = prefab:halo.vert\n"
-                                                                    "idle:fragment = prefab:pulse.frag\n"
+                                                                    "trail:vertex = builtin:taper.vert\n"
+                                                                    "trail:fragment = builtin:gradient.frag\n"
+                                                                    "idle:vertex = builtin:halo.vert\n"
+                                                                    "idle:fragment = builtin:pulse.frag\n"
                                                                     "idle:enabled = true\n"
                                                                     "idle:start_ms = 50\n"
                                                                     "idle:duration_ms = 200\n"
-                                                                    "sparks:vertex = prefab:drift.vert\n"
-                                                                    "sparks:fragment = prefab:dots.frag\n"
+                                                                    "sparks:vertex = builtin:drift.vert\n"
+                                                                    "sparks:fragment = builtin:dots.frag\n"
                                                                     "sparks:count = 12\n";
         }
         HYPRTAIL_CONFIGURE("stacked preset", "presets/smoke-stack.conf", fade + " sparks:fade_ms=" + std::to_string(FADE_MS), 0);
@@ -368,10 +368,10 @@ TEST_CASE(hyprtailLifecycle) {
 
         // Presets switched while a trail is still on screen, in an order
         // that swaps instanced <-> path <-> quad state under the same VBO.
-        for (const std::string preset : {"prefab:jitter", "prefab:ink", "presets/smoke-stack.conf", "prefab:ink", "prefab:jitter"}) {
+        for (const std::string preset : {"builtin:jitter", "builtin:ink", "presets/smoke-stack.conf", "builtin:ink", "builtin:jitter"}) {
             const auto step = "switch to " + preset;
             OK(moveAlong(700, 400, 1200, 700, 12));
-            HYPRTAIL_CONFIGURE(step, preset, preset == "prefab:ink" ? inkFade : fade, 0);
+            HYPRTAIL_CONFIGURE(step, preset, preset == "builtin:ink" ? inkFade : fade, 0);
             OK(moveAlong(1200, 700, 800, 500, 12));
             HYPRTAIL_HEALTHY(step);
         }
@@ -391,13 +391,13 @@ TEST_CASE(hyprtailLifecycle) {
     // header comment.
     {
         const std::string fade       = std::format("trail:fade_ms={}", FADE_MS);
-        const std::string inkFade    = std::format("ink:fade_ms={}", FADE_MS); // prefab:ink's calligraphy layer
+        const std::string inkFade    = std::format("ink:fade_ms={}", FADE_MS); // builtin:ink's calligraphy layer
 
         // Loads, draws, moves, and once the pointer is still the chain comes
         // to rest: the status stops reporting its points as moving. (That
         // needs renders to keep coming while it moves: the tick only runs
         // inside one.)
-        HYPRTAIL_CONFIGURE("spring preset", "prefab:spring", fade, 0);
+        HYPRTAIL_CONFIGURE("spring preset", "builtin:spring", fade, 0);
         HYPRTAIL_EXPECT_STATUS("spring preset", "source: spring");
         if (!waitFor([] { return statusHas("(moving)"); }, 1000))
             LOG_OK("{}", "spring preset: already at rest before the settle check");
@@ -418,15 +418,15 @@ TEST_CASE(hyprtailLifecycle) {
                                                                            "layers = trail, idle, sparks\n"
                                                                            "source = spring\n"
                                                                            "source:damping = 150\n"
-                                                                           "trail:vertex = prefab:taper.vert\n"
-                                                                           "trail:fragment = prefab:gradient.frag\n"
-                                                                           "idle:vertex = prefab:halo.vert\n"
-                                                                           "idle:fragment = prefab:pulse.frag\n"
+                                                                           "trail:vertex = builtin:taper.vert\n"
+                                                                           "trail:fragment = builtin:gradient.frag\n"
+                                                                           "idle:vertex = builtin:halo.vert\n"
+                                                                           "idle:fragment = builtin:pulse.frag\n"
                                                                            "idle:enabled = true\n"
                                                                            "idle:start_ms = 50\n"
                                                                            "idle:duration_ms = 200\n"
-                                                                           "sparks:vertex = prefab:drift.vert\n"
-                                                                           "sparks:fragment = prefab:dots.frag\n"
+                                                                           "sparks:vertex = builtin:drift.vert\n"
+                                                                           "sparks:fragment = builtin:dots.frag\n"
                                                                            "sparks:count = 12\n";
         }
         HYPRTAIL_CONFIGURE("spring stack", "presets/smoke-spring-stack.conf", fade + " sparks:fade_ms=" + std::to_string(FADE_MS), 0);
@@ -439,10 +439,10 @@ TEST_CASE(hyprtailLifecycle) {
         // Presets switched while the chain is moving, in and out of the
         // spring source (a new source replaces the old one, the same kind
         // keeps it).
-        for (const std::string preset : {"prefab:ink", "prefab:spring", "prefab:jitter", "presets/smoke-spring-stack.conf", "prefab:spring", "prefab:spring"}) {
+        for (const std::string preset : {"builtin:ink", "builtin:spring", "builtin:jitter", "presets/smoke-spring-stack.conf", "builtin:spring", "builtin:spring"}) {
             const auto step = "switch to " + preset;
             OK(moveAlong(700, 400, 1200, 700, 12));
-            HYPRTAIL_CONFIGURE(step, preset, preset == "prefab:ink" ? inkFade : fade, 0);
+            HYPRTAIL_CONFIGURE(step, preset, preset == "builtin:ink" ? inkFade : fade, 0);
             HYPRTAIL_EXPECT_STATUS(step, preset.contains("spring") ? "source: spring" : "source: pointer");
             OK(moveAlong(1200, 700, 800, 500, 12));
             HYPRTAIL_HEALTHY(step);
@@ -453,14 +453,14 @@ TEST_CASE(hyprtailLifecycle) {
         for (const int capacity : {512, 8, 4096, 2, 64}) {
             const auto step = std::format("capacity {} under a spring chain", capacity);
             OK(moveAlong(700, 400, 1200, 700, 20));
-            HYPRTAIL_CONFIGURE(step, "prefab:spring", fade, capacity);
+            HYPRTAIL_CONFIGURE(step, "builtin:spring", fade, capacity);
             HYPRTAIL_EXPECT_STATUS(step, std::format("/{} points", capacity));
             HYPRTAIL_HEALTHY(step);
         }
 
         // The source's settings change live through `params`; a bad one is
         // a warning, which HYPRTAIL_HEALTHY would catch.
-        HYPRTAIL_CONFIGURE("spring params", "prefab:spring", fade + " source:damping=120 source:age_step_ms=6 source:stiffness=20000 source:mass=2", 0);
+        HYPRTAIL_CONFIGURE("spring params", "builtin:spring", fade + " source:damping=120 source:age_step_ms=6 source:stiffness=20000 source:mass=2", 0);
         HYPRTAIL_EXPECT_STATUS("spring params", "source: spring");
         HYPRTAIL_HEALTHY("spring params");
 

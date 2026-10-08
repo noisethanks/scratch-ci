@@ -344,9 +344,9 @@ static void testPresetManifests() {
             // mode: it is a key of shader::builtin(), never read from disk.
             // Disk mode: it is a file under hyprtail/ (this repo's copy of
             // the root) holding the same text as the embedded one, so a
-            // copied folder and the prefab: preset draw the same thing.
-            if (vertKey == keys.end() || fragKey == keys.end() || vertKey->second.starts_with("prefab:") || fragKey->second.starts_with("prefab:")) {
-                fail("needs vertex and fragment shader paths relative to the hyprtail root (shaders/taper.vert), not prefab:");
+            // copied folder and the builtin: preset draw the same thing.
+            if (vertKey == keys.end() || fragKey == keys.end() || vertKey->second.starts_with("builtin:") || fragKey->second.starts_with("builtin:")) {
+                fail("needs vertex and fragment shader paths relative to the hyprtail root (shaders/taper.vert), not builtin:");
                 continue;
             }
             const auto vertName = vertKey->second, fragName = fragKey->second;

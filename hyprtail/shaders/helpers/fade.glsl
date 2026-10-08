@@ -1,4 +1,4 @@
-// hyprtail prefab: time-based fade helpers.
+// hyprtail builtin: time-based fade helpers.
 //
 //   #include "helpers/fade.glsl"
 //

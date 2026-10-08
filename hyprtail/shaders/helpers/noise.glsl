@@ -1,4 +1,4 @@
-// hyprtail prefab: hash and noise helpers, for scattering copies of a node.
+// hyprtail builtin: hash and noise helpers, for scattering copies of a node.
 //
 //   #include "helpers/noise.glsl"
 //

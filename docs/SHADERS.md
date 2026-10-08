@@ -242,9 +242,9 @@ positions grown by the padding expression (plus `damage_padding`); anything a
 copy draws outside it is not guaranteed to be repainted, and leaves ghosts. Two
 disciplines, both shipped:
 
-- *Bounded offset* (`prefab:scatter.vert`): each copy sits at a fixed offset of
+- *Bounded offset* (`builtin:scatter.vert`): each copy sits at a fixed offset of
   at most `spread` from its node, so `padding spread + size + 1`.
-- *Growth with age* (`prefab:drift.vert`): copies drift away as the node ages.
+- *Growth with age* (`builtin:drift.vert`): copies drift away as the node ages.
   Write the padding for the farthest point before `fade_ms`, e.g. `padding
   speed * fade_ms / 1000 + wobble + size + 1` (`fade_ms` is allowed in padding
   expressions, being a reserved parameter), and cap the age used in the shader
@@ -276,7 +276,7 @@ with it:
 |---|---|---|
 | `ht_vLocal` | `vec2` | `path`: x = position along the segment (0 at the newer end, 1 at the older end), y = position across the width (-1..1). `quad`, `instanced`: quad coordinates (-1..1, -1..1). |
 | `ht_vAge` | `float` | ms since this node/point was created. |
-| `ht_vLife` | `float` | 1 at birth, sweeping to 0 over the visibility window (implement your own curve using `fade_ms`/age, or use the fade prefab below). |
+| `ht_vLife` | `float` | 1 at birth, sweeping to 0 over the visibility window (implement your own curve using `fade_ms`/age, or use the fade builtin below). |
 | `ht_vSpeed` | `float` | px/ms the pointer was moving at this node's creation. |
 | `ht_vDist` | `float` | px traveled since the start of this node's segment. |
 | `ht_vSeed` | `float` | 0..1, stable per node — use it for per-point randomness (sparkle, hue jitter). |
@@ -312,7 +312,7 @@ GLSL ES has no `#include`; the loader resolves it before compiling:
 ```
 
 - `helpers/<name>` is always hyprtail's embedded, immutable helper. Any other
-  path is your own file. This is the same rule as `prefab:` in presets
+  path is your own file. This is the same rule as `builtin:` in presets
   (CONFIG.md): a prefix means embedded, anything else is yours.
 - To edit a helper, copy it from `hyprtail/shaders/helpers/` in the repository and
   include your copy by a relative path that does **not** start with the bare
@@ -383,7 +383,7 @@ float ht_coverage(float signedDistance); // ~1px antialiased 0..1 coverage
 ```
 
 **`helpers/palette.glsl`** (vertex or fragment): the two-color palette every
-built-in look shares (`prefab:gradient.frag`, `prefab:dots.frag`). Declare
+built-in look shares (`builtin:gradient.frag`, `builtin:dots.frag`). Declare
 the same params they do and a preset's colors carry over between your shader
 and theirs:
 
@@ -438,8 +438,8 @@ point, so it jumps whenever the pointer moves.
 ## Worked example: a solid-color fragment shader
 
 The simplest useful custom shader: replace the default preset's two-color
-fragment shader (`prefab:gradient.frag`) with a single flat color, keeping
-the stock ribbon geometry (`prefab:taper.vert`) unchanged.
+fragment shader (`builtin:gradient.frag`) with a single flat color, keeping
+the stock ribbon geometry (`builtin:taper.vert`) unchanged.
 
 ```glsl
 #version 300 es
@@ -505,12 +505,12 @@ plugin:hyprtail:layer1_fragment = ~/.config/hypr/hyprtail/solid.frag
 plugin:hyprtail:params = ink:color=rgba(ff2266ff)
 ```
 
-(`thread` is the name of `prefab:subtle`'s one layer; with another preset,
+(`thread` is the name of `builtin:subtle`'s one layer; with another preset,
 use the name of its first layer.)
 
 **Expect one warning with either setup.** Swapping a layer's shader doesn't
 touch its parameter defaults: the preset's own `thread:` values stay in
-place. `prefab:subtle` sets `thread:color_a` and `thread:color_b`, which
+place. `builtin:subtle` sets `thread:color_a` and `thread:color_b`, which
 `solid.frag` doesn't declare (it declares `color`). Those two values then name
 parameters that aren't in the new program, so each load and config reload
 reports a `params:thread` warning (`color_a: not a parameter of this layer;

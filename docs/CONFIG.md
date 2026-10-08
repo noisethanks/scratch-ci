@@ -1,11 +1,11 @@
 # Basic Customization
 
 ## Terms
-- **Prefabs** are default trail styles, internal to hyprtail. They can be referenced in the configs as such:
+- **Builtins** are default trail styles, internal to hyprtail. They can be referenced in the configs as such:
 ```
-trail = "prefab:ink"
+trail = "builtin:ink"
 ```
-- **Presets** are identical copies of the prefabs. These copies are intended to provide a simple starting point for basic configurations, such as changing color or tail width. This document focuses on these kinds of basic customizations.
+- **Presets** are identical copies of the builtins. These copies are intended to provide a simple starting point for basic configurations, such as changing color or tail width. This document focuses on these kinds of basic customizations.
 - A **stage** is one step in the rendering pipeline of a shader. A shader willl always have a vertex stage, and, in hyprtail, will always have a fragment stage.
 - A **layer** in hyprtail is one draw layer of a shader. For example `glow` and `core` in the vivid presets. 
 - The **hyprtail config root** is `$XDG_CONFIG_HOME/hypr/hyprtail/`
@@ -36,7 +36,7 @@ contract    = 2
 description = Thin neutral trail
 layers      = core
 
-core:vertex   = prefab:taper.vert   # can be a prefab shader, or
+core:vertex   = builtin:taper.vert   # can be a builtin shader, or
 core:fragment = /shaders/solid.frag  # your file, relative to `#XDG_CONFIG_HOME/hypr/hyprtail`
 # core:fragment = ~/.config/hypr/hyprtail/shaders/solid.frag # or absolute path
 core:fade_ms  = 350                  # any other key sets a layer parameter
@@ -53,16 +53,16 @@ core:color    = rgba(ffffffa0)
 - Every other line is `<layer>:<key> = <value>`, where `<layer>` must be one
   of the names in `layers`.
   - `<layer>:vertex` / `<layer>:fragment` pick that layer's shader:
-    `prefab:<name>` for an embedded one (geometry: `prefab:taper.vert`,
-    `prefab:scatter.vert`, `prefab:drift.vert`, `prefab:halo.vert`; looks:
-    `prefab:gradient.frag`, `prefab:dots.frag`, `prefab:pulse.frag`,
-    `prefab:sizzle.frag`), or
+    `builtin:<name>` for an embedded one (geometry: `builtin:taper.vert`,
+    `builtin:scatter.vert`, `builtin:drift.vert`, `builtin:halo.vert`; looks:
+    `builtin:gradient.frag`, `builtin:dots.frag`, `builtin:pulse.frag`,
+    `builtin:sizzle.frag`), or
     anything else as a path to your own file. 
   - Any other `<key>` sets a default value for a parameter that layer's
     shader declares (see SHADERS.md for how shaders declare parameters).
 - `#` starts a comment to end of line; blank lines are ignored.
 - If the selected preset fails to load (missing file, parse error, bad
-  shader reference), hyprtail reports it and uses `prefab:subtle` instead.
+  shader reference), hyprtail reports it and uses `builtin:subtle` instead.
 
 ### Sources
 
@@ -107,7 +107,7 @@ These pick a shader by the layer's **position** in the active preset's
 `layers` list (1 = bottom layer), not by name. `""` means "use whatever the
 preset itself specifies for that layer." Setting an index the active preset
 doesn't have (e.g. `layer3_vertex` on a 1-layer preset) is a warning and is
-ignored. They take file paths only (no `prefab:` form). Path resolution is
+ignored. They take file paths only (no `builtin:` form). Path resolution is
 the same as for a preset's own shader paths: `~`/`~/` expand to your home
 directory, an absolute path is used as-is, and a relative path resolves
 against the hyprtail config root (`~/.config/hypr/hyprtail/`).
@@ -146,7 +146,7 @@ plugin:hyprtail:params = core:width=4 glow:radius=18 core:color=rgba(ffffffa0)
   one entry is ignored and everything else in the string still applies.
 - Re-read on every config reload and on every shader file change — no
   separate reload needed. That includes the copy count K of an `instanced`
-  layer (`prefab:jitter`'s `copies`, `prefab:spray`'s `count`): it changes
+  layer (`builtin:jitter`'s `copies`, `builtin:spray`'s `count`): it changes
   live, without recompiling the shader.
 
 **Reserved parameter names**, settable on any layer the same way as any

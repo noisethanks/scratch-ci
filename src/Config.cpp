@@ -104,7 +104,7 @@ namespace hyprtail::cfg {
         r.damagePadding = makeShared<CFloatValue>("plugin:hyprtail:damage_padding", "extra damage padding on top of the stock extent and shader-declared padding, px",
                                                   DEFAULTS.damagePaddingPx, SFloatValueOptions{.min = 0.F, .max = 4096.F});
         r.trail    = makeShared<CStringValue>("plugin:hyprtail:trail",
-                                              "which trail to use (SPEC section 13.7): \"prefab:<name>\" (built-in: jitter, vivid, comet, embers, spring, ink, mosaic, snake, helix, tether, thread) "
+                                              "which trail to use (SPEC section 13.7): \"builtin:<name>\" (built-in: jitter, vivid, comet, embers, spring, ink, mosaic, snake, helix, tether, thread) "
                                               "or the path of a .conf file relative to <hyprtail root>, e.g. \"presets/ink.conf\"",
                                               DEFAULTS.trail.c_str());
         r.emitFrom = makeShared<CStringValue>("plugin:hyprtail:emit_from",

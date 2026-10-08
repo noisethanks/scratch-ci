@@ -14,7 +14,7 @@
 
 namespace hyprtail::shader {
     namespace {
-        // Stock shaders and the prefab library, embedded at build time (the
+        // Stock shaders and the builtin library, embedded at build time (the
         // Makefile lists them as dependencies). Keep them ASCII: GLSL ES
         // drivers aren't reliable with UTF-8, even in comments.
         constexpr unsigned char GEOM_TAPER_VERT[] = {
@@ -68,19 +68,19 @@ namespace hyprtail::shader {
         constexpr unsigned char PRELUDE_FRAGMENT[] = {
 #embed "../hyprtail/shaders/prelude/fragment.glsl"
         };
-        constexpr unsigned char PREFAB_RIBBON[] = {
+        constexpr unsigned char BUILTIN_RIBBON[] = {
 #embed "../hyprtail/shaders/helpers/ribbon.glsl"
         };
-        constexpr unsigned char PREFAB_FADE[] = {
+        constexpr unsigned char BUILTIN_FADE[] = {
 #embed "../hyprtail/shaders/helpers/fade.glsl"
         };
-        constexpr unsigned char PREFAB_SDF[] = {
+        constexpr unsigned char BUILTIN_SDF[] = {
 #embed "../hyprtail/shaders/helpers/sdf.glsl"
         };
-        constexpr unsigned char PREFAB_NOISE[] = {
+        constexpr unsigned char BUILTIN_NOISE[] = {
 #embed "../hyprtail/shaders/helpers/noise.glsl"
         };
-        constexpr unsigned char PREFAB_PALETTE[] = {
+        constexpr unsigned char BUILTIN_PALETTE[] = {
 #embed "../hyprtail/shaders/helpers/palette.glsl"
         };
 
@@ -89,10 +89,10 @@ namespace hyprtail::shader {
             return {reinterpret_cast<const char*>(data), N};
         }
 
-        const std::map<std::string, std::string_view, std::less<>>& prefabs() {
+        const std::map<std::string, std::string_view, std::less<>>& builtins() {
             static const std::map<std::string, std::string_view, std::less<>> m{
-                {"helpers/ribbon.glsl", view(PREFAB_RIBBON)}, {"helpers/fade.glsl", view(PREFAB_FADE)},       {"helpers/sdf.glsl", view(PREFAB_SDF)},
-                {"helpers/noise.glsl", view(PREFAB_NOISE)},   {"helpers/palette.glsl", view(PREFAB_PALETTE)},
+                {"helpers/ribbon.glsl", view(BUILTIN_RIBBON)}, {"helpers/fade.glsl", view(BUILTIN_FADE)},       {"helpers/sdf.glsl", view(BUILTIN_SDF)},
+                {"helpers/noise.glsl", view(BUILTIN_NOISE)},   {"helpers/palette.glsl", view(BUILTIN_PALETTE)},
             };
             return m;
         }
@@ -227,7 +227,7 @@ namespace hyprtail::shader {
             return std::ranges::any_of(reservedParams(), [&](const auto& r) { return r.decl.name == name; });
         }
 
-        // One source unit: built-in prefab ("builtin:<name>") or a file path.
+        // One source unit: builtin ("builtin:<name>") or a file path.
         struct SUnit {
             std::string           key;
             std::string           displayName;
@@ -239,14 +239,14 @@ namespace hyprtail::shader {
 
         std::expected<SUnit, std::string> resolveInclude(const std::string& target, const SUnit& parent, std::string& storage) {
             if (target.starts_with("helpers/")) {
-                const auto it = prefabs().find(target);
-                if (it == prefabs().end())
-                    return std::unexpected(std::format("unknown built-in prefab \"{}\"", target));
+                const auto it = builtins().find(target);
+                if (it == builtins().end())
+                    return std::unexpected(std::format("unknown builtin \"{}\"", target));
                 return SUnit{.key = "builtin:" + target, .displayName = "<" + target + ">", .text = it->second, .path = {}};
             }
 
             if (parent.path.empty())
-                return std::unexpected(std::format("\"{}\": built-in shaders can only include helpers/ prefabs", target));
+                return std::unexpected(std::format("\"{}\": built-in shaders can only include helpers/ builtins", target));
 
             std::filesystem::path p = expandHome(target);
             if (p.is_relative())

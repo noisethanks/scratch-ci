@@ -195,14 +195,14 @@ namespace hyprtail::preset {
             return it == m.end() ? std::string_view{} : it->second;
         }
 
-        // "prefab:<name>" is the embedded built-in, never a file. As a trail
+        // "builtin:<name>" is the embedded built-in, never a file. As a trail
         // it names an embedded preset; as a shader stage (user presets only)
         // it is shorthand for the embedded "shaders/<name>". Anything else
         // is a path, resolved by cfg::resolveShaderPath(): relative ones
         // against the hyprtail root, "~" and absolute as given. (Shader
         // includes follow the same rule: "helpers/<name>" is the embedded
         // helper, a path is a file. See ShaderSource.cpp.)
-        constexpr std::string_view              PREFAB_PREFIX = "prefab:";
+        constexpr std::string_view              BUILTIN_PREFIX = "builtin:";
 
         std::expected<std::string, std::string> readFile(const std::filesystem::path& path) {
             std::ifstream in(path, std::ios::binary);
@@ -215,11 +215,11 @@ namespace hyprtail::preset {
 
         // Resolves one shader stage of one layer to {embedded key, path
         // override}; a path override is "" for an embedded shader.
-        //  - "prefab:<name>": the embedded shaders/<name>, in any preset.
+        //  - "builtin:<name>": the embedded shaders/<name>, in any preset.
         //  - anything else in an embedded preset: looked up in the embedded
         //    shader table by the path as written ("shaders/taper.vert"),
         //    never on disk. That keeps the zero-file first run working and a
-        //    stale copied folder from changing what prefab:<preset> means.
+        //    stale copied folder from changing what builtin:<preset> means.
         //  - anything else in a file preset: a path, resolved like
         //    layerN_vertex/layerN_fragment (cfg::resolveShaderPath). One that
         //    isn't on disk is added to `missing`; load() reports it.
@@ -235,8 +235,8 @@ namespace hyprtail::preset {
                 return std::unexpected(std::format(R"(layer "{}" needs "{}:{}")", layerName, layerName, stageKey));
             const std::string& value = it->second;
 
-            if (value.starts_with(PREFAB_PREFIX)) {
-                auto key = "shaders/" + value.substr(PREFAB_PREFIX.size());
+            if (value.starts_with(BUILTIN_PREFIX)) {
+                auto key = "shaders/" + value.substr(BUILTIN_PREFIX.size());
                 if (shader::builtin(key).empty())
                     return std::unexpected(std::format(R"(layer "{}": "{}" isn't a built-in shader)", layerName, value));
                 return std::pair<std::string, std::string>{std::move(key), ""};
@@ -247,7 +247,7 @@ namespace hyprtail::preset {
 
             if (embedded) {
                 if (shader::builtin(value).empty())
-                    return std::unexpected(std::format(R"(layer "{}": "{}" isn't an embedded shader; a prefab preset names them like "shaders/taper.vert")", layerName, value));
+                    return std::unexpected(std::format(R"(layer "{}": "{}" isn't an embedded shader; a builtin preset names them like "shaders/taper.vert")", layerName, value));
                 return std::pair<std::string, std::string>{value, ""};
             }
 
@@ -283,17 +283,17 @@ namespace hyprtail::preset {
             return spec;
         }
 
-        // What to write instead of a trail that is neither "prefab:<name>"
+        // What to write instead of a trail that is neither "builtin:<name>"
         // nor a .conf path (the old bare "<name>" form, no extension).
         std::string notATrail(const std::string& name) {
             if (name.empty())
-                return R"(trail is empty; write "prefab:<name>" for a built-in, or the path of a .conf file relative to <hyprtail root>, e.g. "presets/mine.conf")";
+                return R"(trail is empty; write "builtin:<name>" for a built-in, or the path of a .conf file relative to <hyprtail root>, e.g. "presets/mine.conf")";
             const auto own  = name.contains('/') ? name + ".conf" : "presets/" + name + ".conf";
-            const auto hint = builtinManifest(name).empty() ? std::string{} : std::format(R"("prefab:{}" for the built-in, or )", name);
+            const auto hint = builtinManifest(name).empty() ? std::string{} : std::format(R"("builtin:{}" for the built-in, or )", name);
             return std::format(R"("{}" isn't a trail: write {}"{}" for your own file (the path of a .conf file with its extension, relative to <hyprtail root>))", name, hint, own);
         }
 
-        // "prefab:<name>" -> the embedded manifest; otherwise the path of a
+        // "builtin:<name>" -> the embedded manifest; otherwise the path of a
         // .conf file (cfg::resolveShaderPath, relative ones against the
         // hyprtail root), never a fallback to a built-in. Shader files a file
         // preset names that aren't on disk are added to `missing`.
@@ -301,12 +301,12 @@ namespace hyprtail::preset {
             std::string text;
             bool        embedded = false;
 
-            if (name.starts_with(PREFAB_PREFIX)) {
+            if (name.starts_with(BUILTIN_PREFIX)) {
                 embedded           = true;
-                const auto builtin = builtinManifest(std::string_view{name}.substr(PREFAB_PREFIX.size()));
+                const auto builtin = builtinManifest(std::string_view{name}.substr(BUILTIN_PREFIX.size()));
                 if (builtin.empty())
-                    return std::unexpected(std::format("unknown prefab preset \"{}\" (built-in: prefab:jitter, prefab:vivid, "
-                                                       "prefab:comet, prefab:embers, prefab:spring, prefab:ink, prefab:mosaic, prefab:snake, prefab:helix, prefab:tether, prefab:thread)",
+                    return std::unexpected(std::format("unknown builtin preset \"{}\" (built-in: builtin:jitter, builtin:vivid, "
+                                                       "builtin:comet, builtin:embers, builtin:spring, builtin:ink, builtin:mosaic, builtin:snake, builtin:helix, builtin:tether, builtin:thread)",
                                                        name));
                 text = std::string{builtin};
             } else {
@@ -318,7 +318,7 @@ namespace hyprtail::preset {
                 if (!std::filesystem::exists(file)) {
                     const auto stem = std::filesystem::path{name}.stem().string();
                     return std::unexpected(
-                        std::format("no such file: {}{}", file.string(), builtinManifest(stem).empty() ? "" : std::format(" (for the built-in, use \"prefab:{}\")", stem)));
+                        std::format("no such file: {}{}", file.string(), builtinManifest(stem).empty() ? "" : std::format(" (for the built-in, use \"builtin:{}\")", stem)));
                 }
                 auto read = readFile(file);
                 if (!read)
@@ -346,7 +346,7 @@ namespace hyprtail::preset {
             return out;
         }
 
-        constexpr const char* FALLBACK_PRESET = "prefab:ink";
+        constexpr const char* FALLBACK_PRESET = "builtin:ink";
 
         // Absolute last resort if even the embedded "ink" manifest somehow
         // fails to parse: a single trail layer on pragma defaults. Never

@@ -1,4 +1,4 @@
-// hyprtail prefab: the shared two-color palette of the built-in shaders.
+// hyprtail builtin: the shared two-color palette of the built-in shaders.
 //
 //   #include "helpers/palette.glsl"
 //

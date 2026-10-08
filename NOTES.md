@@ -666,17 +666,17 @@ so no compatibility shim.
   `shader::builtin()` keys lost the `classic/` prefix (`ribbon.vert`).
 - **One rule, applied three times:** a prefix means embedded and
   immutable, anything else is the user's own file.
-  - preset name: `prefab:<name>` vs `<name>`;
-  - a preset's shader stage: `prefab:ribbon.vert` vs `ribbon.vert`;
+  - preset name: `builtin:<name>` vs `<name>`;
+  - a preset's shader stage: `builtin:ribbon.vert` vs `ribbon.vert`;
   - include: `"helpers/<name>"` vs a path.
   Why not shadow-with-fallback (what a same-named user directory did
   before): a user who copies `subtle.conf` and edits their shader copy would
   get the built-in silently if a bare name still meant "built-in first". The
-  shipped presets therefore say `prefab:ribbon.vert`, and "edit it" is
+  shipped presets therefore say `builtin:ribbon.vert`, and "edit it" is
   "swap the prefixed form for a bare one pointing at your copy". A bare
   preset name never resolves to a built-in; when the file is missing the
-  error says which path was tried (and hints `prefab:<name>` if a built-in
-  of that name exists). The failure still degrades to `prefab:subtle`,
+  error says which path was tried (and hints `builtin:<name>` if a built-in
+  of that name exists). The failure still degrades to `builtin:subtle`,
   after the error, because the plugin must keep drawing.
 - **Gotcha:** a user's own copy of a helper must be included as
   `"./helpers/<name>"`, since the bare `helpers/` prefix is always the
@@ -693,7 +693,7 @@ so no compatibility shim.
   for one base inside hyprtail. Side effect: `hyprland -c <file>` no longer
   moves hyprtail's directory; `run_dev.sh` sets `XDG_CONFIG_HOME`, so the
   dev instance is unaffected.
-- **Prefab presets can only use `prefab:` shaders** (no path), so an
+- **Builtin presets can only use `builtin:` shaders** (no path), so an
   embedded manifest can never pick up a file from the user's directory.
 - **Not covered by `make test-unit`:** `Preset.cpp` links Hyprland headers
   (`Diagnostics`, `Config`), so the unit build doesn't include it. The
@@ -989,7 +989,7 @@ under the pointer differ, and the rule was applied to the focused one.
      Pinned/floating window above an excluded tiled one: not excluded.
   7. Two monitors, pointer entering mpv from the other monitor: nothing left
      on either.
-  8. With an idle layer (`prefab:classic`): stay still over mpv, no marker;
+  8. With an idle layer (`builtin:classic`): stay still over mpv, no marker;
      over the terminal, marker appears after its `start_ms`.
 - **Known limitations:**
   - The hit test ignores layer surfaces. A layer surface above an excluded
@@ -1018,7 +1018,7 @@ Source analysis plus read-only fetches of upstream files; no `nix` binary here, 
 - **Main: three separate reasons `check-headers` could not pass.** (1) `nix build …#hyprland-with-tests` installs the default `outputsToInstall` (nixpkgs `check-meta.nix`: `bin`, else `out`, plus `man`), never `dev`, so there is no `result-dev`. (2) `hyprland.pc` is installed under `share/pkgconfig` (`CMakeLists.txt:686-687` on main); the workflow used `lib/pkgconfig`. hyprpm itself uses `share/pkgconfig` (`PluginManager.cpp:419`, `:1157`). (3) `hyprland.pc` `Requires:` aquamarine, hyprcursor, hyprgraphics, hyprlang, hyprutils, libdrm, egl, cairo, xkbcommon, libinput and wayland-server, none on a bare runner's pkg-config path, and the runner's system GCC is older than the GCC 15 that `#embed` needs. The header-build step had not failed silently: `set -euo pipefail` was on and `check-headers` belongs to the next step.
 - **The restructure:** everything goes through our flake with the row's overrides. `.#legacyPackages.<system>.hyprland` is the very `hyprland` derivation hyprtail is built against, built once per row; `.#hyprtail` is `make all` under `mkHyprlandPlugin` (hyprpm's default pkg-config mode); `devShells.ci` (`inputsFrom` the plugin, `hyprland.stdenv`, `pkg-config`, `glslang`) runs `make test-unit` and `make test-compat`. The nm check reads `bin/.Hyprland-wrapped`: `nix/default.nix` wraps `bin/Hyprland` with `wrapProgram`, so `bin/Hyprland` is a shell script with no symbols to read. `hyprland-unwrapped` (`wrapRuntimeDeps = false`, `nix/overlays.nix`) would have given a plain ELF but is a different derivation, hence a second full Hyprland build per row, which is the cost that matters most on the uncached stable row; `hyprland-with-tests` stays only in the smoke job, which needs its compiled-in test binary.
 - **Side effects to expect:** `glslangValidator` is now on the CI path, so `make test-unit`'s GLSL checks actually run there (locally they skip when the tool is missing). Promotion counters for the smoke rows start at zero (docs/CI.md): earlier runs predate the pin and this restructure.
-- **Smoke config drift found in the same pass:** `tests/hyprtester/smoke.lua` still set the contract-1 keys (`fade_ms`, `idle_enabled`, `idle_delay_ms`, `idle_duration_ms`), removed in phase 4, so the default `prefab:subtle` preset (no idle layer) ran and the idle effect was never exercised. It now selects `prefab:classic` and sets `params = "idle:enabled=true idle:start_ms=50 idle:duration_ms=200 trail:fade_ms=500"`.
+- **Smoke config drift found in the same pass:** `tests/hyprtester/smoke.lua` still set the contract-1 keys (`fade_ms`, `idle_enabled`, `idle_delay_ms`, `idle_duration_ms`), removed in phase 4, so the default `builtin:subtle` preset (no idle layer) ran and the idle effect was never exercised. It now selects `builtin:classic` and sets `params = "idle:enabled=true idle:start_ms=50 idle:duration_ms=200 trail:fade_ms=500"`.
 - **Stability risk:** none for the plugin (workflow, flake and test config only), so no nested-instance test was warranted for the CI work itself.
 
 ## Spring-chain stage 1: the source interface (built, untested on host)
@@ -1048,7 +1048,7 @@ Interface only, no spring math. Reasoning:
 ## Spring-chain stage 2: the spring source (built, untested on host)
 
 `CSpringChainSource` (`src/SpringChain.*`), the `source` preset key and
-`source:<name>` settings (`src/Source.*`, `Preset.*`), `prefab:spring`. SPEC
+`source:<name>` settings (`src/Source.*`, `Preset.*`), `builtin:spring`. SPEC
 §13.1 and §13.7 have the design; this records why.
 
 - **Reframing checked against the solver, not assumed.** `advanceSpring`
@@ -1117,7 +1117,7 @@ Interface only, no spring math. Reasoning:
   since the chain's changes on insert.
 - **Stability risk, and the test it needs (the user's, not run here):**
   continuous upload runs for real for the first time, and the source can
-  change at runtime. Nested instance, scoped: load `prefab:spring`; move and
+  change at runtime. Nested instance, scoped: load `builtin:spring`; move and
   stop, confirm `hyprctl hyprtail` shows `moving` false and renders stop
   (no more frames once faded); stack it with other layers (a user preset with
   more layers over `source = spring`); switch to a pointer preset and back
@@ -1153,7 +1153,7 @@ Interface only, no spring math. Reasoning:
   depend only on uniforms, so the early discards are uniform control flow and
   `ht_coverage`'s `fwidth` afterwards is well defined.
 - **Smoke test params.** `HYPRTAIL_HEALTHY` fails on any warning, and
-  `prefab:subtle`'s layer is now `thread`, so the preset-switch loops pass
+  `builtin:subtle`'s layer is now `thread`, so the preset-switch loops pass
   `thread:fade_ms` for subtle instead of `trail:fade_ms`.
 - **Codrops "stylised mouse trails" (OGL):** used as inspiration only (eased
   point chain drawn as a thick ribbon; our spring source is the chain). No
@@ -1170,7 +1170,7 @@ alias and no compatibility shim.
   `SValues::trail`, `hyprctl hyprtail` field `trail`, text and JSON). The
   value was resolved as follows (`preset::load`; superseded by the next
   section, which replaces the bare name with a `.conf` path):
-  `prefab:<name>` is an embedded manifest, a bare `<name>` (no `/`,
+  `builtin:<name>` is an embedded manifest, a bare `<name>` (no `/`,
   `Preset.cpp:279`) is `<hyprtail root>/presets/<name>.conf`
   (`Preset.cpp:285`). Strings that name the setting changed (the
   load-failure report is now `trail "<name>": ...`, diag key `trail:<name>`;
@@ -1179,7 +1179,7 @@ alias and no compatibility shim.
   namespace `hyprtail::preset`, `Preset.{hpp,cpp}`, `SPreset`,
   `SResolved`, `pendingPreset`/`activePreset`, `s_preset`,
   `presetReleaseGpu`, the `presets/` directory, `PRESET_FILES` in the
-  Makefile, `testPresetManifests`, the "prefab preset" wording in errors,
+  Makefile, `testPresetManifests`, the "builtin preset" wording in errors,
   and the `idle`/`trail` layer names (a layer called `trail` is unrelated to
   the setting).
 - **`presets/` and `shaders/` moved under `hyprtail/`** (`git mv`, history
@@ -1196,14 +1196,14 @@ alias and no compatibility shim.
   There is none: no shipped shader contains `#include "hyprtail/..."` (Phase
   4b renamed that library to `helpers/`), and `helpers/` includes never touch
   the disk: `resolveInclude` (`ShaderSource.cpp:232-237`) looks the name up
-  in the embedded `prefabs()` table. The move therefore cannot change how any
+  in the embedded `builtins()` table. The move therefore cannot change how any
   include resolves. A user file's relative include is still resolved against
   the including file (`ShaderSource.cpp:242-244`).
 - **Relative paths** still resolve against the hyprtail config root, not
   the main Hyprland config directory (`resolveShaderPath`,
   `Config.cpp:223-238`; SPEC 13.7). Unchanged.
 - **Embedded fallback unchanged:** a run with no files under the config root
-  loads `prefab:subtle` from the embedded copy.
+  loads `builtin:subtle` from the embedded copy.
 - **Checked:** `make all` and `make DEV=1 all` build; both `.so` files hold
   `plugin:hyprtail:trail` (no `plugin:hyprtail:preset`), the embedded
   manifests and the shader helpers; `make test-unit` passes (307 checks plus
@@ -1215,7 +1215,7 @@ Follows the rename section above, before any release: no alias.
 
 - **Shipped presets name shaders by path.** Every `<layer>:vertex`/`fragment`
   in `hyprtail/presets/*.conf` (27 references in 9 files) went from
-  `prefab:<name>` to the path relative to the hyprtail root,
+  `builtin:<name>` to the path relative to the hyprtail root,
   `shaders/<name>`. A purely mechanical rewrite; the only other text
   changes are two comments: the `subtle.conf` header (how to copy and
   select it) and one sentence in `vivid.conf`. The manifest grammar already
@@ -1227,17 +1227,17 @@ Follows the rename section above, before any release: no alias.
   resolves a `.conf` path); its comment in `Config.hpp` says so.
 - **Embedded table keyed by the same string.** `shader::builtin()` keys
   were `ribbon.vert`; they are now `shaders/ribbon.vert`
-  (`ShaderSource.cpp:403-410`), so a prefab preset's stage value is looked
+  (`ShaderSource.cpp:403-410`), so a builtin preset's stage value is looked
   up as written. The slot's safe identity (`SLayerSpec::vertBuiltin`,
   `Preset.cpp:260,263`, the hardcoded fallback) uses the new keys, and
   built-in shaders now show as `<shaders/ribbon.vert>` in messages. The
-  `helpers/` table (`prefabs()`, `ShaderSource.cpp:83-90`) is keyed
+  `helpers/` table (`builtins()`, `ShaderSource.cpp:83-90`) is keyed
   relative to `shaders/` and was left alone as asked, so the two embedded
   tables use different bases. A wart, not a bug.
 - **Embedded presets never read the disk** (`Preset.cpp:241-244`): a stage
   not in the table is an error naming the expected form. File presets
   resolve on disk (`Preset.cpp:247-255`).
-- **`prefab:<name>` as a shader stage is kept** as shorthand for the embedded
+- **`builtin:<name>` as a shader stage is kept** as shorthand for the embedded
   `shaders/<name>` (`Preset.cpp:231-236`), for file presets that want to pin
   an embedded shader. It also keeps the smoke test's scratch presets
   working with no `shaders/` folder on disk. Removing it later is one
@@ -1252,14 +1252,14 @@ Follows the rename section above, before any release: no alias.
   then drops the queued switch (`main.cpp:1089-1092`). Same diag path, so
   the orange notification and `errors.log` as before. Other load failures
   (no such preset file, parse error, bad bare name) are unchanged: `ERR`
-  and fallback to `prefab:subtle`. `activePreset.layers.empty()` is the
+  and fallback to `builtin:subtle`. `activePreset.layers.empty()` is the
   "nothing showing yet" test (it is empty until the first
   `prepareLayers()`, `LayerPassElement.hpp:97`). Also: a preset kept this
   way isn't re-checked until the next config reload, and the missing file
   isn't watched (the active preset's files are).
-- **`trail` value forms.** `prefab:<name>`, or a path ending `.conf`
+- **`trail` value forms.** `builtin:<name>`, or a path ending `.conf`
   (`Preset.cpp:306`). Anything else, bare names included, gets `notATrail`
-  (`Preset.cpp:281`): `"subtle" isn't a trail: write "prefab:subtle" for the
+  (`Preset.cpp:281`): `"subtle" isn't a trail: write "builtin:subtle" for the
   built-in, or "presets/subtle.conf" for your own file ...`. No way to name
   a bare shader file in `trail`; a custom shader goes in a preset.
 - **Tests.** `testPresetManifests` now requires path-form stages and checks,
@@ -1300,7 +1300,7 @@ any Hyprland instance, and no rendering was looked at.
   no extra flags, exactly what the single-file pass in the Makefile uses. A
   failing pair prints its name and the validator's log with `<id>:<line>`
   mapped back to file:line through `shader::mapLog`; a glob hit that is not
-  in `shader::builtin()` also fails (it could not be a prefab). No skip list.
+  in `shader::builtin()` also fails (it could not be a builtin). No skip list.
   The shaders are left in `$OUT_DIR` for the Makefile's single-file pass.
 - **Result: 4 x 4 = 16 of 16 pairs link.** Shown to report properly by
   temporarily breaking `dots.frag` (4 pairs failed, each with `dots.frag:39`
@@ -1530,8 +1530,8 @@ before it; no timestamps, no fade.
   `prepare()` returns an error and `main.cpp:266-268` disables the layer.
 - **The fallback pair is not always safe.** A stage given as a path falls back
   to `shaders/ribbon.vert` / `shaders/gradient.frag`; a stage given as
-  `prefab:<name>` falls back to that prefab (`Preset.cpp:231-235`, `:260`,
-  `:263`). So a user vertex shader paired with `prefab:dots.frag` falls back
+  `builtin:<name>` falls back to that builtin (`Preset.cpp:231-235`, `:260`,
+  `:263`). So a user vertex shader paired with `builtin:dots.frag` falls back
   to `ribbon.vert` + `dots.frag`, which `expects` refuses again, and the
   layer is disabled with an `ERR`. Read from the code, not run.
 - **Nothing is checked when the preset is read**: `resolveStage` only checks
@@ -1566,7 +1566,7 @@ with every fragment shader, evaluates the real `expectsMismatch` for each pair
 and prints the table. Link failures fail the test; an `expects` refusal is
 only a table entry. `testDemoPresets` checks each demo preset: header
 comment, contract, layer names (unique across the demo presets), shader
-references resolved as a file preset does (`prefab:<name>` embedded, anything
+references resolved as a file preset does (`builtin:<name>` embedded, anything
 else under `demo/hyprtail/`), `expectsMismatch`, and every parameter name,
 type and range. Not covered by any unit test, so checked once by a scratch
 script: a parameter declared in both stages with different declarations
@@ -1629,12 +1629,12 @@ degenerate-segment guard, fade.glsl, noise.glsl `ht_hash2`).
 The nested instance reads its hyprtail root from `$XDG_CONFIG_HOME/hypr/hyprtail`
 and `run_dev.sh` sets `XDG_CONFIG_HOME=dev_env`, so the root is
 `dev_env/hypr/hyprtail`. Link `demo/hyprtail` there (untracked, remove after);
-shipped shaders are named `prefab:` in the presets, so nothing else is
+shipped shaders are named `builtin:` in the presets, so nothing else is
 needed. See the report for the commands.
 
 ## One shipped default: `subtle` and `classic` folded into `ink` (built; compiled and unit-tested only)
 
-- `hyprtail/presets/subtle.conf` and `classic.conf` are deleted. `prefab:ink`
+- `hyprtail/presets/subtle.conf` and `classic.conf` are deleted. `builtin:ink`
   is the default `trail` and the failed-load fallback (`Config.hpp`,
   `FALLBACK_PRESET` in `Preset.cpp`).
 - `ink.conf` gained classic's `idle` layer, values unchanged, with
@@ -1656,7 +1656,7 @@ needed. See the report for the commands.
   layer.
 - Smoke (`hyprtail_smoke.cpp`, section 4b) lost its only second instanced
   preset: the instanced rounds, K-param loop and hotplug now run on
-  `prefab:jitter` alone, so `drift.vert`'s instanced path is no longer
+  `builtin:jitter` alone, so `drift.vert`'s instanced path is no longer
   exercised there. `embers` could be added back with `embers:` keys.
 
 ## `comet.vert` folded into `ribbon.vert` (built; compiled and unit-tested only)
@@ -1668,8 +1668,8 @@ needed. See the report for the commands.
   unchanged: the exponent only narrows the strip.
 - The head swelling (`bulb`, `bulb_ms`) is dropped, not ported: it added 2.5 px
   of half-width at the defaults and sits under the pointer when it rests.
-- `demo-comet-helix.conf` now uses `prefab:ribbon.vert` (demo presets load from
-  disk, so the embedded shader needs the `prefab:` form) with
+- `demo-comet-helix.conf` now uses `builtin:ribbon.vert` (demo presets load from
+  disk, so the embedded shader needs the `builtin:` form) with
   `core:tail_power = 1`; `curve`, `bulb` and `bulb_ms` are gone, so its head is
   blunt instead of faintly swollen.
 - Older entries (the demo-layer notes naming `comet.vert`, `demo-comet`) are
@@ -1678,7 +1678,7 @@ needed. See the report for the commands.
   `taper.vert` still calls the same idea `tail_curve`; the rename pass should
   settle both together with `taper`.
 
-## `demo-lattice` shipped as `prefab:mosaic` (built; compiled and unit-tested only)
+## `demo-lattice` shipped as `builtin:mosaic` (built; compiled and unit-tested only)
 
 - `demo/hyprtail/shaders/lattice.frag` moved to `hyprtail/shaders/hexagons.frag`
   and `demo/hyprtail/presets/demo-lattice.conf` to `hyprtail/presets/mosaic.conf`
@@ -1705,7 +1705,7 @@ needed. See the report for the commands.
   (`ht_paletteT` returns `1 - life`, so `mix(a, b, 1 - life)` is softline's
   `mix(b, a, life)`: `helpers/palette.glsl`). Its `soft` is `softness`.
 - `demo-thread`, `demo-helix` (sheath) and `demo-tether` (three layers) now use
-  `prefab:gradient.frag` (the `prefab:` form, since demo presets load from
+  `builtin:gradient.frag` (the `builtin:` form, since demo presets load from
   disk) with `color_by = 1` and `softness` in place of `soft`. Their `alpha`
   and colors were already set explicitly, so nothing else needed carrying.
 - Not carried over: softline's `1e-4` floor on the edge antialiasing width.
@@ -1719,7 +1719,7 @@ needed. See the report for the commands.
   `strands.frag`, `taper.vert`, and the presets `helix` (was `demo-helix`),
   `tether` (`demo-tether`), `thread` (`demo-thread`) and `ribbon-helix`
   (`demo-comet-helix`). `demo/` is gone.
-- References changed from the `prefab:<name>` form (disk presets) to the
+- References changed from the `builtin:<name>` form (disk presets) to the
   `shaders/<name>` form the shipped manifests require; descriptions and headers
   lost "demo". Only wording changed, no parameter values.
 - `testDemoPresets` and the demo half of the link matrix are removed
@@ -1747,7 +1747,7 @@ needed. See the report for the commands.
   `taper.vert`, the `ribbon-helix` preset and the word "ribbon" in prose and
   comments.
 - Follow-up: the `ribbon-helix` preset is now `snake` (`snake.conf`,
-  `prefab:snake`). Older entries that say `ribbon-helix` or `demo-comet-helix`
+  `builtin:snake`). Older entries that say `ribbon-helix` or `demo-comet-helix`
   mean it.
 
 ## Open questions

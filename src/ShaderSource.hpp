@@ -93,11 +93,11 @@ namespace hyprtail::shader {
         std::vector<SPadding>              padding;
     };
 
-    // Built-in shaders (the prefab presets'), embedded at build time, keyed
+    // Built-in shaders (the builtin presets'), embedded at build time, keyed
     // by their path relative to the hyprtail root, e.g. "shaders/taper.vert"
-    // -- the same string a preset's `<layer>:vertex` holds, so a prefab
+    // -- the same string a preset's `<layer>:vertex` holds, so a builtin
     // preset's shader reference is looked up here as written. A user preset
-    // may also say "prefab:taper.vert", which is "shaders/taper.vert" here.
+    // may also say "builtin:taper.vert", which is "shaders/taper.vert" here.
     // Empty view if unknown.
     std::string_view builtin(std::string_view name);
 

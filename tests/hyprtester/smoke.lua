@@ -19,7 +19,7 @@ local function plugin_settings()
         -- ink has the idle ring layer, off in the preset itself; the
         -- params string turns it on with a short delay and duration.
         -- ink:fade_ms is FADE_MS in hyprtail_smoke.cpp.
-        trail    = "prefab:ink",
+        trail    = "builtin:ink",
         params   = "idle:enabled=true idle:start_ms=50 idle:duration_ms=200 ink:fade_ms=500",
         capacity = nil,
     }
