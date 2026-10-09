@@ -1,391 +1,476 @@
-# Writing hyprtail shaders (contract 2)
+# Writing hyprtail shaders
 
-hyprtail shaders are plain GLSL ES 3.00 `.vert`/`.frag` files. You never
-declare the plugin's attributes or uniforms yourself — a prelude the loader
-injects does that. This document covers everything the prelude and loader
-provide.
+hyprtail draws a trail with one to four **layers**. Each layer is a pair of
+GLSL ES 3.00 files: a vertex shader (`.vert`, the geometry) and a fragment
+shader (`.frag`, the look). hyprtail injects the attributes, uniforms and
+helper functions. You write `main()`.
 
-A **layer** is one draw layer of a preset (`trail` and `idle` in the shipped
-presets): one vertex shader (geometry) + one fragment shader (shading) + its
-own parameter values. A preset stacks up to 4 layers; see CONFIG.md for how
-a preset picks which shaders a layer uses. "Layer" means only that. The
-prelude, below, is not made of layers.
+The shipped shaders in [`hyprtail/shaders/`](../hyprtail/shaders/) are the
+reference. Each one opens with a comment on its technique. Preset files and
+config keys are in [CONFIG.md](CONFIG.md).
 
-**The prelude** is the text the loader puts in place of your
-`#pragma hyprtail contract 2` line. It is assembled from pieces that are
-specific to a **stage** (vertex or fragment) and, for the vertex stage, to a
-**topology** (`path`, `quad` or `instanced`): a common piece (precision,
-built-in uniforms) for both stages, plus the fragment piece for a fragment
-shader, or the vertex piece and then the `path`, `quad` or `instanced` piece
-for a vertex shader. The prelude is internal (`hyprtail/shaders/prelude/`); don't copy
-or edit it.
+## Learning resources
 
-Three topologies are implemented: `path` (the trail ribbon), `quad` (a fixed
-square around the pointer, for idle/presence effects) and `instanced K` (K
-quads per trail node, for particles, spray and jitter). Contract 2's design
-also names `path smooth N`, but that is not built yet — don't rely on it.
+- [The Book of Shaders](https://thebookofshaders.com/): fragment shaders from
+  zero. Shaping functions, color, shapes, noise.
+- [LearnOpenGL: Shaders](https://learnopengl.com/Getting-started/Shaders):
+  vertex and fragment shaders, and how data flows between them.
+- [Inigo Quilez: 2D distance functions](https://iquilezles.org/articles/distfunctions2d/):
+  signed distance functions for any shape you draw inside a quad.
+- [Shadertoy](https://www.shadertoy.com/): examples to study. See
+  [Coming from Shadertoy](#coming-from-shadertoy).
+- [GLSL ES 3.00 specification](https://registry.khronos.org/OpenGL/specs/es/3.0/GLSL_ES_Specification_3.00.pdf):
+  the exact language hyprtail compiles.
 
-## Minimum required pragma
+## Quickstart
 
-Every shader file (both vertex and fragment) must start:
+1. Copy `hyprtail/presets/` and `hyprtail/shaders/` from this repository into
+   `~/.config/hypr/hyprtail/`.
+2. Set `trail = "presets/ink.conf"`.
+3. Save this as `~/.config/hypr/hyprtail/shaders/solid.frag`:
+
+   ```glsl
+   #version 300 es
+   #pragma hyprtail contract 2     // required; replaced by the prelude
+   #pragma hyprtail expects path   // pair only with ribbon geometry
+
+   #pragma hyprtail param color color rgba(ffffffcc)  // -> uniform vec4 color;
+
+   void main() {
+       float d   = abs(ht_vLocal.y);     // 0 on the centerline, 1 at the edge
+       float w   = fwidth(ht_vLocal.y);  // change per pixel: a 1 px edge
+       float cov = 1.0 - smoothstep(1.0 - w, 1.0, d);
+       if (cov <= 0.0)
+           discard;
+
+       float a      = color.a * ht_vLife * cov;  // fades with node age
+       ht_fragColor = vec4(color.rgb * a, a);    // premultiplied alpha
+   }
+   ```
+
+4. In `presets/ink.conf`, point the `ink` layer at it:
+
+   ```
+   ink:fragment = shaders/solid.frag
+   ink:color    = rgba(ff2266ff)
+   ```
+
+   Delete the `ink:color_by`, `ink:color_a` and `ink:color_b` lines.
+   `solid.frag` doesn't declare those parameters, and a preset key for an
+   undeclared parameter is a warning.
+5. Run `hyprctl reload`. After that, saving `solid.frag` (or a file it
+   includes) recompiles it live. Preset edits still need `hyprctl reload`.
+
+A broken shader never blanks the trail. See [Errors](#errors).
+
+## Terms
+
+- **Node:** one trail point: position, birth time, velocity, distance and a
+  random seed. The preset's source (`pointer` history or `spring` chain, see
+  CONFIG.md) makes the nodes.
+- **Segment:** a connected run of nodes. A **break** (warp, workspace change,
+  screen lock) ends one segment and starts the next.
+- **Span:** two consecutive nodes, `p0` (older) and `p1` (newer).
+- **Topology:** the shapes a layer draws: `path`, `quad` or `instanced K`.
+  The vertex shader declares it.
+- **Prelude:** the declarations hyprtail injects in place of the `contract`
+  pragma.
+- **Parameter (param):** a value your shader declares with a pragma. Presets
+  and the `params` config key set it, without a recompile.
+- **Damage:** the screen area hyprtail repaints in a frame.
+- **Padding:** how far past its nodes (or the pointer, for `quad`) a layer
+  draws, in px. It sizes the damage.
+- **Premultiplied alpha:** color already multiplied by its alpha.
+- **Builtin:** a preset or shader embedded in the plugin (`builtin:ink`,
+  `builtin:taper.vert`). It never reads from disk.
+
+## How a layer draws
+
+1. The **vertex shader** runs once per corner of each shape the topology
+   draws. It sets the corner's screen position (`gl_Position`) and writes
+   **varyings**.
+2. The GPU fills each shape and interpolates the varyings across it.
+3. The **fragment shader** runs once per covered pixel. It reads the
+   interpolated varyings and writes one color.
+
+Only pixels inside the shapes run the fragment shader: make the shapes big
+enough for any glow or soft edge.
+
+| Topology | Shapes | Use |
+|---|---|---|
+| `path` | one 4-vertex strip per span | ribbons, lines |
+| `quad` | one square around the pointer | idle and presence effects |
+| `instanced K` | K squares per visible node | particles, sprays, dots |
+
+- **Space:** global layout px (logical, shared by all monitors), y down.
+  `ht_toClip()` converts a position to `gl_Position`.
+- **Time:** no free-running clock. Animate with a node's age (`ht_vAge`,
+  `HtNode.age`), or with `ht_stillMs` in a `quad` layer.
+- **Blending:** layers draw bottom to top, in the order of the preset's
+  `layers` line, with premultiplied alpha (`GL_ONE, GL_ONE_MINUS_SRC_ALPHA`).
+  There are no other blend modes.
+
+### Coming from Shadertoy
+
+| Shadertoy | hyprtail |
+|---|---|
+| `fragColor` | `ht_fragColor`, premultiplied: `vec4(rgb * a, a)` |
+| `fragCoord / iResolution.xy` | `ht_vLocal`, coordinates local to the shape |
+| `iTime` | `ht_vAge` (node age, ms) or `ht_stillMs` (`quad`) |
+| `iMouse` | `ht_anchor`, pointer position in px |
+| `uniform float x;` | `#pragma hyprtail param float x ...`; a plain `uniform` is refused |
+| `iChannel0`..`3` | none: no textures, no screen sampling |
+| one full-screen pass | runs only inside the shapes your vertex shader emits |
+
+## Paths
+
+| What | Where |
+|---|---|
+| hyprtail config root | `$XDG_CONFIG_HOME/hypr/hyprtail/`, else `~/.config/hypr/hyprtail/` |
+| shipped shaders | `hyprtail/shaders/` in this repository |
+| helpers | `hyprtail/shaders/helpers/`, included as `helpers/<name>` |
+| prelude (reference only) | `hyprtail/shaders/prelude/` |
+
+A layer gets its shaders from:
+
+- its preset: `<layer>:vertex` and `<layer>:fragment`, each a path or
+  `builtin:<file>` (`builtin:taper.vert`). Relative paths resolve against the
+  config root. A builtin preset always uses embedded shaders.
+- the `layer1_vertex` .. `layer4_fragment` config keys, which override the
+  preset by layer position (1 = bottom). Paths only. The preset's other keys
+  for that layer still apply.
+
+Shipped shaders:
+
+| File | Topology | Draws |
+|---|---|---|
+| `taper.vert` | `path` | ribbon that tapers with age, optional calligraphy nib. Reference for `path`. |
+| `convex.vert` | `path` | thin strip pointed at both ends |
+| `scatter.vert` | `instanced` | copies at fixed random offsets. Reference for bounded `instanced`. |
+| `drift.vert` | `instanced` | particles that fly off as they age. Reference for growing `instanced`. |
+| `halo.vert` | `quad` | square around the pointer. Reference for `quad`. |
+| `gradient.frag` | expects `path` | two-color ribbon, hard line to soft glow |
+| `hexagons.frag` | expects `path` | hexagon cells along the strip |
+| `strands.frag` | expects `path` | two strands winding as a helix |
+| `dots.frag` | expects `quad,instanced` | dot, ring or sparkle per square |
+| `pulse.frag` | expects `quad` | ring that expands while the pointer rests |
+| `sizzle.frag` | expects `quad` | sparks that crackle while the pointer rests |
+
+## Pragmas
+
+Every file starts with:
 
 ```glsl
 #version 300 es
 #pragma hyprtail contract 2
 ```
 
-`#pragma hyprtail contract 2` must be the very first thing after
-`#version` — before any other `#pragma hyprtail` line and before any
-`#include`. The loader replaces this line with the prelude, which sets
-`precision highp float`/`int` and declares everything below. A missing or
-unsupported contract version is refused with a message naming the
-supported range.
+The contract pragma comes right after `#version`, before any other
+`#pragma hyprtail` or `#include`. One stage per file. Keep files ASCII:
+drivers mishandle UTF-8, even in comments.
 
-## All pragmas
+| Pragma | Stage | Required |
+|---|---|---|
+| `contract 2` | both | yes, first after `#version` |
+| `topology path\|quad\|instanced <K>` | vertex, main file | yes, once |
+| `expects <kind>[,<kind>...]` | fragment, main file | no, at most once |
+| `param <type> <name> <default> [<min> <max>]` | both, includes too | no |
+| `padding <expr>` | both, includes too | no |
 
-| Pragma | Where | Required | Meaning |
-|---|---|---|---|
-| `#pragma hyprtail contract 2` | every file, first line after `#version` | yes | Declares contract version; triggers prelude injection. |
-| `#pragma hyprtail topology path\|quad\|instanced <K>` | vertex (geometry) shader, main file only | yes, exactly once | What kind of geometry this shader produces. `instanced` takes K, see below. |
-| `#pragma hyprtail expects <kind>[,<kind>...]` | fragment shader, main file only | no, at most once | Refuses to pair with a vertex shader whose topology isn't in this list. Kinds: `path`, `quad`, `instanced` (no K). Comma-separated, no spaces, e.g. `quad,instanced`. |
-| `#pragma hyprtail param <type> <name> <default> [<min> <max>]` | either stage, anywhere | no | Declares a shader-controlled parameter. Becomes `uniform <glsl-type> <name>;` in place. |
-| `#pragma hyprtail padding <expr>` | either stage or an include | no | How far past the node/anchor position this layer draws, in px. The largest declaration across the whole program counts. |
+Any other `#pragma hyprtail ...` is an error.
 
-Anything else spelled `#pragma hyprtail ...` that isn't one of the above is
-an error.
-
-### `topology`
+### topology
 
 ```glsl
-#pragma hyprtail topology path              // per-segment ribbon geometry
-#pragma hyprtail topology quad              // one fixed quad around the pointer
-#pragma hyprtail topology instanced 8       // 8 quads per visible node
-#pragma hyprtail topology instanced copies  // K is the int param "copies"
+#pragma hyprtail topology path
+#pragma hyprtail topology quad
+#pragma hyprtail topology instanced 8       // 8 copies per node
+#pragma hyprtail topology instanced copies  // K from the int param "copies"
 ```
 
-A vertex shader with no topology pragma, more than one, or an unrecognized
-kind is refused. `path` and `quad` take no options.
+K is an integer 1..64, or the name of an `int` param whose range is inside
+1..64 (`#pragma hyprtail param int copies 6 1 64`). A param K changes on
+config reload, without a recompile.
 
-**K of `instanced`** is either an integer literal from 1 to 64, or the name of
-an `int` parameter of the same program. A named K must be declared with a range
-inside 1..64 (`#pragma hyprtail param int copies 6 1 64`); a missing
-declaration, another type, or a missing or wider range is refused. Its value
-is read every draw, so changing it in a preset or through `params`
-(`params = "trail:copies=12"`) takes effect on the next config reload, with
-no recompile. The status command shows the topology as `instanced 8` or, for a
-param, `instanced copies`, and the layer's current parameter values.
-
-### `expects`
+### expects
 
 ```glsl
 #pragma hyprtail expects path
+#pragma hyprtail expects quad,instanced   // comma, no spaces, no K
 ```
 
-If the fragment shader you pair this with a vertex shader whose declared
-topology isn't in the list, you get a plain refusal, e.g.:
+Refuses to pair with a vertex shader of another topology:
 
 > `glow.frag expects topology path; dots.vert declares instanced 8`
 
-Leaving `expects` off means the fragment shader accepts any topology (as
-long as it only reads the standard varyings — see below).
+Without `expects`, the fragment shader pairs with any vertex shader. Declare
+it when the shader reads varyings in a topology-specific way, such as
+`ht_vLocal.y` as the position across a ribbon.
 
-### `param`
+### param
 
 ```glsl
-#pragma hyprtail param float width 8 0 512
-#pragma hyprtail param float speed_ref 2 0.001 1000
-#pragma hyprtail param color color_slow rgba(1a66ffff)
-#pragma hyprtail param bool glow false
-#pragma hyprtail param vec2 jitter 0,0 -8 8
+#pragma hyprtail param float width  8 0 512
+#pragma hyprtail param int   copies 6 1 64
+#pragma hyprtail param bool  glow   false
+#pragma hyprtail param vec2  offset 0,0 -8 8
+#pragma hyprtail param color tint   rgba(1a66ffff)
 ```
 
-- Types: `float`, `int`, `bool`, `vec2`, `color`. `min`/`max` apply to
-  `float`, `int`, `vec2` (both components); `bool` and `color` take no
-  range.
-- Names: lowercase letter or `_` first, then letters/digits/`_`, at most 64
-  characters, no `__`. Names starting with `ht_` or `gl_` are reserved and
-  refused, as are the reserved lifecycle names below.
-- A parameter declared in both stages must match exactly (type, default,
-  range) — not just have the same type.
-- `color` values use `0xAARRGGBB`, `rgba(RRGGBBAA)`, or `rgb(RRGGBB)` (not
-  Hyprland's `rgba(r, g, b, a)` decimal form). A `color` param is delivered
-  to the shader as `vec4` already converted to the output's color
-  management (see **Color management** below) — write it as-is, don't
-  reconvert it.
-- Values are set, in increasing priority: the pragma's own default < the
-  active preset's value for that parameter < the `params` config string
-  (CONFIG.md). Setting one from a config file or `params` is validated
-  against the pragma's declared type and range; a bad value is a warning
-  and the default/previous value is kept, never a hard failure.
+Each becomes a `uniform` of the same name, at the pragma's position.
 
-**Reserved names** you cannot declare as a `param` (the prelude already
-provides them, see below): `fade_ms`, `start_ms`, `duration_ms`, `enabled`,
-`draw_when_cursor_hidden`.
+| Type | GLSL | Value syntax | Range |
+|---|---|---|---|
+| `float` | `float` | `1.5` | optional |
+| `int` | `int` | `3` | optional |
+| `bool` | `bool` | `true`/`false`, `1`/`0`, `yes`/`no` | none |
+| `vec2` | `vec2` | `x,y`, no spaces | optional, applies to both components |
+| `color` | `vec4` | `0xAARRGGBB`, `rgba(RRGGBBAA)`, `rgb(RRGGBB)` | none |
 
-### `padding`
+- **Names:** a lowercase letter or `_` first, then letters, digits or `_`.
+  At most 64 characters. No `__`, no `ht_` or `gl_` prefix, no
+  [reserved name](#reserved-parameters).
+- **Both stages:** a param declared in both must match exactly (type,
+  default, range).
+- **Values:** pragma default < preset `<layer>:<name>` < `params` config key.
+  A bad value is a warning, and the previous value stays.
+- **Colors** arrive converted to the output's color space. See
+  [Color](#color).
+
+### padding
 
 ```glsl
 #pragma hyprtail padding width * 0.5 * miter_limit + 1
 ```
 
-An expression of numbers, this program's own parameter names, `+ - * /`
-and parentheses — nothing else. It tells hyprtail how far outside the raw
-node positions (or, for `quad`, outside the anchor point) this layer
-actually draws, so the screen-redraw region is big enough to cover it. If
-your fragment shader adds a soft glow or blur that reaches past the
-geometry the vertex shader emits, declare it here — otherwise you'll see
-truncated or ghosted edges. The largest `padding` declaration in the whole
-program (vertex + fragment + any include) is the one that counts, and
-`damage_padding` (CONFIG.md) adds on top of it.
+How far past its node positions (`path`, `instanced`) or the pointer
+(`quad`) the layer draws, in px. Too small, and edges get cut off or leave
+ghosts.
 
-## Built-in uniforms (every layer, every stage)
+- Numbers, `+ - * /`, parentheses, and the names of this program's `float`,
+  `int` and `bool` params, reserved ones included. No unary minus.
+- The largest `padding` across both stages and their includes counts. It is
+  clamped to 0..4096.
+- The `damage_padding` config key adds to it. `ht_extentPx` holds the sum.
 
-Declared by the prelude, always available, never declared by you:
+## Uniforms
+
+Declared by the prelude in both stages, except `ht_K`:
 
 | Uniform | Type | Meaning |
 |---|---|---|
-| `ht_proj` | `mat3` | Global layout px → clip space, for this monitor. |
-| `ht_nowMs` | `float` | Current time, same reference as node birth times — only differences are meaningful. |
-| `ht_stillMs` | `float` | Time since the pointer last moved, ms. |
-| `ht_anchor` | `vec2` | Pointer position, global layout px (what `quad` layers center on). |
-| `ht_extentPx` | `float` | This layer's total reach: its padding expression plus `damage_padding`. |
-| `ht_K` | `int` | `instanced` topology only: copies per node (the K of the topology pragma). |
-| `fade_ms` | `float` | Reserved lifecycle parameter, see below. |
-| `start_ms` | `float` | Reserved lifecycle parameter, see below. |
-| `duration_ms` | `float` | Reserved lifecycle parameter, see below. |
+| `ht_proj` | `mat3` | layout px to clip space, this monitor. Use `ht_toClip()`. |
+| `ht_nowMs` | `float` | ms since the newest node's birth. Jumps as nodes arrive: use only for differences. |
+| `ht_stillMs` | `float` | ms since the pointer last moved |
+| `ht_anchor` | `vec2` | pointer position, px |
+| `ht_extentPx` | `float` | this layer's padding plus `damage_padding`, px |
+| `ht_K` | `int` | `instanced` vertex shaders only: copies per node |
+| `fade_ms`, `start_ms`, `duration_ms` | `float` | reserved parameters, below |
 
-## Reserved lifecycle parameters
+### Reserved parameters
 
-Every layer has these regardless of what its shaders declare. They're
-settable exactly like a shader `param` (preset manifest, `params` string —
-see CONFIG.md), but read on the CPU side for visibility/timing rather than
-being arbitrary shader knobs:
+Every layer has these. Set them like any param, in a preset or `params`.
+Never declare them.
 
-| Name | Type | Default | Meaning |
+| Name | Type, range | Default | Effect |
 |---|---|---|---|
-| `enabled` | bool | `true` | `false` disables the whole layer (not compiled). |
-| `draw_when_cursor_hidden` | bool | `true` for `path` and `instanced`, `false` for `quad` | Whether the layer keeps drawing while the OS cursor is hidden. |
-| `fade_ms` | float, ms, 1–60000 | `500` | `path` and `instanced` topologies: a node stops being visible once its age passes this. |
-| `start_ms` | float, ms, 0–60000 | `500` | `quad` topology: the layer becomes visible once the pointer has been still this long. |
-| `duration_ms` | float, ms, 0–600000 | `1500` | `quad` topology: how long it then stays visible (`0` = forever, until the pointer moves). |
+| `enabled` | bool | `true` | `false` turns the layer off; it isn't compiled |
+| `draw_when_cursor_hidden` | bool | `true`, `false` for `quad` | keep drawing while the cursor is hidden |
+| `fade_ms` | float, 1..60000 | `500` | `path`, `instanced`: a node shows while its age < `fade_ms` |
+| `start_ms` | float, 0..60000 | `500` | `quad`: shows once the pointer is still this long |
+| `duration_ms` | float, 0..600000 | `1500` | `quad`: then shows this long; `0` = until the pointer moves |
 
-## Node accessor API (`path` topology, vertex shader)
+Only the three `_ms` names are uniforms. hyprtail also uses them to decide
+what to draw.
 
-A `path`-topology vertex shader runs once per **visible segment**
-(instanced), 4 vertices per instance (a triangle strip). Each instance
-connects two consecutive trail points, `p0` (older) → `p1` (newer); `prev`
-and `next` are the neighboring points, for computing miter joins. You never
-touch the raw vertex attributes — the prelude exposes them through:
+## Vertex shader API
+
+Every topology:
 
 ```glsl
+void ht_initVaryings();         // zero all standard varyings; call first in main()
+vec4 ht_toClip(vec2 globalPx);  // layout px -> gl_Position
+
 struct HtNode {
-    vec2  pos;          // global layout px, emit offset already applied
-    float age;          // ms since this node was created (ht_nowMs - birth)
-    vec2  vel;          // px/ms at creation, (0,0) at a segment start
-    float dist;         // px traveled since the start of this node's segment
-    float seed;         // 0..1, stable for the node's whole life
-    bool  segmentStart; // true if this node isn't connected to the one before it
+    vec2  pos;          // px, emit offset applied
+    float age;          // ms since birth
+    vec2  vel;          // px/ms at birth; (0,0) at a segment start
+    float dist;         // px from the start of the node's segment
+    float seed;         // 0..1, fixed for the node's life
+    bool  segmentStart; // first node of a segment
 };
-
-HtNode ht_prev();  // neighbor before p0 (only pos/seed/segmentStart meaningful)
-HtNode ht_p0();    // older end of this segment
-HtNode ht_p1();    // newer end of this segment
-HtNode ht_next();  // neighbor after p1 (only pos/seed/segmentStart meaningful)
-
-bool  ht_atEnd();  // true if this vertex is at p1 rather than p0
-float ht_side();   // -1.0 or 1.0: which side of the ribbon's centerline
 ```
 
-At the very start/end of the visible trail, `prev`/`next` are copies of the
-nearest real node (so a direction computed from them comes out
-zero-length — handle that, or use `ht_dirBetween`'s fallback, below).
+### path
 
-## Node accessor API (`quad` topology, vertex shader)
-
-A `quad`-topology vertex shader runs once, 4 vertices (a triangle strip),
-no node data at all — just a square centered on `ht_anchor`:
+One instance per span, 4 vertices each (a triangle strip).
 
 ```glsl
-vec2 ht_corner(); // this vertex's corner, (-1,-1)..(1,1)
+HtNode ht_prev();   // node before p0: only pos, seed, segmentStart set
+HtNode ht_p0();     // older end of the span
+HtNode ht_p1();     // newer end of the span
+HtNode ht_next();   // node after p1: only pos, seed, segmentStart set
+bool   ht_atEnd();  // true at p1, false at p0
+float  ht_side();   // -1.0 or 1.0: side of the centerline
 ```
 
-Typical body: `gl_Position = ht_toClip(ht_anchor + ht_corner() * ht_extentPx);`
+Handle these cases (`taper.vert` does all of them):
 
-## Node accessor API (`instanced` topology, vertex shader)
+- `p1.segmentStart`: the span crosses a break. Collapse it: set
+  `gl_Position = ht_collapsedPosition()` on all 4 vertices.
+- Both ends past `fade_ms`: collapse it. The oldest span drawn can reach back
+  past `fade_ms`.
+- `p0.segmentStart` or `next.segmentStart`: that neighbor belongs to another
+  segment. Don't use it for joins.
+- At the ends of the trail, `prev` and `next` copy the end node, so a
+  direction from them has zero length. Use `ht_dirBetween()` with a fallback.
 
-An `instanced`-topology vertex shader draws **K copies of a 4-vertex
-triangle strip for every visible node**, oldest node first. A node is visible
-while its age is below `fade_ms`; the plugin draws only those (it re-points the
-node attributes at the first visible node before each draw), so a faded node
-costs nothing, unlike a `path` layer, which also draws the segment reaching
-back to the next older node. Every copy of a node reads that same node:
+### quad
+
+One instance, 4 vertices, no nodes.
 
 ```glsl
-HtNode ht_node();      // this vertex's node (same HtNode as the path API)
-int    ht_instance();  // which copy of the node, 0 .. ht_K - 1
-vec2   ht_corner();    // this vertex's corner, (-1,-1)..(1,1)
+vec2 ht_corner();   // this vertex's corner, -1..1 on both axes
 ```
 
-There are no neighbors: no `prev`/`next`, no segment. `ht_node().vel` is the
-pointer velocity when the node was created, zero for a segment start. Typical
-body (`scatter` stands for your own function, e.g. built on `ht_rand`):
+```glsl
+gl_Position = ht_toClip(ht_anchor + ht_corner() * ht_extentPx);  // halo.vert
+```
+
+Stay within `ht_extentPx` of `ht_anchor`. A `quad` layer redraws every frame
+while it shows. A finite `duration_ms` lets the monitor idle again.
+
+### instanced
+
+K instances per visible node, oldest node first, 4 vertices each. All K
+copies read the same node. No neighbors.
 
 ```glsl
+HtNode ht_node();      // this copy's node
+int    ht_instance();  // copy index, 0 .. ht_K - 1
+vec2   ht_corner();    // corner of this copy's square, -1..1
+```
+
+```glsl
+#include "helpers/noise.glsl"
+#pragma hyprtail param float spread 10 0 256
+#pragma hyprtail param float size 3 0 128
+#pragma hyprtail padding spread + size + 1
+...
 HtNode n = ht_node();
 uint   i = uint(ht_instance());
-vec2   p = n.pos + scatter(n.seed, i) + ht_corner() * size;
-gl_Position = ht_toClip(p);
+vec2   o = vec2(ht_rand(n.seed, 2u * i), ht_rand(n.seed, 2u * i + 1u)) * 2.0 - 1.0;
+gl_Position = ht_toClip(n.pos + o * spread + ht_corner() * size);
 ```
 
-**Padding is yours to get right.** Damage is the box of the visible nodes'
-positions grown by the padding expression (plus `damage_padding`); anything a
-copy draws outside it is not guaranteed to be repainted, and leaves ghosts. Two
-disciplines, both shipped:
+Every copy must stay within the padding of its node. Two ways:
 
-- *Bounded offset* (`builtin:scatter.vert`): each copy sits at a fixed offset of
-  at most `spread` from its node, so `padding spread + size + 1`.
-- *Growth with age* (`builtin:drift.vert`): copies drift away as the node ages.
-  Write the padding for the farthest point before `fade_ms`, e.g. `padding
-  speed * fade_ms / 1000 + wobble + size + 1` (`fade_ms` is allowed in padding
-  expressions, being a reserved parameter), and cap the age used in the shader
-  at `fade_ms` so it can't outrun it. Use only quantities the padding bounds:
-  a node's *direction* (`vel` normalized), not its speed, unless a parameter
-  limits that.
+- **Bounded offset** (`scatter.vert`): each copy sits at a fixed offset of at
+  most `spread`, as above.
+- **Growth with age** (`drift.vert`): write the padding for the farthest
+  point reached before `fade_ms`, such as
+  `speed * fade_ms / 1000 + size + 1`. Clamp the age the shader uses to
+  `fade_ms`. Use a node's direction (`normalize(vel)`), not its speed, unless
+  a param bounds the speed.
 
-Because `instanced` draws `visible nodes x K` instances, every node the trail
-keeps costs K copies: keep K and `capacity` (CONFIG.md) reasonable; 64 x 4096
-is the limit.
+Cost: visible nodes x K squares per layer, at most 4096 x 64. Keep K and the
+`capacity` config key modest.
 
-## Shared vertex-shader helpers
+## Varyings
+
+The prelude declares six standard varyings: `out` in the vertex stage, `in`
+in the fragment stage. Shaders that use only these pair freely. The shipped
+vertex shaders fill them as follows:
+
+| Varying | Type | `path` | `instanced` | `quad` (`halo.vert`) |
+|---|---|---|---|---|
+| `ht_vLocal` | `vec2` | x: along the span, 0 at p1, 1 at p0. y: across, -1..1 | corner, -1..1 | corner, -1..1 |
+| `ht_vAge` | `float` | node age, ms | node age, ms | `ht_stillMs` |
+| `ht_vLife` | `float` | 1 at birth, 0 at `fade_ms` | same | 0 |
+| `ht_vSpeed` | `float` | px/ms at birth | px/ms | 0 |
+| `ht_vDist` | `float` | px from segment start | px from segment start | 0 |
+| `ht_vSeed` | `float` | node seed, 0..1 | per copy, 0..1 | 0 |
+
+These meanings are conventions: your vertex shader decides what goes in.
+
+Custom varyings work between files that both declare them with the same
+type. They tie the fragment shader to that vertex shader.
+
+## Fragment output
 
 ```glsl
-void ht_initVaryings();       // zero every standard varying; call first in main()
-vec4 ht_toClip(vec2 globalPos); // global layout px -> gl_Position
+layout(location = 0) out vec4 ht_fragColor;   // declared by the prelude
 ```
 
-Always call `ht_initVaryings()` before writing any standard varying, so an
-unset one reads as a defined zero rather than garbage.
+Write premultiplied alpha: `vec4(rgb * a, a)`, not `vec4(rgb, a)`. `discard`
+fully transparent pixels: cheaper than blending zero.
 
-## Standard varyings
+### Color
 
-Declared by the prelude in both stages (`out` in vertex, `in` in fragment).
-Writing them in your geometry shader is what lets any fragment shader pair
-with it:
-
-| Varying | Type | Meaning |
-|---|---|---|
-| `ht_vLocal` | `vec2` | `path`: x = position along the segment (0 at the newer end, 1 at the older end), y = position across the width (-1..1). `quad`, `instanced`: quad coordinates (-1..1, -1..1). |
-| `ht_vAge` | `float` | ms since this node/point was created. |
-| `ht_vLife` | `float` | 1 at birth, sweeping to 0 over the visibility window (implement your own curve using `fade_ms`/age, or use the fade builtin below). |
-| `ht_vSpeed` | `float` | px/ms the pointer was moving at this node's creation. |
-| `ht_vDist` | `float` | px traveled since the start of this node's segment. |
-| `ht_vSeed` | `float` | 0..1, stable per node — use it for per-point randomness (sparkle, hue jitter). |
-
-## Fragment shader output
-
-```glsl
-layout(location = 0) out vec4 ht_fragColor;
-```
-
-Output is **premultiplied alpha**: write `vec4(rgb * a, a)`, not
-`vec4(rgb, a)`. hyprtail blends with `GL_ONE, GL_ONE_MINUS_SRC_ALPHA`.
-
-## Color management
-
-A `color` parameter is converted on the CPU, at draw time, from Hyprland's
-color syntax to whatever color space the current framebuffer needs (SDR
-sRGB, HDR, wide-gamut) — the same conversion core uses for its own solid
-colors. You get it already converted as `vec4` (rgb converted, `a` = the
-configured alpha, passed separately). **Colors you compute or hardcode in
-the shader are not managed**: correct on an SDR sRGB output, wrong on
-HDR/wide-gamut ones. Prefer a `color` param over a hardcoded `vec3` when
-correctness across displays matters.
+hyprtail converts `color` params on the CPU to the output's color space (SDR
+sRGB, HDR, wide gamut), the same way Hyprland converts its own colors. Colors
+you hardcode or compute in GLSL are not converted: right on SDR sRGB, wrong
+on HDR and wide gamut. Prefer `color` params.
 
 ## Includes
 
-GLSL ES has no `#include`; the loader resolves it before compiling:
-
 ```glsl
-#include "helpers/ribbon.glsl"   // built-in helper (see below), immutable
-#include "common.glsl"           // your own file, relative to the including file
-#include "~/shaders/common.glsl" // absolute / ~-expanded also work
+#include "helpers/noise.glsl"      // embedded helper
+#include "common.glsl"             // your file, relative to this file
+#include "~/shaders/common.glsl"   // ~ and absolute paths work
 ```
 
-- `helpers/<name>` is always hyprtail's embedded, immutable helper. Any other
-  path is your own file. This is the same rule as `builtin:` in presets
-  (CONFIG.md): a prefix means embedded, anything else is yours.
-- To edit a helper, copy it from `hyprtail/shaders/helpers/` in the repository and
-  include your copy by a relative path that does **not** start with the bare
-  `helpers/` prefix, e.g. `#include "./helpers/ribbon.glsl"` (or put the copy
-  somewhere else). A plain `"helpers/ribbon.glsl"` is always the built-in,
-  even if a `helpers/` directory exists next to your shader.
-- A built-in shader (one of hyprtail's own) may only include `helpers/`
-  built-ins, not arbitrary paths.
-- Each file is included at most once per compile; a cycle is an error;
-  include depth is capped at 16.
-- An included file must not itself contain `#version`, `contract`, or
-  `topology` pragmas.
-- Compile errors are reported as `file:line` against the actual source
-  file, not the merged text.
-- Put `#include` after `precision` concerns are settled — the prelude
-  already sets precision, so this is automatic once you put your includes
-  after the contract pragma.
+- `helpers/<name>` is always the embedded helper, even if a `helpers/` folder
+  sits next to your shader. To change a helper, copy it and include the copy
+  by another path, such as `"./helpers/noise.glsl"`.
+- Each file is included once per compile. A cycle is an error. Depth limit:
+  16.
+- Included files can't contain `#version`, `contract`, `topology` or
+  `expects`.
+- Compile errors point at `file:line` in the real file.
+- Embedded shaders can include only `helpers/`.
 
-## Helper library
+## Helpers
 
-Function-only helpers, `ht_`-prefixed, no uniforms — pass everything as
-arguments. `#include` the ones you want.
+Functions only, `ht_`-prefixed, no uniforms: pass everything in.
 
-**`helpers/ribbon.glsl`** (vertex or fragment):
+`helpers/ribbon.glsl`:
 
 ```glsl
 const float HT_EPS = 1e-3;
-
-vec4 ht_collapsedPosition();
-// A clip-space position that draws nothing. Assign to gl_Position for all
-// 4 vertices of a segment you want to skip (degenerate, fully faded, etc).
-
-vec2 ht_dirBetween(vec2 a, vec2 b, vec2 fallback);
-// Unit direction from a to b, or `fallback` if they nearly coincide.
-
+vec4 ht_collapsedPosition();                        // gl_Position that draws nothing
+vec2 ht_dirBetween(vec2 a, vec2 b, vec2 fallback);  // unit a -> b, or fallback if a ~ b
 vec2 ht_jointOffset(vec2 dirIn, vec2 dirOut, float hw, float miterLimit);
-// Miter-join corner offset at a joint between incoming/outgoing
-// directions, half-width hw, clamped to miterLimit * hw.
+// miter corner offset for half-width hw, capped at miterLimit * hw
 ```
 
-**`helpers/fade.glsl`** (vertex or fragment):
+`helpers/fade.glsl`:
 
 ```glsl
-float ht_life(float age, float fadeMs); // 1 at age 0, linearly to 0 at fadeMs
-bool  ht_faded(float age, float fadeMs);
+float ht_life(float age, float fadeMs);   // 1 at age 0, linear to 0 at fadeMs
+bool  ht_faded(float age, float fadeMs);  // age >= fadeMs
 ```
 
-**`helpers/noise.glsl`** (vertex or fragment): deterministic hashing and
-noise, for scattering the copies of an `instanced` node.
+`helpers/noise.glsl` (deterministic: copies keep their place frame to frame):
 
 ```glsl
 uint  ht_hash(uint x);                 // 32-bit integer hash
-float ht_rand(float seed, uint salt);  // 0..1 from a node seed (HtNode.seed) and a salt
+float ht_rand(float seed, uint salt);  // 0..1; vary salt per copy and per use
+float ht_hash2(ivec2 p);               // 0..1 hash of a lattice point
 float ht_noise(vec2 p);                // 2D value noise, 0..1
 ```
 
-`ht_rand(n.seed, salt)` is stable for a (node, salt) pair: vary the salt per
-copy and per use (`2u * i`, `2u * i + 1u`) for independent values from one
-node seed, and the copies stay where they were from frame to frame.
-
-**`helpers/sdf.glsl`** (fragment only — uses `fwidth`, won't compile in a
-vertex shader):
+`helpers/sdf.glsl` (fragment only: uses `fwidth`):
 
 ```glsl
 float ht_sdCircle(vec2 p, float r);
 float ht_sdRing(vec2 p, float r, float halfWidth);
-float ht_coverage(float signedDistance); // ~1px antialiased 0..1 coverage
+float ht_coverage(float d);   // ~1 px antialiased coverage of signed distance d
 ```
 
-**`helpers/palette.glsl`** (vertex or fragment): the two-color palette every
-built-in look shares (`builtin:gradient.frag`, `builtin:dots.frag`). Declare
-the same params they do and a preset's colors carry over between your shader
-and theirs:
+`helpers/palette.glsl`: the two-color palette of `gradient.frag` and
+`dots.frag`. Declare the same params, and a preset's colors carry over
+between your shader and theirs:
 
 ```glsl
 #pragma hyprtail param color color_a rgba(1a66ffff)
@@ -395,129 +480,43 @@ and theirs:
 #pragma hyprtail param float color_period 200 1 100000
 
 const float HT_TAU = 6.28318530718;
-float ht_wave(float x, float period); // 0..1 back and forth once per period
+float ht_wave(float x, float period);   // 0 -> 1 -> 0 once per period
 float ht_paletteT(int mode, float speed, float life, float dist, float seed,
                   float age, float speedRef, float period);
-// 0..1 position between color_a and color_b, for color_by = mode:
-// 0 speed (color_b at speedRef px/ms), 1 life (color_b as it fades),
-// 2 distance (back and forth every `period` px along the trail),
-// 3 seed (fixed random per point or copy), 4 cycle (back and forth every
-// `period` ms of the point's age, offset by its seed).
+
+vec4 c = mix(color_a, color_b, ht_paletteT(color_by, ht_vSpeed, ht_vLife,
+             ht_vDist, ht_vSeed, ht_vAge, speed_ref, color_period));
 ```
 
-Typical use: `vec4 c = mix(color_a, color_b, ht_paletteT(color_by, ht_vSpeed,
-ht_vLife, ht_vDist, ht_vSeed, ht_vAge, speed_ref, color_period));`. Mode 4 runs
-on a point's age, not `ht_nowMs`: `ht_nowMs` is rebased on the newest trail
-point, so it jumps whenever the pointer moves.
+`color_by` picks what moves the color from `color_a` to `color_b`:
+0 speed (`color_b` at `speed_ref` px/ms), 1 life, 2 distance (cycles every
+`color_period` px), 3 seed, 4 cycle (every `color_period` ms of age, offset
+by seed).
 
-## Packaging rules
+## Errors
 
-- A shader stage is one standalone `.vert` or `.frag` file — never both in
-  one file.
-- You can override just one stage of a layer and leave the other at its
-  built-in/preset default (see CONFIG.md's `layerN_vertex`/`layerN_fragment`
-  and per-preset `<layer>:vertex`/`<layer>:fragment`).
-- A vertex shader is required to declare `topology`; a fragment shader
-  never does.
-- Keep shader files ASCII — GLSL ES drivers aren't reliable with UTF-8,
-  even inside comments.
-- If your vertex and fragment shader disagree on a custom (non-standard)
-  varying — one declares it, the other doesn't, or with a different type —
-  you get a plain message before any raw driver link log, e.g.:
+Errors show in three places:
 
-  > `fragment shader glow.frag reads v_glow, which geometry shader taper.vert doesn't write (standard varyings: ht_vLocal, ht_vAge, ht_vLife, ht_vSpeed, ht_vDist, ht_vSeed)`
+- a Hyprland notification,
+- `hyprctl hyprtail` (`-j` for JSON): each layer's shaders, topology,
+  parameter values and last result,
+- `$XDG_STATE_HOME/hyprtail/errors.log`, else
+  `~/.local/state/hyprtail/errors.log`.
 
-  Sticking to only the standard varyings avoids this class of error
-  entirely and keeps your shader portable (any fragment shader pairs with
-  any geometry shader).
-- If a shader fails to load, preprocess, compile, or link, the previous
-  working version keeps running (or the built-in shader, if there wasn't
-  one yet) and the error is reported — a mistake while editing never leaves
-  you with a blank trail.
+A shader that fails to load, compile or link never blanks the layer:
 
-## Worked example: a solid-color fragment shader
+- a failed edit of the active files keeps the last working version,
+- failed new files (after a config change) fall back to the builtin shader.
 
-The simplest useful custom shader: replace the default preset's two-color
-fragment shader (`builtin:gradient.frag`) with a single flat color, keeping
-the stock ribbon geometry (`builtin:taper.vert`) unchanged.
+Common refusals:
 
-```glsl
-#version 300 es
-#pragma hyprtail contract 2
+- a plain `uniform`: "uniform `x` is not provided by the plugin". Use a
+  `param`.
+- a vertex shader without `topology`, or a fragment shader with one.
+- `expects` doesn't list the vertex shader's topology.
+- a param declared differently in the two stages.
+- a fragment `in` the vertex shader doesn't write: "fragment shader
+  glow.frag reads `v_glow`, which geometry shader taper.vert doesn't write".
 
-#pragma hyprtail param color color rgba(ffffffcc)
-
-void main() {
-    float d   = abs(ht_vLocal.y);
-    float w   = fwidth(ht_vLocal.y);
-    float cov = 1.0 - smoothstep(1.0 - w, 1.0, d);
-    if (cov <= 0.0)
-        discard;
-
-    float a      = color.a * ht_vLife * cov;
-    ht_fragColor = vec4(color.rgb * a, a);
-}
-```
-
-Line by line:
-
-- `#version 300 es` / `#pragma hyprtail contract 2`: required opening pair
-  for every shader file.
-- `#pragma hyprtail param color color rgba(ffffffcc)`: declares one
-  parameter named `color`, type `color`, defaulting to white at ~80%
-  alpha. This becomes `uniform vec4 color;`, already color-managed. No
-  `expects` pragma is declared, so this fragment shader pairs with any
-  vertex shader that writes the standard varyings — including the stock
-  `path` ribbon and, harmlessly, `quad` shaders too (it just won't get
-  useful values for a `quad` layer, since `ht_vLife` means something
-  different there).
-- `ht_vLocal.y`: for `path` topology this is -1..1 across the ribbon's
-  width, 0 at the centerline. `d = abs(ht_vLocal.y)` is distance from the
-  centerline toward either edge.
-- `w = fwidth(ht_vLocal.y)`: the screen-space rate of change of that
-  coordinate, used to size the antialiased edge to about one pixel
-  regardless of zoom or ribbon width.
-- `cov = 1.0 - smoothstep(1.0 - w, 1.0, d)`: 1.0 in the ribbon's interior,
-  smoothly falling to 0.0 right at the edge — a soft anti-aliased edge
-  instead of a hard cutoff.
-- `if (cov <= 0.0) discard;`: skip fully-transparent pixels outside the
-  ribbon entirely, cheaper than blending zero.
-- `a = color.a * ht_vLife * cov`: final alpha combines the parameter's own
-  alpha, the point's remaining life (so it fades out with age, using
-  `fade_ms`), and the edge coverage.
-- `ht_fragColor = vec4(color.rgb * a, a)`: premultiplied output, as
-  required.
-
-To use it: save it as `~/.config/hypr/hyprtail/solid.frag`. Then either
-write a preset of your own (CONFIG.md's quickstart: copy `hyprtail/presets/ink.conf`
-to `~/.config/hypr/hyprtail/presets/mine.conf`, set `trail = "presets/mine.conf"`) and in
-it change:
-
-```
-ink:fragment = solid.frag        # bare = your file, relative to ~/.config/hypr/hyprtail/
-ink:color    = rgba(ff2266ff)
-```
-
-or override it directly without a custom preset:
-
-```
-plugin:hyprtail:layer1_fragment = ~/.config/hypr/hyprtail/solid.frag
-plugin:hyprtail:params = ink:color=rgba(ff2266ff)
-```
-
-(`thread` is the name of `builtin:subtle`'s one layer; with another preset,
-use the name of its first layer.)
-
-**Expect one warning with either setup.** Swapping a layer's shader doesn't
-touch its parameter defaults: the preset's own `thread:` values stay in
-place. `builtin:subtle` sets `thread:color_a` and `thread:color_b`, which
-`solid.frag` doesn't declare (it declares `color`). Those two values then name
-parameters that aren't in the new program, so each load and config reload
-reports a `params:thread` warning (`color_a: not a parameter of this layer;
-ignoring`, and the same for `color_b`). The layer still draws with
-`solid.frag` and `thread:color`; the warning is the only effect. With your own
-preset file (the first setup) you can avoid it by deleting the
-`thread:color_a` and `thread:color_b` lines; with `layer1_fragment` (the
-second setup) the preset's values can't be removed, so the warning stays.
-Naming your parameter `color_a` instead of `color` avoids the warning for
-that one.
+A preset key or `params` entry for an undeclared param is a warning: that
+entry is ignored, and the rest still applies.

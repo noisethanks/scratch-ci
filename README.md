@@ -66,8 +66,8 @@ Without Home Manager, load `lib/libhyprtail.so` from that package with
 hl.config({
     plugin = {
         hyprtail = {
-            trail       = "builtin:subtle", -- available builtins:  subtle, classic, comet, embers, jitter, spray, spring, vivid
-            -- trail = "presets/subtle.conf", -- or a path to config file relative to hyprtail root 
+            trail       = "builtin:ink", -- ink, comet, embers, helix, jitter, mosaic, snake, spring, tether, thread, vivid 
+            -- trail = "presets/ink.conf", -- or a path to config file relative to hyprtail root 
             capacity     = 64, -- maximum tail length in terms of vertices, int from 2 to 4096
             min_spacing  = 2, -- minimum amount of movement necessary to trigger polling, int from 0 to 256
             warp         = "break", -- warping path calculation method, valid strings: break, line, curve
@@ -95,32 +95,38 @@ end
 ```
 
 
-Shipped presets:
+builtins/presets:
 
-- **`builtin:subtle`** (default): one thin trail layer (`thread`), short
-  fade, low-alpha neutral color, no idle effect.
-- **`builtin:ink`**: a calligraphy stroke, one ribbon (`ink`) drawn as if by
-  a flat nib, so it swells moving across the nib and thins moving along it;
-  paper white cooling to slate as it fades. Try `params = "ink:nib_angle=-30"`
-  to turn the pen, or `ink:nib=0` for a round one.
-- **`builtin:classic`**: a wider, speed-tinted trail (slow motion tints one
-  color, fast motion tints another) plus an optional idle ring around a
-  stationary cursor (off by default).
-- **`builtin:jitter`**: a cloud of small dots scattered around every trail
-  point, `copies` of them (1–64, default 6) at random offsets of at most
-  `spread` px. Try `params = "trail:copies=16 trail:spread=24"`.
-- **`builtin:spray`**: particles thrown off the trail, `count` per point
-  (1–64, default 4), drifting away (mostly behind the pointer's motion) at up
-  to `speed` px/s while shrinking and fading over `fade_ms`. The redrawn area
-  grows with `speed * fade_ms`, so a fast, long-lived spray costs more to
-  draw. Try `params = "trail:count=12 trail:speed=120"`.
+- **`builtin:ink`**: a calligraphy stroke, professional and understated, default
+
+- **`builtin:jitter`**: blue and white particle stream
+
+- **`builtin:comet`**
+
+- **`builtin:embers`**
+
+- **`builtin:mosaic`**: a calligraphy stroke, professional and understated, default
+
+- **`builtin:helix`**: a cloud of small dots scattered around every trail point
+
+- **`builtin:snake`**
+
+- **`builtin:spring`**
+
+- **`builtin:tether`**: a cloud of small dots scattered around every trail point
+
+- **`builtin:thread`**
+
+- **`builtin:vivid`**
+-
+
 - **`builtin:vivid`**: a glowing ribbon, two layers over the same trail
   points: `glow`, a wide (26 px), faint, longer-lived ribbon underneath, and
   `core`, a narrow (4 px), opaque, brighter ribbon on top. Both shade cyan
   (slow) to magenta (fast). Layers composite with ordinary alpha blending
   (there is no per-layer blend mode), so the glow is a translucent halo, not
   additive light. Try `params = "glow:width=40 core:width=6"`.
-- **`builtin:comet`**: a narrow ribbon (`tail`, 5 px) with a very short fade
+- **builtin:comet**: a narrow ribbon (`tail`, 5 px) with a very short fade
   (180 ms), so it tapers to a point right behind the pointer, over a few
   twinkling star-shaped `sparks` thrown straight back. Ice blue shifts to
   amber with speed; `speed_ref` (px/ms) is set high (4), so the amber only
@@ -134,7 +140,6 @@ Shipped presets:
   runs until the pointer moves, which keeps the monitor redrawing every frame
   while it shows: `params = "crackle:duration_ms=8000"` stops it after 8 s,
   `crackle:enabled=false` turns it off.
-
 - **`builtin:spring`**: a springy rope instead of a pointer history (source
   `spring`, see "Sources" below): a chain of `capacity` points, the first
   chasing the pointer and each other one chasing the point before it, drawn
