@@ -13,7 +13,9 @@
 #include <format>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <map>
+#include <memory>
 #include <optional>
 #include <regex>
 #include <set>
@@ -30,6 +32,9 @@
 #include "../../src/Source.hpp"
 #include "../../src/SpringChain.hpp"
 #include "../../src/TrailBuffer.hpp"
+#include "../../src/WarpPath.hpp"
+
+#include <hyprutils/animation/BezierCurve.hpp>
 
 #include <sys/wait.h>
 #include <unistd.h>
@@ -661,6 +666,284 @@ static void testRing() {
     CHECK(wb && wb->x1 == 4.F && wb->x2 == 5.F);
     wrapped.resize(2);
     CHECK(wrapped.size() == 2 && wrapped.visibleCount(55.0, 100.0) == 2 && wrapped.visibleCount(55.0, 10.0) == 1);
+}
+
+namespace {
+    // main.cpp's insertWarpCurve as it was before warp_bezier, verbatim but
+    // collecting instead of inserting: the reference for "linear matches the
+    // old output".
+    std::vector<warp::SNode> oldWarpCurve(const SCursorNode& prev, const SVec2f& p2, double nowMs, float minSpacingPx, size_t capacity) {
+        const SVec2f p0    = prev.posPx;
+        const float  chord = std::hypot(p2.x - p0.x, p2.y - p0.y);
+        SVec2f       p1    = {(p0.x + p2.x) / 2.F, (p0.y + p2.y) / 2.F};
+        if (const float speed = std::hypot(prev.velocity.x, prev.velocity.y); speed > 1e-6F)
+            p1 = {p0.x + prev.velocity.x / speed * chord * 0.5F, p0.y + prev.velocity.y / speed * chord * 0.5F};
+        const int                n  = std::clamp(static_cast<int>(std::round(chord / std::max(minSpacingPx, 0.01F))), 1, std::max<int>(1, static_cast<int>(capacity / 4)));
+        const double             t0 = prev.birthTimeMs;
+        std::vector<warp::SNode> out;
+        for (int i = 1; i <= n; ++i) {
+            const float t = static_cast<float>(i) / static_cast<float>(n);
+            const float u = 1.F - t;
+            out.push_back({{u * u * p0.x + 2.F * u * t * p1.x + t * t * p2.x, u * u * p0.y + 2.F * u * t * p1.y + t * t * p2.y}, t0 + (nowMs - t0) * t});
+        }
+        return out;
+    }
+
+    // A Hyprland bezier (hl.curve points, i.e. the two inner control points)
+    // through the evaluator warp_bezier uses at runtime.
+    warp::FEase bezier(float x1, float y1, float x2, float y2) {
+        auto curve = std::make_shared<Hyprutils::Animation::CBezierCurve>();
+        curve->setup({Hyprutils::Math::Vector2D{x1, y1}, Hyprutils::Math::Vector2D{x2, y2}});
+        return [curve](float x) { return curve->getYForPoint(x); };
+    }
+
+    bool sameNodes(const std::vector<warp::SNode>& a, const std::vector<warp::SNode>& b) {
+        if (a.size() != b.size())
+            return false;
+        for (size_t i = 0; i < a.size(); ++i) {
+            if (!(a[i].posPx == b[i].posPx) || a[i].birthMs != b[i].birthMs)
+                return false;
+        }
+        return true;
+    }
+
+    bool allFinite(const std::vector<warp::SNode>& v) {
+        return std::ranges::all_of(v, [](const auto& n) { return std::isfinite(n.posPx.x) && std::isfinite(n.posPx.y) && std::isfinite(n.birthMs); });
+    }
+
+    // Progress of p along the chord p0 -> p2: 0 at p0, 1 at p2.
+    float along(const SVec2f& p, const SVec2f& p0, const SVec2f& p2) {
+        const float dx = p2.x - p0.x, dy = p2.y - p0.y;
+        return ((p.x - p0.x) * dx + (p.y - p0.y) * dy) / (dx * dx + dy * dy);
+    }
+
+    float gap(const std::vector<warp::SNode>& v, size_t i) { // between node i-1 and i
+        return std::hypot(v[i].posPx.x - v[i - 1].posPx.x, v[i].posPx.y - v[i - 1].posPx.y);
+    }
+
+    bool near(const SVec2f& a, const SVec2f& b, float tol = 1e-3F) {
+        return std::hypot(a.x - b.x, a.y - b.y) <= tol;
+    }
+}
+
+// Warp easing and landing (SPEC §13.10, WarpPath.*), with plain functions
+// and hyprutils' CBezierCurve standing in for warp_bezier.
+static void testWarpPath() {
+    using warp::eShape;
+    const warp::FEase identity = [](float x) { return x; };
+
+    // Pre-warp node moving right; the target down and to the right.
+    const SCursorNode from{.posPx = {100.F, 200.F}, .birthTimeMs = 1000.0, .velocity = {0.5F, 0.F}, .distPx = 0.0, .seed = 1, .segmentStart = false};
+    const SVec2f      to{900.F, 650.F};
+    const double      now = 1040.0;
+
+    // Linear matches the pre-easing output bit for bit: no curve, and the
+    // identity as the curve. Also with a zero-velocity start (the straight
+    // degenerate curve) and at the node cap.
+    {
+        SCursorNode still = from;
+        still.velocity    = {0.F, 0.F};
+        for (const auto& [f, cap] : {std::pair{from, size_t{4096}}, std::pair{still, size_t{4096}}, std::pair{from, size_t{64}}}) {
+            const auto old = oldWarpCurve(f, to, now, 2.F, cap);
+            CHECK(sameNodes(warp::nodes(eShape::CURVE, f, to, now, 2.F, cap, {}), old));
+            CHECK(sameNodes(warp::nodes(eShape::CURVE, f, to, now, 2.F, cap, identity), old));
+        }
+        CHECK(warp::nodes(eShape::CURVE, from, to, now, 2.F, 64, {}).size() == 16); // capped at capacity / 4
+
+        // Hyprland's own "linear" (0,0 / 1,1, AnimationManager.cpp:39) through
+        // hyprutils: equal up to float rounding of its baked table.
+        const auto old   = oldWarpCurve(from, to, now, 2.F, 4096);
+        const auto lin   = warp::nodes(eShape::CURVE, from, to, now, 2.F, 4096, bezier(0.F, 0.F, 1.F, 1.F));
+        float      worst = 0.F;
+        for (size_t i = 0; i < std::min(lin.size(), old.size()); ++i)
+            worst = std::max(worst, std::hypot(lin[i].posPx.x - old[i].posPx.x, lin[i].posPx.y - old[i].posPx.y));
+        CHECK(lin.size() == old.size() && worst < 1e-3F);
+    }
+
+    // Ease in/out (CSS ease-in-out, 0.42,0 / 0.58,1): progress never goes
+    // back, nodes bunch at both ends and spread in the middle, and birth
+    // times stay the real-time ones (only positions are eased).
+    {
+        const auto ease = bezier(0.42F, 0.F, 0.58F, 1.F);
+        const auto line = warp::nodes(eShape::LINE, from, to, now, 2.F, 4096, ease);
+        const auto lin  = warp::nodes(eShape::LINE, from, to, now, 2.F, 4096, identity);
+        bool       mono = true;
+        for (size_t i = 1; i < line.size(); ++i)
+            mono = mono && along(line[i].posPx, from.posPx, to) >= along(line[i - 1].posPx, from.posPx, to);
+        CHECK(mono && allFinite(line));
+        CHECK(line.size() > 8);
+        const size_t mid = line.size() / 2;
+        CHECK(gap(line, 1) < gap(line, mid) && gap(line, line.size() - 1) < gap(line, mid));
+        bool sameBirths = line.size() == lin.size();
+        for (size_t i = 0; sameBirths && i < line.size(); ++i)
+            sameBirths = line[i].birthMs == lin[i].birthMs;
+        CHECK(sameBirths);
+
+        // Curve path, starting perpendicular to the chord: x = s^2 * 800 is
+        // monotonic in the Bezier parameter, so it has to be in time too.
+        const SCursorNode up{.posPx = {0.F, 0.F}, .birthTimeMs = 0.0, .velocity = {0.F, 1.F}, .distPx = 0.0, .seed = 1, .segmentStart = false};
+        const auto        curve = warp::nodes(eShape::CURVE, up, {800.F, 0.F}, 50.0, 4.F, 4096, ease);
+        bool              monoX = true;
+        for (size_t i = 1; i < curve.size(); ++i)
+            monoX = monoX && curve[i].posPx.x >= curve[i - 1].posPx.x;
+        CHECK(monoX && allFinite(curve) && curve.back().posPx == (SVec2f{800.F, 0.F}));
+    }
+
+    // Ease out (0,0 / 0.2,1): fast start, slow arrival, so the spacing
+    // shrinks toward the target, and so does the speed the ring records
+    // (ht_vSpeed), while ages stay real time.
+    {
+        const auto line = warp::nodes(eShape::LINE, from, to, now, 2.F, 4096, bezier(0.F, 0.F, 0.2F, 1.F));
+        CHECK(gap(line, 1) > gap(line, line.size() - 1));
+        CTrailRing ring(4096, 3);
+        ring.insert(from.posPx, from.birthTimeMs, false);
+        for (const auto& n : line)
+            ring.insert(n.posPx, n.birthMs, false);
+        std::vector<SGpuNode> out;
+        ring.orderedCopy(out, now);
+        const auto speed = [](const SGpuNode& g) { return std::hypot(g.velocity.x, g.velocity.y); };
+        CHECK(out.size() == line.size() + 1 && speed(out[1]) > speed(out.back()) && out.back().birthMs == 0.F);
+    }
+
+    // Overshoot: kept on both shapes, landing still exact. easeOutBack
+    // (0.34,1.56 / 0.64,1) passes the target, easeInBack (0.36,0 /
+    // 0.66,-0.56) backs up behind the start first.
+    {
+        const auto outBack = warp::nodes(eShape::LINE, from, to, now, 2.F, 4096, bezier(0.34F, 1.56F, 0.64F, 1.F));
+        const auto inBack  = warp::nodes(eShape::LINE, from, to, now, 2.F, 4096, bezier(0.36F, 0.F, 0.66F, -0.56F));
+        float      hi = 0.F, lo = 1.F;
+        for (const auto& n : outBack)
+            hi = std::max(hi, along(n.posPx, from.posPx, to));
+        for (const auto& n : inBack)
+            lo = std::min(lo, along(n.posPx, from.posPx, to));
+        CHECK(hi > 1.05F && lo < -0.05F);
+        CHECK(allFinite(outBack) && allFinite(inBack) && outBack.back().posPx == to && inBack.back().posPx == to);
+        CHECK(warp::nodes(eShape::CURVE, from, to, now, 2.F, 4096, bezier(0.34F, 1.56F, 0.64F, 1.F)).back().posPx == to);
+
+        // Outside 0..1 the curve continues along its end tangents: control
+        // point p1 = p0 + chord/2 along the velocity (+x here).
+        const float  chord = std::hypot(to.x - from.posPx.x, to.y - from.posPx.y);
+        const SVec2f p1{from.posPx.x + chord * 0.5F, from.posPx.y};
+        const auto   past   = warp::nodes(eShape::CURVE, from, to, now, 2.F, 4096, [](float) { return 1.25F; });
+        const auto   behind = warp::nodes(eShape::CURVE, from, to, now, 2.F, 4096, [](float) { return -0.5F; });
+        CHECK(near(past.front().posPx, {to.x + (to.x - p1.x) * 0.5F, to.y + (to.y - p1.y) * 0.5F}, 0.01F));
+        CHECK(near(behind.front().posPx, {from.posPx.x - (p1.x - from.posPx.x), from.posPx.y - (p1.y - from.posPx.y)}, 0.01F));
+        const auto pastLine = warp::nodes(eShape::LINE, from, to, now, 2.F, 4096, [](float) { return 1.25F; });
+        CHECK(near(pastLine.front().posPx, {from.posPx.x + (to.x - from.posPx.x) * 1.25F, from.posPx.y + (to.y - from.posPx.y) * 1.25F}, 0.01F));
+    }
+
+    // Exact landing and no NaN whatever the curve returns. Non-finite
+    // results fall back to linear for that node; huge ones stop at 4 path
+    // lengths past the target.
+    {
+        const float inf  = std::numeric_limits<float>::infinity();
+        const float qnan = std::numeric_limits<float>::quiet_NaN();
+        const auto  lin  = warp::nodes(eShape::LINE, from, to, now, 2.F, 4096, {});
+        for (const auto shape : {eShape::LINE, eShape::CURVE}) {
+            for (const float v : {qnan, inf, -inf, 1e30F, -1e30F, 0.F, 1.F}) {
+                const auto got = warp::nodes(shape, from, to, now, 2.F, 4096, [v](float) { return v; });
+                CHECK(allFinite(got) && !got.empty() && got.back().posPx == to);
+            }
+        }
+        CHECK(sameNodes(warp::nodes(eShape::LINE, from, to, now, 2.F, 4096, [qnan](float) { return qnan; }), lin));
+        const auto huge = warp::nodes(eShape::LINE, from, to, now, 2.F, 4096, [](float) { return 1e30F; });
+        CHECK(near(huge.front().posPx, {from.posPx.x + (to.x - from.posPx.x) * 5.F, from.posPx.y + (to.y - from.posPx.y) * 5.F}, 0.1F));
+    }
+
+    // Zero duration (the warp lands in the same ms as the newest node), and a
+    // clock that went backwards: every birth is the newest node's, positions
+    // are still eased, and the ring computes no velocity across dt = 0.
+    {
+        for (const double at : {from.birthTimeMs, from.birthTimeMs - 5.0}) {
+            const auto got = warp::nodes(eShape::CURVE, from, to, at, 2.F, 4096, bezier(0.F, 0.F, 0.2F, 1.F));
+            CHECK(allFinite(got) && got.back().posPx == to);
+            CHECK(std::ranges::all_of(got, [&](const auto& n) { return n.birthMs == from.birthTimeMs; }));
+            CTrailRing ring(4096, 5);
+            ring.insert(from.posPx, from.birthTimeMs, false);
+            for (const auto& n : got)
+                ring.insert(n.posPx, n.birthMs, false);
+            std::vector<SGpuNode> out;
+            ring.orderedCopy(out, from.birthTimeMs);
+            CHECK(std::ranges::all_of(out, [](const auto& g) { return g.velocity.x == 0.F && g.velocity.y == 0.F && std::isfinite(g.distPx); }));
+        }
+    }
+
+    // Node count: length / min_spacing, at least 1 (zero chord, or a ring too
+    // small for a quarter), at most a quarter of the capacity.
+    CHECK(warp::nodes(eShape::LINE, from, from.posPx, now, 2.F, 4096, identity).size() == 1);
+    CHECK(warp::nodes(eShape::LINE, from, to, now, 2.F, 2, identity).size() == 1);
+    CHECK(warp::nodes(eShape::LINE, from, {500.F, 200.F}, now, 10.F, 4096, identity).size() == 40);
+
+    // A warp starting before the previous one's fade is over: it starts where
+    // the previous one landed (no jump, even after an overshoot), births never
+    // go backwards across both, every velocity is finite, and it lands on its
+    // own target. Nothing is carried between warps but the ring itself.
+    {
+        CTrailRing ring(4096, 9);
+        ring.insert(from.posPx, from.birthTimeMs, false);
+        const auto back = bezier(0.34F, 1.56F, 0.64F, 1.F);
+        for (const auto& n : warp::nodes(eShape::CURVE, ring.newest(), to, now, 2.F, ring.capacity(), back))
+            ring.insert(n.posPx, n.birthMs, false);
+        CHECK(ring.newest().posPx == to);
+
+        const SCursorNode landed = ring.newest();
+        const SVec2f      to2{300.F, 900.F};
+        const auto        second = warp::nodes(eShape::CURVE, landed, to2, now + 5.0, 2.F, ring.capacity(), back);
+        CHECK(!second.empty() && second.front().birthMs > landed.birthTimeMs);
+        for (const auto& n : second)
+            ring.insert(n.posPx, n.birthMs, false);
+        CHECK(ring.newest().posPx == to2);
+
+        std::vector<SGpuNode> out;
+        ring.orderedCopy(out, now + 5.0);
+        bool ordered = true, finite = true;
+        for (size_t i = 0; i < out.size(); ++i) {
+            ordered = ordered && (i == 0 || out[i].birthMs >= out[i - 1].birthMs);
+            finite  = finite && std::isfinite(out[i].velocity.x) && std::isfinite(out[i].velocity.y) && std::isfinite(out[i].distPx);
+        }
+        CHECK(ordered && finite);
+
+        // No jump: the second warp's first node is near where the first one
+        // landed (within 5% of its path, the ease's first step), not anywhere
+        // else.
+        const float chord2 = std::hypot(to2.x - to.x, to2.y - to.y);
+        CHECK(std::hypot(second.front().posPx.x - to.x, second.front().posPx.y - to.y) < 0.05F * chord2);
+    }
+
+    // Emit offset (SPEC §13.9): the warp's target is the emit point, the same
+    // point the next sample computes. Here main.cpp's emitPoint in hotspot
+    // mode: pointer plus emit_offset in doubles, then to float. The last node
+    // is that point exactly, so the next sample's spacing gate
+    // (sampleInserts) adds nothing. The old raw-pointer target is the
+    // control: there the sample appends a segment as long as the offset.
+    // Both sources, both shapes, with and without an overshooting curve.
+    {
+        const double ptrX = 1600.0, ptrY = 900.0; // post-warp pointer
+        const SVec2f raw{static_cast<float>(ptrX), static_cast<float>(ptrY)};
+        const SVec2f emit{static_cast<float>(ptrX + 12.0), static_cast<float>(ptrY + -20.0)};
+        const float  minSpacing = 2.F;
+
+        // Default emit_offset: the emit point is the raw pointer, bit for bit,
+        // so the target and the output are what they were before.
+        CHECK((SVec2f{static_cast<float>(ptrX + 0.0), static_cast<float>(ptrY + 0.0)}) == raw);
+
+        for (const auto* kind : {"pointer", "spring"}) {
+            for (const auto shape : {eShape::LINE, eShape::CURVE}) {
+                for (const auto& ease : {warp::FEase{}, bezier(0.34F, 1.56F, 0.64F, 1.F)}) {
+                    for (const bool toEmit : {true, false}) {
+                        const auto src = source::make(kind, 512, 11);
+                        src->insert(from.posPx, from.birthTimeMs, false); // the trail's end, itself a sampled emit point
+                        const SVec2f target = toEmit ? emit : raw;
+                        const auto   got    = warp::nodes(shape, src->newest(), target, now, minSpacing, src->capacity(), ease);
+                        for (const auto& n : got)
+                            src->insert(n.posPx, n.birthMs, false);
+                        CHECK(allFinite(got) && got.back().posPx == target && src->newest().posPx == target);
+                        CHECK(sampleInserts(*src, emit, minSpacing) == !toEmit);
+                    }
+                }
+            }
+        }
+    }
 }
 
 // A source that changes between inserts: stands in for a future animated one
@@ -1303,6 +1586,7 @@ int main() {
     testCrashGuard();
     testPointerGate();
     testRing();
+    testWarpPath();
 
     // Also leaves the assembled built-ins in $OUT_DIR for the single-file
     // validator pass in the Makefile.

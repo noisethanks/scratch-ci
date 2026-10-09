@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <map>
@@ -186,6 +187,16 @@ class ISource {
 // either the source changed since uploadedGen or it changes every frame.
 inline bool sourceNeedsUpload(const ISource& s, uint64_t uploadedGen) {
     return !s.empty() && (s.generation() != uploadedGen || s.needsContinuousUpload());
+}
+
+// The per-render sample's spacing gate (main.cpp's sampleSource): a sample
+// at pos inserts a node into an empty source, else only at least
+// minSpacingPx from the newest node.
+inline bool sampleInserts(const ISource& s, const SVec2f& pos, float minSpacingPx) {
+    if (s.empty())
+        return true;
+    const auto& newest = s.newest().posPx;
+    return std::hypot(pos.x - newest.x, pos.y - newest.y) >= minSpacingPx;
 }
 
 // Fixed-capacity circular buffer of real pointer history, the single source

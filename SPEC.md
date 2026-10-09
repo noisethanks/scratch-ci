@@ -644,7 +644,8 @@ this file states the decision and marks what's still a placeholder.
 > that phase 6 is built:** `interpolate_warps`, replaced by `warp =
 > "break"|"line"|"curve"` (§13.10); its removal was deferred until this
 > replacement existed (§13.8), which it now does. Phase 6 also adds
-> `emit_from` and `emit_offset` (§13.9), new keys, nothing to migrate.
+> `emit_from` and `emit_offset` (§13.9), new keys, nothing to migrate;
+> later, `warp_bezier` (string, `""` = linear, §13.10), also new.
 > `capacity`, `min_spacing` and `damage_padding` were never on the removed
 > list and are unaffected. Still true below: the reporting, batching, status and
 > failure-policy paragraphs (all still built as described); the API choice
@@ -1525,7 +1526,8 @@ docs only (registering a built-in in `ShaderSource.cpp`/`Preset.cpp` aside).
   (`PointerManager.hpp`, after `recheckPointerPosition`), not callable from
   a plugin. Built: the same check (`pBuffer || surface`) inlined from the
   public `currentCursorImage()` accessor's public fields, same result.
-- **Applied at insert:** the node's position is the emit point, so bounds and
+- **Applied at insert:** the node's position is the emit point (warp nodes
+  included: a warp's target is the post-warp emit point, §13.10), so bounds and
   damage stay exact from nodes alone. Quad layers don't use it; they still
   anchor to the raw pointer position (`SPreset::lastPos`, fed only by
   `Pointer::mgr()->position()`, never the emit point) -- structurally
@@ -1546,13 +1548,25 @@ docs only (registering a built-in in `ShaderSource.cpp`/`Preset.cpp` aside).
 
 ### 13.10 Warp interpolation
 
-**Built (phase 6)** (`main.cpp`'s `insertWarpCurve`/`hkControllerWarpTo`),
-as drafted below.
+**Built (phase 6)** (`main.cpp`'s `insertWarpCurve`/`hkControllerWarpTo`;
+since `warp_bezier`, `insertWarpNodes` and `src/WarpPath.*`), as drafted
+below.
 
 - **Setting:** `warp = "break" | "line" | "curve"` replaces
   `interpolate_warps` (false = break, true = line).
 - **`curve`:** the warp hook inserts nodes along a quadratic Bezier from the
   newest node to the target.
+  - **Target = the post-warp emit point** (§13.9), not the raw pointer, so
+    both ends of the path are emit points like every sampled node, and the
+    next sample finds the newest node already where it would insert. Read
+    with `emitPoint()` after the original `warpTo` ran (it sets
+    `m_pointerPos` synchronously, `PointerManager.cpp:823`). Same for `line`
+    with a resolved `warp_bezier`; `break` and plain `line` insert nothing in
+    the hook, so the next sample's emit point already starts or ends their
+    segment. With `emit_from`/`emit_offset` at their defaults the emit point
+    is the raw pointer, so output is unchanged. Before this (phase 6 to the
+    `warp_bezier` work), the target was the raw pointer: with an offset, the
+    next sample appended a short segment to the emit point.
   - The control point follows the newest node's velocity, for tangent
     continuity: placed along the incoming velocity direction, at half the
     chord length. Zero velocity (a fresh segment) falls back to the
@@ -1566,6 +1580,86 @@ as drafted below.
   stays exact and every topology works.
 - **Same coverage gap as today:** warp sites calling
   `CPointerManager::warpTo` directly bypass the hook (§7).
+
+**`warp_bezier` (built; compiled and unit-tested only, not run on host)**
+(`src/WarpPath.*` for the easing and landing, Hyprland-free; `main.cpp`'s
+`warpEase`/`insertWarpNodes`/`hkControllerWarpTo` and `applyConfig` for the
+lookup and validation). Cited at `efb5099` and hyprutils `a21e87b` (v0.14.2,
+the host's version). Reasoning: NOTES "Warp easing: `warp_bezier`".
+
+- **Setting:** `warp_bezier = "<name>"`, a string naming a Hyprland bezier
+  curve: Lua `hl.curve("name", { type = "bezier", points = { {x1, y1},
+  {x2, y2} } })` (`LuaBindingsConfigRules.cpp:278-336`), or the legacy
+  `bezier = name, x1, y1, x2, y2` (legacy `ConfigManager.cpp:1389-1421`).
+  `""` (default) = linear: output bit-identical to before the key existed.
+  Applies to `line` and `curve`; `break` has no path and ignores it.
+- **What it shapes:** a warp has no animation over time. The real pointer
+  jumps at once (`PointerController.cpp:16-29` -> `PointerManager.cpp:
+  820-831`); the hook inserts every warp node in the same call, with birth
+  times evenly spread over (newest node's birth, now]. The curve maps each
+  node's normalized elapsed time `i/n` to normalized progress along the path,
+  so it moves nodes along the path; birth times stay as they were.
+  - Real time, unchanged: node count (`length / min_spacing`, capped at a
+    quarter of the capacity), birth times, so age and fade (`ht_vAge`).
+  - Follows the curve, intended: node spacing (dense where the curve is
+    slow) and node velocity, so `ht_vSpeed` (velocity = delta position /
+    delta birth, `TrailBuffer.cpp:15-22`). `min_spacing` is not applied
+    between warp nodes, before or after this key.
+- **`line` with a resolved curve** inserts its nodes at warp time like
+  `curve`. Without one, or with an unknown name, nothing is inserted and the
+  next sample draws the single segment, as before.
+- **Duration:** no setting, as before: the span from the newest node's birth
+  to the warp. Hyprland's animation speed units are not used.
+- **Lookup at every warp:** `bezierExists(name)`, then `getBezier(name)`
+  (hyprutils `AnimationManager.cpp:88-95`, `:106-110`; `getBezier` alone
+  would silently return `"default"` for an unknown name). Evaluation:
+  `CBezierCurve::getYForPoint` (`BezierCurve.cpp:55-103`): exactly 0 and 1
+  at the ends, overshoot kept in between. The curve is held only for the one
+  warp it was looked up for; nothing stores it. `"default"` always exists
+  (hyprutils `AnimationManager.cpp:16-21`, re-added by `removeAllBeziers`,
+  `:40-47`); so does `"linear"` (Hyprland `AnimationManager.cpp:39`, legacy
+  `ConfigManager.cpp:766-767`).
+- **Validation:** in `applyConfig` on every `config.reloaded`, which fires
+  after the whole config ran (Lua `ConfigManager.cpp:746`, then `:852`), so a
+  curve defined after hyprtail's settings counts. An unknown name: one WARN
+  per reload under `config:plugin:hyprtail:warp_bezier` (the key is re-armed
+  each reload: one line in the reload's batch summary, one errors.log
+  entry), none per warp. Warps then use linear timing.
+- **Overshoot (curve outside 0..1):** kept, clamped to 4 path lengths either
+  side (unreachable from `hl.curve`, whose control points are limited to
+  -1..2, `LuaBindingsConfigRules.cpp:322`, which keeps y within about
+  -0.66..1.66). `line` continues along the chord: past the target, or behind
+  the start. `curve` continues along the end tangent past 1 (`p2 + 2 (p2 -
+  p1)(s - 1)`) and the start tangent below 0, not along the parabola, which
+  would bend the overshoot back instead of carrying it on in the direction
+  of travel. A non-finite curve value counts as linear for that node. The
+  last node is the target exactly, whatever the curve.
+- **Restart and reload:** nothing about a warp outlives its hook call, so a
+  warp during a previous warp's fade simply starts from the ring's newest
+  node: the previous target exactly, unless the pointer moved since. A
+  reload changes only the name the next warp looks up.
+- **Status:** `hyprctl hyprtail` shows `warp <mode> (bezier none | bezier
+  "<name>" resolved | bezier "<name>" unknown, linear timing)`; JSON adds
+  `source.warpBezier` and `source.warpBezierState` (`"none"`, `"resolved"`,
+  `"unknown"`), checked live at query time.
+- **Known limitations:**
+  - Progress on `curve` is the quadratic's parameter, not arc length (as
+    before): with a strong incoming velocity the parameter speed varies along
+    the curve, so even `linear` is not constant px/ms there.
+  - The span is the time since the newest node. After the pointer rested
+    longer than a layer's `fade_ms`, the early warp nodes are born already
+    faded and only the end of the path shows (as before); the easing only
+    changes which part that is.
+  - Under the Lua provider curves are never removed on reload (only legacy
+    `resetHLConfig` calls `removeAllBeziers`, legacy `ConfigManager.cpp:
+    764-767`; Lua `reload()` doesn't, `ConfigManager.cpp:634-760`). A curve
+    deleted from the config stays `resolved` until Hyprland restarts.
+  - `hl.curve` spring curves (`type = "spring"`) are not beziers: unknown.
+  - Spring source: only the last inserted target matters (§13.10 above), so
+    the easing has no visible effect there.
+  - Overshoot travels the path back and forth, which adds to `ht_vDist`.
+  - Warps that bypass the hook (above) connect with a plain segment, eased or
+    not.
 
 ### 13.11 Batched notifications
 

@@ -199,13 +199,15 @@ unload:
 # `make test-unit SANITIZE=1` builds with AddressSanitizer and UBSan.
 UNIT_OUT := out/unit
 UNIT_FLAGS := $(if $(filter 1,$(SANITIZE)),-O0 -fsanitize=address -fsanitize=undefined,)
-# The spring source calls hyprutils' advanceSpring (SpringChain.cpp): the one
-# Hyprland-family library the unit tests link, for its header and symbol only.
+# The spring source calls hyprutils' advanceSpring (SpringChain.cpp), and the
+# warp easing tests run hyprutils' CBezierCurve (the evaluator behind
+# warp_bezier): the one Hyprland-family library the unit tests link, for its
+# headers and symbols only.
 HYPRUTILS  := $(shell pkg-config --cflags --libs hyprutils 2>/dev/null || echo -lhyprutils)
 
 test-unit:
 	@mkdir -p $(UNIT_OUT)
-	$(CXX) -std=c++26 -Wall -g $(UNIT_FLAGS) tests/unit/unit.cpp src/Params.cpp src/ShaderSource.cpp src/Source.cpp src/SpringChain.cpp src/TrailBuffer.cpp src/CrashGuard.cpp $(HYPRUTILS) -o $(UNIT_OUT)/unit
+	$(CXX) -std=c++26 -Wall -g $(UNIT_FLAGS) tests/unit/unit.cpp src/Params.cpp src/ShaderSource.cpp src/Source.cpp src/SpringChain.cpp src/TrailBuffer.cpp src/WarpPath.cpp src/CrashGuard.cpp $(HYPRUTILS) -o $(UNIT_OUT)/unit
 	rm -rf $(UNIT_OUT)/glsl
 	OUT_DIR=$(UNIT_OUT)/glsl $(UNIT_OUT)/unit
 	@command -v glslangValidator >/dev/null || { echo "glslangValidator not found, skipping the GLSL check" >&2; exit 0; }; \
@@ -232,7 +234,7 @@ test-compat: | $(HEADER_CHECK)
 # CXX=clang++ whatever CXX is: the gcc-only flags (--no-gnu-unique) would break
 # clang-tidy. Headers are filtered to this repo's: .clang-tidy's
 # HeaderFilterRegex also matches Hyprland's .hpp files. tests/unit/unit.cpp is
-# analysed separately: test-unit compiles it together with six sources in one
+# analysed separately: test-unit compiles it together with seven sources in one
 # command, which compiledb can't turn into per-file entries (it files the whole
 # command under the last source, replacing that source's real entry).
 FORMAT_FILES := $(wildcard src/*.cpp src/*.hpp tests/*/*.cpp tests/*/*.hpp)

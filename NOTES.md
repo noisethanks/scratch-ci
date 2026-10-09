@@ -1750,6 +1750,187 @@ needed. See the report for the commands.
   `builtin:snake`). Older entries that say `ribbon-helix` or `demo-comet-helix`
   mean it.
 
+## Warp easing: `warp_bezier` (built; compiled and unit-tested only, not run on host; cited at efb5099, hyprutils a21e87b)
+
+Design: SPEC §13.10. hyprutils `a21e87b` is v0.14.2, the version installed on
+the host (`/usr/lib/pkgconfig/hyprutils.pc`), and Hyprland's
+`AnimationManager.hpp` is identical between the pin checkout and
+`/usr/include/hyprland`.
+
+- **How a warp worked before this key, traced first:**
+  - Detection: the `CPointerController::warpTo` detour
+    (`hkControllerWarpTo`). It runs the original, reads the resulting
+    position, and acts only if the pointer moved and isn't constrained or
+    excluded. The original calls `CPointerManager::warpTo`
+    (`PointerController.cpp:25`), which sets `m_pointerPos` at once
+    (`PointerManager.cpp:820-831`). The real pointer is never animated.
+  - `break`: sets `pendingBreak`. `line`: nothing; the next render's
+    sample inserts one node at the emit point, connected, so the shader
+    draws one straight segment. `curve`: `insertWarpCurve` inserted every
+    node in the hook call itself, all at once.
+  - "Speed" lived only in birth times: node `i` of `n` born at `t0 + (now -
+    t0) * i/n`, `t0` the newest node's birth. That is linear in the Bezier
+    parameter, so uniform in time per parameter step, not per pixel. No
+    duration setting and no per-frame stepping existed. `n = chord /
+    min_spacing`, capped at `capacity / 4`.
+  - Settings: `warp` (string, `"break"` default, `"line"`, `"curve"`). Plus
+    `min_spacing` (logical px, default 2, 0..256) and `capacity` (points,
+    default 64, 2..4096), which set the node count.
+- **Easing over all-at-once nodes, not an animated warp.** The curve maps
+  each node's normalized elapsed time to progress along the path; birth
+  times stay linear. That keeps age and fade in real time and makes spacing
+  and `ht_vSpeed` follow the curve, with no per-frame state. An animated
+  warp (nodes emitted on later frames while the real pointer already sits at
+  the target) would fight `sampleSource`, which inserts the real pointer
+  every render. Not attempted.
+- **Name: `warp_bezier`, not `warp_curve`.** `warp = "curve"` already names
+  the path shape, so `warp_curve` would read as "settings for curve mode".
+  `bezier` is the field name `hl.animation` uses for the same thing
+  (`LuaBindingsConfigRules.cpp:428-439`), and only bezier curves work
+  (spring curves live in a separate map, `getSpring`).
+- **Reachable from a plugin, with a precedent.** `Animation::mgr()`
+  (`AnimationManager.cpp:22-25`, Hyprland) is exported: `nm -DC
+  /usr/bin/Hyprland` lists it `T` (read-only check), the executable is
+  built with `CMAKE_EXECUTABLE_ENABLE_EXPORTS` (`CMakeLists.txt:122`), and
+  `bezierExists`, `getBezier` and `CBezierCurve::getYForPoint` are `T` in
+  the host's libhyprutils. `hypr-dynamic-cursors` calls
+  `Animation::mgr()->addBezierWithName` from a plugin
+  (`src/other/Shake.cpp:22-23`).
+- **Phase 6's rejection of `CBezierCurve` still holds:** it is a timing
+  curve, not a 2D path. This change uses it as exactly that, for timing; the
+  path is still the hand-rolled quadratic.
+- **Curves defined after the plugin's settings:** visible. Plugin values are
+  only stored while the Lua file runs; hyprtail reads them on
+  `config.reloaded`, emitted from `postConfigReload` (Lua
+  `ConfigManager.cpp:852`) after the whole file ran (`:746`). The name is
+  also resolved at warp time, not cached. No `CStringValue` validator is
+  used, since one would run during the parse, before a later `hl.curve`.
+- **Lua never clears curves on reload:** `reload()` resets the animation
+  tree, rules, binds and so on (Lua `ConfigManager.cpp:699-712`) but not the
+  bezier map; only legacy `resetHLConfig` calls `removeAllBeziers` (legacy
+  `ConfigManager.cpp:764-767`). So under Lua a deleted curve keeps
+  resolving until restart, and a redefined one replaces its map entry
+  (`addBezierWithName`, hyprutils `AnimationManager.cpp:54-58`).
+- **No stale curve pointer, by construction:** `warpEase()` captures the
+  `SP<CBezierCurve>` in the easing function for the one hook call; nothing
+  stores it. Even under legacy reload, which clears the map, a held SP would
+  keep the old curve alive, not dangle; but nothing holds one. A warp that
+  fires during a reload, before `config.reloaded`, looks up the previous
+  name; under legacy the map may be mid-rebuild then. At worst that one
+  warp is linear, silently. Hook and reload both run on the main thread, so
+  a lookup never overlaps a map change.
+- **Unknown name reported once per reload:** `diag::report` dedups per key
+  per load (`Diagnostics.cpp`, `seen`), so `applyConfig` calls `resetKey`
+  first. During a reload a batch is open, so the report becomes one line in
+  that reload's single summary notification (orange when it holds only
+  warnings, `notifyNow`) and one errors.log entry. Warps never report.
+- **`line` without a curve stays untouched:** `warpEase()` returns empty for
+  `""` and for an unknown name, and the hook then inserts nothing, so the
+  fallback is today's single segment exactly. With a resolved curve, even
+  `"linear"`, `line` inserts nodes along the chord: the same straight line
+  on a path layer, but `n` nodes instead of one, which an instanced layer
+  shows as extra copies along the line.
+- **`curve` linear is bit-identical:** `WarpPath.cpp` keeps the old
+  expression and evaluation order, and the last node is assigned the target
+  directly, which the old formula also produced exactly (`u = 0`). The unit
+  test compares against a verbatim copy of the old loop with `==`. Hyprland's
+  own `"linear"` through `getYForPoint` differs by float rounding of its baked
+  table, under 1e-3 px over a 918 px warp.
+- **Overshoot on `curve`: tangent extension, chosen over the alternatives.**
+  Clamping the parameter to 0..1 would erase the overshoot users asked for.
+  Evaluating the parabola past 1 bends back toward the control point side.
+  The tangent continuation (`B(1) + B'(1)(s - 1)`) is C1 at the target,
+  carries on in the direction of arrival, and with zero incoming velocity it
+  reduces to the `line` behavior. The same at the start below 0.
+- **Clamp at 4 path lengths:** only to keep positions finite and the damage
+  box bounded for absurd legacy curves (`bezier` has no range check, legacy
+  `ConfigManager.cpp:1389-1421`). `hl.curve` limits control points to -1..2
+  (`LuaBindingsConfigRules.cpp:322`); the cubic's y then stays within about
+  -0.66..1.66 (max of `6t(1-t) + t^3` at both y = 2).
+- **Leaf registration instead (report only, not built):** a plugin can't do
+  it cleanly. `CAnimationTreeController` exposes no `createNode`; the
+  hyprutils tree is a private member (`AnimationTree.hpp`), and
+  `PluginAPI.hpp` has no animation entry. Reaching it means a layout cast to
+  the private `CAnimationConfigTree` (ABI-fragile). Further costs:
+  `hl.animation` checks the leaf at parse time (`LuaBindingsConfigRules.cpp:
+  401-402`), and plugins load after the parse (`handlePluginLoads`, Lua
+  `ConfigManager.cpp:848`), so the first parse errors until the plugin-load
+  reload (`PluginSystem.cpp:135`). A created node survives `reset()` (it
+  only re-creates the built-in names, `AnimationTree.cpp:14-67`), so its
+  settings persist after the user deletes the line, and the leaf outlives
+  an unload. Speed would come in Hyprland's units (`speed`, 0..100,
+  `LuaBindingsConfigRules.cpp:416`), which the brief rules out.
+- **Unit tests** (`testWarpPath`, `tests/unit/unit.cpp`): plain functions
+  and hyprutils' real `CBezierCurve` as the curve. They cover linear vs. the
+  old loop; ease-in-out monotonic with dense ends; ease-out spacing and ring
+  velocity; overshoot both ways on both shapes; tangent continuation;
+  NaN/inf/huge curve values; zero and negative duration; node count; and a
+  second warp from the first's landing. The unit build now links
+  `src/WarpPath.cpp`.
+
+## Warp target is the emit point (built; compiled and unit-tested only, not run on host; cited at efb5099)
+
+- **Bug:** since phase 6, the warp hook passed the raw pointer as the target,
+  while every sample inserts `emitPoint()`. With `emit_from`/`emit_offset`
+  set, a `curve` warp (and, after `warp_bezier`, an eased `line`) ended at the
+  pointer. The next sample's spacing gate then saw the emit point at least
+  `min_spacing` away and appended a short connected segment to it.
+- **Where the warp path touches the pointer, before the fix:**
+  - The hook reads `from` (before the original) and `to` (after it) as the
+    raw `Pointer::mgr()->position()`. Both are used for the motion check
+    (`to == from`) and `noteMotion` (the quad anchor, raw by design, SPEC
+    §13.4). Both stay raw.
+  - `break` sets `pendingBreak`, and plain `line` does nothing. In both, the
+    next `sampleSource` inserts `emitPoint()`, so they already used the emit
+    point.
+  - `curve` and eased `line`: `insertWarpNodes(..., to)`. Raw: this was the
+    bug.
+  - The start of the path is `source->newest()`. That is an emit point when
+    a sample inserted it, but it was the raw target when the last insert was
+    a warp: back-to-back warps before a render, or an offset shorter than
+    `min_spacing`, so the sample never replaced it. After the fix every
+    insert is an emit point, so the start always is one too.
+  - Spring source: no warp code of its own. Every insert sets the head's
+    target and `m_last` (`SpringChain.cpp:58-77`), and `newest()` returns
+    `m_last` (`:175-177`). So the target was raw, and is the emit point now,
+    through the same `insertWarpNodes` call.
+- **What `emitPoint()` reads:** `CPointerManager::position()`, which is
+  `m_pointerPos` (`PointerManager.cpp:108-110`). With a normalized
+  `emit_from`, also `currentCursorImage()` (`:946-948`) for the has-image
+  check, and `getCursorBoxGlobal()`, which is `m_pointerPos`, hotspot, size
+  and scale of `m_currentCursorImage` (`:719-721`). Plus the plugin's cached
+  `emitFromNorm`/`emitOffsetPx`. No focused window, no window under the
+  pointer, no monitor.
+- **Timing:** `CPointerManager::warpTo` sets `m_pointerPos` synchronously
+  (`:823`), so `emitPoint()` returns the post-warp point once the original
+  `CPointerController::warpTo` has returned, and the pre-warp one before.
+  The hook calls it inside the `warp-hook` guard, after the original and
+  after the `to == from` check.
+  - The cursor image is not touched by `warpTo`. `recheckEnteredOutputs`
+    only sends enter/leave and the scale to the cursor surface
+    (`:204-239`); the client answers later. Callers that follow with
+    `simulateMouseMovement` (e.g. `ConfigActions.cpp:1181-1185`) do so after
+    the hook returns.
+  - So the box at hook time is the pre-warp image's. A later change of its
+    geometry already sets `pendingBreak` when `emit_from` is normalized
+    (`cursorChanged` listener, SPEC §13.9): the next sample starts a new
+    segment, with no connected segment from the stale point. `emit_offset`
+    alone doesn't depend on the image.
+- **Defaults unchanged:** with `emit_from = "hotspot"` and `emit_offset =
+  0 0`, `emitPoint()` is `float(position + 0.0)`. That equals the old
+  `float(to)`, so the old-loop `==` test stands. The only exception is a
+  `-0.0` coordinate becoming `+0.0`; it still compares equal and draws the
+  same.
+- **Test:** the spacing gate moved out of `sampleSource` into
+  `sampleInserts()` (`TrailBuffer.hpp`), unchanged, so the unit test runs
+  the real "next sample" rule. `testWarpPath` checks both sources, both
+  shapes, with and without an overshooting curve. With an offset target,
+  the last node and `newest()` are the emit point exactly, and the next
+  sample inserts nothing. With the old raw target, it inserts. One gap
+  remains: with `min_spacing = 0`, any sample re-inserts at distance 0. That
+  is a coincident node, not a segment, and ordinary samples already behave
+  this way.
+
 ## Open questions
 
 - [x] Hyprland commit to pin: `efb5099` (v0.56.2, host package)

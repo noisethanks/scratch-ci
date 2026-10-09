@@ -32,6 +32,7 @@
 #include <helpers/time/Time.hpp>
 #include <helpers/Color.hpp>
 #include <debug/log/Logger.hpp>
+#include <animation/AnimationManager.hpp>
 
 #include "compat.hpp"
 #include "Config.hpp"
@@ -46,6 +47,7 @@
 #include "RenderUtil.hpp"
 #include "Status.hpp"
 #include "StatePath.hpp"
+#include "WarpPath.hpp"
 
 #include <wayland-server-core.h>
 #include <Compositor.hpp>
@@ -309,14 +311,7 @@ static void sampleSource(double nowMs) {
     }
 
     const SVec2f pos = emitPoint(p);
-
-    bool         insert = p.source->empty();
-    if (!insert) {
-        const auto& newest = p.source->newest().posPx;
-        insert             = std::hypot(pos.x - newest.x, pos.y - newest.y) >= p.minSpacingPx;
-    }
-
-    if (insert) {
+    if (sampleInserts(*p.source, pos, p.minSpacingPx)) {
         p.source->insert(pos, nowMs, p.pendingBreak);
         p.pendingBreak = false;
     }
@@ -499,50 +494,52 @@ static void hkRenderSoftwareCursorsFor(void* thisptr, PHLMONITOR pMonitor, const
 static_assert(std::is_same_v<decltype(&hkRenderSoftwareCursorsFor), origRenderSoftwareCursorsFor>,
               "hkRenderSoftwareCursorsFor does not match hooks::RenderSoftwareCursorsFor in compat.hpp; change them together");
 
-// Bezier warp interpolation (SPEC §13.10, warp = "curve"): inserts nodes on
-// the CPU along a quadratic Bezier from the trail's current end to the warp
-// target, so damage stays exact and every topology works without special
-// casing -- the same argument as `path smooth N`'s CPU-computed control
-// points (§13.3). Nothing to curve from if the source is empty: falls back to
-// a plain connect at the next sample, same as `line`. (A spring chain only
-// keeps the last target, so for it this just moves the head's target there.)
-static void insertWarpCurve(SPreset& p, const Vector2D& to, double nowMs) {
+// The warp's timing curve (SPEC §13.10): Hyprland's bezier named by
+// `warp_bezier`, looked up at every warp so a curve defined after hyprtail's
+// settings (or redefined by a reload) is the one used. Empty name, or one no
+// hl.curve defined: linear. The lookup is getBezier() (hyprutils
+// AnimationManager.cpp:106-110), which would hand back "default" for an
+// unknown name, hence the bezierExists() check first (:88-95). The returned
+// function holds the curve for the one warp it's built for, nothing keeps it
+// past that. Evaluation is getYForPoint (BezierCurve.cpp:55-103): exact 0 and
+// 1 at the ends, overshoot (y outside 0..1) kept in between. All at hyprutils
+// v0.14.2 (a21e87b), the host's version.
+static bool bezierDefined(const std::string& name) {
+    return Animation::mgr() && Animation::mgr()->bezierExists(name);
+}
+
+static hyprtail::warp::FEase warpEase(const std::string& name) {
+    if (name.empty() || !bezierDefined(name))
+        return {};
+    return [curve = Animation::mgr()->getBezier(name)](float x) { return curve->getYForPoint(x); };
+}
+
+// Warp interpolation (SPEC §13.10): inserts nodes on the CPU along the path
+// from the trail's current end to `target`, all at once, so damage stays
+// exact and every topology works without special casing -- the same argument
+// as `path smooth N`'s CPU-computed control points (§13.3). Both ends are
+// emit points: the newest node came from a sample or an earlier warp, and
+// `target` is the post-warp emitPoint(). Nothing to start from if the source
+// is empty: falls back to a plain connect at the next sample. (A spring chain
+// only keeps the last target, so for it this just moves the head's target
+// there.)
+static void insertWarpNodes(SPreset& p, hyprtail::warp::eShape shape, const SVec2f& target, double nowMs, const hyprtail::warp::FEase& ease) {
     if (p.source->empty())
         return;
 
-    // A copy: insert() below replaces what newest() refers to. Stays the
-    // pre-warp state through the whole loop.
+    // A copy: insert() below replaces what newest() refers to.
     const SCursorNode prev = p.source->newest();
-    const SVec2f      p0   = prev.posPx;
-    const SVec2f      p2{sc<float>(to.x), sc<float>(to.y)};
-    const float       chord = std::hypot(p2.x - p0.x, p2.y - p0.y);
-
-    // Control point along the incoming velocity, for tangent continuity at
-    // p0. Zero velocity (a fresh segment) falls back to the chord's
-    // midpoint, which makes the quadratic Bezier degenerate to a straight
-    // line -- no special-casing needed.
-    SVec2f p1 = {(p0.x + p2.x) / 2.F, (p0.y + p2.y) / 2.F};
-    if (const float speed = std::hypot(prev.velocity.x, prev.velocity.y); speed > 1e-6F)
-        p1 = {p0.x + prev.velocity.x / speed * chord * 0.5F, p0.y + prev.velocity.y / speed * chord * 0.5F};
-
-    // Length / min_spacing, capped at a quarter of the capacity (SPEC §13.10).
-    const int    n  = std::clamp(sc<int>(std::round(chord / std::max(p.minSpacingPx, 0.01F))), 1, std::max<int>(1, sc<int>(p.source->capacity() / 4)));
-    const double t0 = prev.birthTimeMs;
-    for (int i = 1; i <= n; ++i) {
-        const float  t = sc<float>(i) / sc<float>(n);
-        const float  u = 1.F - t;
-        const SVec2f curvePos{u * u * p0.x + 2.F * u * t * p1.x + t * t * p2.x, u * u * p0.y + 2.F * u * t * p1.y + t * t * p2.y};
-        // Birth times spread between the previous node's birth and now, so
-        // the fade sweeps along the curve.
-        p.source->insert(curvePos, t0 + (nowMs - t0) * t, false);
-    }
+    for (const auto& n : hyprtail::warp::nodes(shape, prev, target, nowMs, p.minSpacingPx, p.source->capacity(), ease))
+        p.source->insert(n.posPx, n.birthMs, false);
 }
 
 // Programmatic warps (dispatchers, layouts, focus changes) go through here
 // (PointerController.cpp:16-29). warpMode decides what happens to the trail:
 // break starts a new segment, line connects with a straight sweep (the next
-// natural sample does that for free), curve bakes in a Bezier immediately.
-// Only that decision is ours; the original always runs, unwrapped.
+// natural sample does that for free; with a resolved warp_bezier the sweep's
+// nodes are inserted here instead, so the timing can be eased), curve bakes
+// in a Bezier immediately. Only that decision is ours; the original always
+// runs, unwrapped.
 // Coverage gap: warp sites that call CPointerManager::warpTo directly bypass
 // this and always connect (PointerWarp.cpp:76, InputCapture.cpp:206,
 // InputManager.cpp:2248, WorkspacePlacementController.cpp:356).
@@ -564,10 +561,28 @@ static void hkControllerWarpTo(const void* thisptr, const Vector2D& pos, bool fo
         if (!s_preset || to == from || pointerConstrained() || pointerExcluded())
             return;
 
+        // Where the trail's side of the warp ends: the emit point, the same
+        // point the next sample computes, so that sample finds the newest
+        // node already there and inserts nothing (no extra segment from the
+        // raw pointer to the emit point). Read after the original ran:
+        // CPointerManager::warpTo sets m_pointerPos synchronously
+        // (PointerManager.cpp:823), which both position() and
+        // getCursorBoxGlobal() read (:108-110, :719-721). The cursor image is
+        // the pre-warp one; a client's later shape change breaks the trail
+        // anyway when emit_from is normalized (SPEC §13.9). `to` stays the
+        // raw pointer for the motion check and the quad anchor (§13.4).
+        const SVec2f target = emitPoint(*s_preset);
+
         switch (s_preset->warpMode) {
+            // The next sample starts the new segment at its emit point.
             case eWarpMode::BREAK: s_preset->pendingBreak = true; break;
-            case eWarpMode::LINE: break;
-            case eWarpMode::CURVE: insertWarpCurve(*s_preset, to, nowMs); break;
+            case eWarpMode::LINE:
+                // Unset or unknown curve: today's single segment, drawn by
+                // the next sample to its emit point, untouched.
+                if (const auto ease = warpEase(s_preset->warpBezier))
+                    insertWarpNodes(*s_preset, hyprtail::warp::eShape::LINE, target, nowMs, ease);
+                break;
+            case eWarpMode::CURVE: insertWarpNodes(*s_preset, hyprtail::warp::eShape::CURVE, target, nowMs, warpEase(s_preset->warpBezier)); break;
         }
     });
 }
@@ -1137,9 +1152,25 @@ static void applyConfig() {
 
     p.minSpacingPx    = s_config.minSpacingPx;
     p.warpMode        = s_config.warp;
+    p.warpBezier      = s_config.warpBezier;
     p.damagePaddingPx = s_config.damagePaddingPx;
     p.emitFromNorm    = s_config.emitFromNorm;
     p.emitOffsetPx    = s_config.emitOffsetPx;
+
+    // warp_bezier names a curve that has to exist by now: config.reloaded is
+    // emitted after the whole config ran (Lua ConfigManager.cpp:746, then
+    // :852), so a curve defined after hyprtail's settings counts. The key is
+    // re-armed first so an unknown name is reported once per reload (one
+    // batch summary, one errors.log entry), never per warp; warps then fall
+    // back to linear (warpEase()).
+    {
+        constexpr const char* key = "config:plugin:hyprtail:warp_bezier";
+        hyprtail::diag::resetKey(key);
+        if (!p.warpBezier.empty() && !bezierDefined(p.warpBezier))
+            hyprtail::diag::report(
+                eSeverity::WARN, key,
+                std::format(R"(plugin:hyprtail:warp_bezier = "{}" isn't a bezier defined with hl.curve (or the legacy bezier keyword); warps use linear timing)", p.warpBezier));
+    }
 
     // nullopt: the trail names shader files that aren't on disk and one is
     // already showing; it stays (load() reported it).
@@ -1183,16 +1214,18 @@ static hyprtail::status::SSnapshot statusSnapshot() {
     const double nowMs = msSinceEpoch(Time::steadyNow());
 
     if (s_preset) {
-        const auto& p         = *s_preset;
-        s.source.kind         = std::string{p.source->kind()};
-        s.source.nodes        = p.source->size();
-        s.source.capacity     = p.source->capacity();
-        s.source.generation   = p.source->generation();
-        s.source.moving       = p.source->needsContinuousUpload();
-        s.source.pendingBreak = p.pendingBreak;
-        s.source.warpMode     = hyprtail::cfg::warpModeName(p.warpMode);
-        s.source.gpuFailed    = p.gpuFailed;
-        s.source.stillMs      = nowMs - p.lastMotionMs;
+        const auto& p            = *s_preset;
+        s.source.kind            = std::string{p.source->kind()};
+        s.source.nodes           = p.source->size();
+        s.source.capacity        = p.source->capacity();
+        s.source.generation      = p.source->generation();
+        s.source.moving          = p.source->needsContinuousUpload();
+        s.source.pendingBreak    = p.pendingBreak;
+        s.source.warpMode        = hyprtail::cfg::warpModeName(p.warpMode);
+        s.source.warpBezier      = p.warpBezier;
+        s.source.warpBezierState = p.warpBezier.empty() ? "none" : bezierDefined(p.warpBezier) ? "resolved" : "unknown";
+        s.source.gpuFailed       = p.gpuFailed;
+        s.source.stillMs         = nowMs - p.lastMotionMs;
 
         for (const auto& l : p.layers) {
             hyprtail::status::SLayer out{

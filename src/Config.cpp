@@ -37,7 +37,7 @@ namespace hyprtail::cfg {
         struct SRegistered {
             SP<CFloatValue>                 minSpacing, damagePadding;
             SP<CIntValue>                   capacity;
-            SP<CStringValue>                warp;
+            SP<CStringValue>                warp, warpBezier;
             SP<CStringValue>                trail;
             std::array<SP<CStringValue>, 4> layerVertex, layerFragment;
             SP<CStringValue>                params;
@@ -101,6 +101,9 @@ namespace hyprtail::cfg {
                                                   SFloatValueOptions{.min = 0.F, .max = 256.F});
         r.warp          = makeShared<CStringValue>("plugin:hyprtail:warp", R"(how the trail crosses a pointer warp: "break" (default), "line", or "curve" (SPEC section 13.10))",
                                                    warpModeName(DEFAULTS.warp));
+        r.warpBezier    = makeShared<CStringValue>("plugin:hyprtail:warp_bezier",
+                                                   R"(name of a bezier curve (hl.curve) that times warp = "line" or "curve"; "" (default) = linear (SPEC section 13.10))",
+                                                   DEFAULTS.warpBezier.c_str());
         r.damagePadding = makeShared<CFloatValue>("plugin:hyprtail:damage_padding", "extra damage padding on top of the stock extent and shader-declared padding, px",
                                                   DEFAULTS.damagePaddingPx, SFloatValueOptions{.min = 0.F, .max = 4096.F});
         r.trail    = makeShared<CStringValue>("plugin:hyprtail:trail",
@@ -137,7 +140,7 @@ namespace hyprtail::cfg {
 
         bool ok = true;
         for (const SP<IValue>& v :
-             std::initializer_list<SP<IValue>>{r.capacity, r.minSpacing, r.warp, r.damagePadding, r.trail, r.params, r.screenshare, r.emitFrom, r.emitOffset})
+             std::initializer_list<SP<IValue>>{r.capacity, r.minSpacing, r.warp, r.warpBezier, r.damagePadding, r.trail, r.params, r.screenshare, r.emitFrom, r.emitOffset})
             ok = add(handle, v) && ok;
         for (size_t i = 0; i < 4; ++i) {
             ok = add(handle, r.layerVertex[i]) && ok;
@@ -170,6 +173,10 @@ namespace hyprtail::cfg {
             const auto text = checkEnum(r.warp, {"break", "line", "curve"}, warpModeName(previous.warp));
             v.warp          = text == "line" ? eWarpMode::LINE : text == "curve" ? eWarpMode::CURVE : eWarpMode::BREAK;
         }
+        // Whether the name exists is checked by the caller (main.cpp's
+        // applyConfig): it needs Hyprland's animation manager.
+        if (r.warpBezier)
+            v.warpBezier = r.warpBezier->value();
         if (r.trail)
             v.trail = r.trail->value();
 

@@ -49,8 +49,10 @@ namespace hyprtail::status {
             bool        moving       = false; // the source's points are still moving (spring)
             bool        pendingBreak = false;
             std::string warpMode     = "break";
-            bool        gpuFailed    = false;
-            double      stillMs      = 0.0;
+            std::string warpBezier;               // warp_bezier as set, "" = none
+            std::string warpBezierState = "none"; // "none", "resolved", or "unknown" (warps use linear timing)
+            bool        gpuFailed       = false;
+            double      stillMs         = 0.0;
         } source;
 
         // Suppress conditions (SPEC §7): session lock, pointer constraint,
