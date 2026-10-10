@@ -645,7 +645,8 @@ this file states the decision and marks what's still a placeholder.
 > "break"|"line"|"curve"` (§13.10); its removal was deferred until this
 > replacement existed (§13.8), which it now does. Phase 6 also adds
 > `emit_from` and `emit_offset` (§13.9), new keys, nothing to migrate;
-> later, `warp_bezier` (string, `""` = linear, §13.10), also new.
+> later, `warp_bezier` (string, `""` = linear, §13.10) and `warp_ms`
+> (float ms, 120, 1..2000, §13.10), also new.
 > `capacity`, `min_spacing` and `damage_padding` were never on the removed
 > list and are unaffected. Still true below: the reporting, batching, status and
 > failure-policy paragraphs (all still built as described); the API choice
@@ -1560,9 +1561,9 @@ below.
     both ends of the path are emit points like every sampled node, and the
     next sample finds the newest node already where it would insert. Read
     with `emitPoint()` after the original `warpTo` ran (it sets
-    `m_pointerPos` synchronously, `PointerManager.cpp:823`). Same for `line`
-    with a resolved `warp_bezier`; `break` and plain `line` insert nothing in
-    the hook, so the next sample's emit point already starts or ends their
+    `m_pointerPos` synchronously, `PointerManager.cpp:823`). Same for `line`,
+    which inserts its nodes in the hook too since `warp_ms`; `break` inserts
+    nothing there, so the next sample's emit point already starts its new
     segment. With `emit_from`/`emit_offset` at their defaults the emit point
     is the raw pointer, so output is unchanged. Before this (phase 6 to the
     `warp_bezier` work), the target was the raw pointer: with an offset, the
@@ -1574,8 +1575,9 @@ below.
     with no special-casing needed.
   - Node count comes from length / `min_spacing`, capped at a quarter of
     the capacity.
-  - Birth times are spread between the previous node's birth and now, so
-    the fade sweeps along the curve.
+  - Birth times are spread over the `warp_ms` window (below), so the fade
+    sweeps along the curve. (Before `warp_ms`: between the previous node's
+    birth and now.)
 - **Why it works everywhere:** the nodes are inserted on the CPU, so damage
   stays exact and every topology works.
 - **Same coverage gap as today:** warp sites calling
@@ -1591,12 +1593,12 @@ the host's version). Reasoning: NOTES "Warp easing: `warp_bezier`".
   curve: Lua `hl.curve("name", { type = "bezier", points = { {x1, y1},
   {x2, y2} } })` (`LuaBindingsConfigRules.cpp:278-336`), or the legacy
   `bezier = name, x1, y1, x2, y2` (legacy `ConfigManager.cpp:1389-1421`).
-  `""` (default) = linear: output bit-identical to before the key existed.
-  Applies to `line` and `curve`; `break` has no path and ignores it.
+  `""` (default) = linear: `curve` positions bit-identical to before the key
+  existed. Applies to `line` and `curve`; `break` has no path and ignores it.
 - **What it shapes:** a warp has no animation over time. The real pointer
   jumps at once (`PointerController.cpp:16-29` -> `PointerManager.cpp:
   820-831`); the hook inserts every warp node in the same call, with birth
-  times evenly spread over (newest node's birth, now]. The curve maps each
+  times evenly spread over the `warp_ms` window (below). The curve maps each
   node's normalized elapsed time `i/n` to normalized progress along the path,
   so it moves nodes along the path; birth times stay as they were.
   - Real time, unchanged: node count (`length / min_spacing`, capped at a
@@ -1605,11 +1607,11 @@ the host's version). Reasoning: NOTES "Warp easing: `warp_bezier`".
     slow) and node velocity, so `ht_vSpeed` (velocity = delta position /
     delta birth, `TrailBuffer.cpp:15-22`). `min_spacing` is not applied
     between warp nodes, before or after this key.
-- **`line` with a resolved curve** inserts its nodes at warp time like
-  `curve`. Without one, or with an unknown name, nothing is inserted and the
-  next sample draws the single segment, as before.
-- **Duration:** no setting, as before: the span from the newest node's birth
-  to the warp. Hyprland's animation speed units are not used.
+- **`line`** inserts its nodes at warp time like `curve`, with linear timing
+  when `warp_bezier` is unset or unknown (since `warp_ms`; before, an unset
+  curve left `line` to the next sample's single segment).
+- **Duration:** `warp_ms` (below), in the plugin's own ms. Hyprland's
+  animation speed units are not used.
 - **Lookup at every warp:** `bezierExists(name)`, then `getBezier(name)`
   (hyprutils `AnimationManager.cpp:88-95`, `:106-110`; `getBezier` alone
   would silently return `"default"` for an unknown name). Evaluation:
@@ -1639,17 +1641,13 @@ the host's version). Reasoning: NOTES "Warp easing: `warp_bezier`".
   node: the previous target exactly, unless the pointer moved since. A
   reload changes only the name the next warp looks up.
 - **Status:** `hyprctl hyprtail` shows `warp <mode> (bezier none | bezier
-  "<name>" resolved | bezier "<name>" unknown, linear timing)`; JSON adds
-  `source.warpBezier` and `source.warpBezierState` (`"none"`, `"resolved"`,
-  `"unknown"`), checked live at query time.
+  "<name>" resolved | bezier "<name>" unknown, linear timing, warp_ms <ms>)`;
+  JSON adds `source.warpBezier`, `source.warpBezierState` (`"none"`,
+  `"resolved"`, `"unknown"`, checked live at query time) and `source.warpMs`.
 - **Known limitations:**
   - Progress on `curve` is the quadratic's parameter, not arc length (as
     before): with a strong incoming velocity the parameter speed varies along
     the curve, so even `linear` is not constant px/ms there.
-  - The span is the time since the newest node. After the pointer rested
-    longer than a layer's `fade_ms`, the early warp nodes are born already
-    faded and only the end of the path shows (as before); the easing only
-    changes which part that is.
   - Under the Lua provider curves are never removed on reload (only legacy
     `resetHLConfig` calls `removeAllBeziers`, legacy `ConfigManager.cpp:
     764-767`; Lua `reload()` doesn't, `ConfigManager.cpp:634-760`). A curve
@@ -1660,6 +1658,58 @@ the host's version). Reasoning: NOTES "Warp easing: `warp_bezier`".
   - Overshoot travels the path back and forth, which adds to `ht_vDist`.
   - Warps that bypass the hook (above) connect with a plain segment, eased or
     not.
+
+**`warp_ms` (built; compiled and unit-tested only, not run on host)**
+(`WarpPath.cpp`'s birth window; `Config.*`, `main.cpp`'s
+`insertWarpNodes`/`applyConfig`, `Status.*`). Cited at `efb5099`.
+Reasoning: NOTES "Warp duration: `warp_ms`".
+
+- **Setting:** `warp_ms` (float, ms), default 120, range 1..2000 (rejected
+  outside it like the other floats: warning, previous value kept). Named like
+  the layers' `fade_ms`/`start_ms`/`duration_ms` and the spring's
+  `age_step_ms`. No legacy mode: before it, births spanned the whole time
+  since the newest node, so after a rest longer than a layer's `fade_ms` only
+  the last warp node was still visible.
+- **Birth window:** node `i` of `n` is born at `start + (now - start) * i /
+  n`, `start = max(t0, now - warp_ms)`, `t0` the newest node's birth. The
+  last birth is `now` exactly; every birth is within `[t0, now]`.
+  - Anchoring at `t0` keeps births non-decreasing along the source, which
+    the visibility walk assumes (`visibleCountOf`/`visibleBoundsOf`,
+    `TrailBuffer.hpp`). That walk sizes the instanced draw
+    (`LayerPassElement.cpp:261-267`), the damage boxes and `isSettled`; a
+    birth before `t0` would end it early, and the ring would also compute a
+    zero velocity for that node (`TrailBuffer.cpp:19-21`).
+  - A newest node younger than `warp_ms` shortens the window to its age;
+    born the same ms as the warp, the window is empty (every birth `now`).
+- **Generation stays separate from insertion:** `warp::nodes` is pure and
+  returns positions and births; `insertWarpNodes` inserts them all at once.
+  A later head sweep could release the same nodes over time without
+  changing the generator.
+- **Node count** is unchanged: `length / min_spacing`, capped at a quarter
+  of the capacity. At the defaults (capacity 64, `min_spacing` 2) a 1500 px
+  warp gets 16 nodes, 93.75 px apart.
+- **Spring source:** unaffected; only the last inserted target matters
+  there, and its birth is `now`.
+- **Status:** `warp_ms` in the source line and `source.warpMs`; a path or
+  instanced layer with `fade_ms` below `warp_ms` gets "fade shorter than
+  warp_ms: a warp's early points arrive faded" on its lifecycle line (text
+  only; not a validation).
+- **Known limitations:**
+  - `warp_ms` above a layer's `fade_ms`: the early warp nodes are born
+    already faded and only the last `fade_ms` of the path shows.
+  - A warp within `warp_ms` of the newest node gets a shorter window, down to
+    none: the same ms gives all nodes one age and zero velocity, so no fade
+    sweep and `ht_vSpeed` 0 along the warp.
+  - After a rest, the segment from the old newest node to the first warp
+    node is a fade-in (its old end is faded; taper/convex shade age and
+    width per end, `taper.vert:94-106`), and the first warp node's velocity
+    spans the rest, so its `ht_vSpeed` is near zero. Ordinary movement
+    after a rest does the same, but there that segment is one frame of
+    motion; here it is one warp step (93.75 px at the defaults for 1500 px).
+    Visible on layers coloring by speed (`gradient.frag` default
+    `color_by` 0).
+  - The capacity/4 cap makes long warps sparse at the default capacity
+    (above): instanced layers show gaps, `curve` shows facets.
 
 ### 13.11 Batched notifications
 

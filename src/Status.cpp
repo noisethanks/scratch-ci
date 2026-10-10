@@ -87,9 +87,9 @@ namespace hyprtail::status {
 
         out += std::format("  trail: {}\n", s.trail);
         out += std::format("  screenshare: {}\n", s.screenshare);
-        out += std::format("  source: {}, {}/{} points{}, generation {}, pending break {}, warp {} ({}), pointer still for {:.0f} ms{}\n", s.source.kind, s.source.nodes,
-                           s.source.capacity, s.source.moving ? " (moving)" : "", s.source.generation, s.source.pendingBreak ? "yes" : "no", s.source.warpMode, warpBezierText(s),
-                           s.source.stillMs, s.source.gpuFailed ? ", NODE BUFFER FAILED (see errors.log)" : "");
+        out += std::format("  source: {}, {}/{} points{}, generation {}, pending break {}, warp {} ({}, warp_ms {:g}), pointer still for {:.0f} ms{}\n", s.source.kind,
+                           s.source.nodes, s.source.capacity, s.source.moving ? " (moving)" : "", s.source.generation, s.source.pendingBreak ? "yes" : "no", s.source.warpMode,
+                           warpBezierText(s), s.source.warpMs, s.source.stillMs, s.source.gpuFailed ? ", NODE BUFFER FAILED (see errors.log)" : "");
         const auto conditions = suppressConditions(s);
         out += conditions.empty() ? "  suppressed: no\n" : std::format("  suppressed: yes ({})\n", conditions);
         out += std::format("  window under pointer: {}\n",
@@ -103,7 +103,10 @@ namespace hyprtail::status {
                 if (l.shader.topology == "quad")
                     out += std::format("    lifecycle: fade {:.0f} ms, start {:.0f} ms, duration {:.0f} ms, reach {:.1f} px\n", l.fadeMs, l.startMs, l.durationMs, l.extentPx);
                 else
-                    out += std::format("    lifecycle: fade {:.0f} ms, reach {:.1f} px\n", l.fadeMs, l.extentPx);
+                    // warp_ms past fade_ms: a line/curve warp's early points
+                    // are born already faded (SPEC §13.10). Said, not refused.
+                    out += std::format("    lifecycle: fade {:.0f} ms, reach {:.1f} px{}\n", l.fadeMs, l.extentPx,
+                                       s.source.warpMode != "break" && l.fadeMs < s.source.warpMs ? ", fade shorter than warp_ms: a warp's early points arrive faded" : "");
                 std::string params;
                 for (const auto& [name, value] : l.params)
                     params += std::format(" {}={}", name, value);
@@ -135,9 +138,9 @@ namespace hyprtail::status {
                            esc(s.trail), esc(s.screenshare));
         out += std::format(R"("hooks": {{"cursor": {}, "warp": {}, "capture": {}}}, "renders": {}, )", b(s.cursorHook), b(s.warpHook), b(s.captureHook), s.renders);
         out += std::format(
-            R"("source": {{"nodes": {}, "capacity": {}, "generation": {}, "pendingBreak": {}, "warp": "{}", "gpuFailed": {}, "stillMs": {:.1f}, "kind": "{}", "moving": {}, "warpBezier": "{}", "warpBezierState": "{}"}}, )",
+            R"("source": {{"nodes": {}, "capacity": {}, "generation": {}, "pendingBreak": {}, "warp": "{}", "gpuFailed": {}, "stillMs": {:.1f}, "kind": "{}", "moving": {}, "warpBezier": "{}", "warpBezierState": "{}", "warpMs": {:.1f}}}, )",
             s.source.nodes, s.source.capacity, s.source.generation, b(s.source.pendingBreak), esc(s.source.warpMode), b(s.source.gpuFailed), s.source.stillMs, esc(s.source.kind),
-            b(s.source.moving), esc(s.source.warpBezier), esc(s.source.warpBezierState));
+            b(s.source.moving), esc(s.source.warpBezier), esc(s.source.warpBezierState), s.source.warpMs);
         out += std::format(R"("suppress": {{"locked": {}, "constrained": {}, "appRule": {}, "hoveredClass": "{}", "hoveredTitle": "{}"}}, )", b(s.suppress.locked),
                            b(s.suppress.constrained), b(s.suppress.appRule), esc(s.suppress.hoveredClass), esc(s.suppress.hoveredTitle));
 

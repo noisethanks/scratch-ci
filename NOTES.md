@@ -1824,12 +1824,13 @@ the host (`/usr/lib/pkgconfig/hyprutils.pc`), and Hyprland's
   first. During a reload a batch is open, so the report becomes one line in
   that reload's single summary notification (orange when it holds only
   warnings, `notifyNow`) and one errors.log entry. Warps never report.
-- **`line` without a curve stays untouched:** `warpEase()` returns empty for
-  `""` and for an unknown name, and the hook then inserts nothing, so the
-  fallback is today's single segment exactly. With a resolved curve, even
-  `"linear"`, `line` inserts nodes along the chord: the same straight line
-  on a path layer, but `n` nodes instead of one, which an instanced layer
-  shows as extra copies along the line.
+- **`line` without a curve stays untouched** (superseded by `warp_ms`, which
+  makes `line` always insert): `warpEase()` returns empty for `""` and for
+  an unknown name, and the hook then inserts nothing, so the fallback is
+  today's single segment exactly. With a resolved curve, even `"linear"`,
+  `line` inserts nodes along the chord: the same straight line on a path
+  layer, but `n` nodes instead of one, which an instanced layer shows as
+  extra copies along the line.
 - **`curve` linear is bit-identical:** `WarpPath.cpp` keeps the old
   expression and evaluation order, and the last node is assigned the target
   directly, which the old formula also produced exactly (`u = 0`). The unit
@@ -1930,6 +1931,99 @@ the host (`/usr/lib/pkgconfig/hyprutils.pc`), and Hyprland's
   remains: with `min_spacing = 0`, any sample re-inserts at distance 0. That
   is a coincident node, not a segment, and ordinary samples already behave
   this way.
+
+## Warp duration: `warp_ms` (built; compiled and unit-tested only, not run on host; cited at efb5099)
+
+Design: SPEC §13.10 "`warp_ms`".
+
+- **Observed by the user:** after a rest longer than a layer's `fade_ms`,
+  only one warp node showed (one copy on an instanced layer); rapid warps
+  looked fine.
+- **Cause:** `warp::nodes` set `t0 = from.birthTimeMs` and spread births
+  over `t0 + (now - t0) * i/n` (`WarpPath.cpp`, before this change).
+  `insertWarpNodes` passes a copy of `source->newest()` as `from`, so `t0` is
+  the last sample before the warp, as old as the rest. After 20 s at the
+  default 16 nodes, consecutive births are 1.25 s apart, and only the last
+  node is within a 500 ms fade. The unit test reproduces this with the
+  verbatim old loop: `visibleCount` 1, against 16 with `warp_ms`.
+- **Who relies on births never decreasing:**
+  - `visibleCountOf`/`visibleBoundsOf` (`TrailBuffer.hpp`) walk newest to
+    oldest and stop at the first faded node. A warp node born before `t0`
+    would make an older one look newer, so the walk would stop early. That
+    shrinks the instanced draw range (`LayerPassElement.cpp:261-267`), the
+    damage boxes (`runLifecycle`) and `isSettled`. Path layers would still
+    draw every segment (`:257`), so pixels could land outside the damage.
+  - `CTrailRing::insert` gives zero velocity when `dt <= 0`
+    (`TrailBuffer.cpp:19-21`).
+  - The upload rebases on the newest birth and assumes every uploaded
+    `birthMs <= 0` (`LayerPassElement.cpp:127-130`).
+  - The spring source sets `m_activeMs` from each insert (`SpringChain.cpp:
+    74`) and derives every chain point's birth from it (`:229`). Going
+    backwards would re-age the whole chain.
+  - `ht_vDist` is cumulative path length (`TrailBuffer.cpp:22`), so time
+    doesn't touch it.
+  - Anchoring the window at `max(t0, now - warp_ms)` and capping every
+    birth at `max(start, now)` rules all of this out. Tested at rests from 0
+    to 1e7 ms.
+- **First segment after a rest:** path geometry shades per end. Corners
+  take their node's age, life and speed (`taper.vert:94-106`, `convex.vert:
+  88-90`), interpolated across the strip. Segments with both ends faded are
+  skipped (`taper.vert:75`).
+  - So the segment from the old newest node (faded) to the first warp node
+    is a fade-in wedge. Its length is one warp step, 93.75 px for 1500 px
+    at the defaults.
+  - The first warp node's velocity is that step over the whole rest (the
+    ring's `dt`, `TrailBuffer.cpp:19-21`): about 0.005 px/ms after 20 s,
+    against 12.5 px/ms for the next nodes. So `ht_vSpeed` dips to near zero
+    at the start.
+  - Ordinary movement after a rest has the same shape, but over one frame of
+    motion. It shows on layers coloring by speed (`gradient.frag` default
+    `color_by` 0, e.g. vivid). jitter colors by seed (`dots.frag` default 3).
+  - Not fixed. Option: when `start > t0`, emit one extra node at `p0` born at
+    `start`. The ring would then give the first real step a `warp_ms / n`
+    `dt`. The duplicate is a zero-length segment, which `taper.vert:82-85`
+    skips, and it costs one ring slot. Rapid and rested warps would then
+    match on the first segment too.
+- **Window shorter than `warp_ms`:** when the newest node is younger,
+  `start = t0`. The same ms gives an empty window: every birth `now` and
+  zero velocity (the ring's `dt = 0`). That is the old behavior for rapid
+  warps, kept because it is what keeps births monotonic.
+- **Name and unit:** `_ms` floats are the convention: layer `fade_ms` 1..60000
+  (`ShaderSource.cpp:482`), `start_ms`, `duration_ms` (`:483-484`), spring
+  `age_step_ms` 0..1000 (`Source.cpp:24`). Plugin-level px keys carry no
+  unit in the name (`min_spacing`, `damage_padding`); time keys carry `_ms`.
+  `warp_ms` reads like `fade_ms`, a duration. The layer key `duration_ms`
+  already exists, so `warp_duration_ms` would not read any clearer.
+- **Node count at the defaults:** 1500 px / `min_spacing` 2 = 750, capped at
+  64 / 4 = 16 nodes, 93.75 px apart.
+  - For comparison, a real 1500 px flick in 120 ms samples about 17 nodes
+    at 144 Hz (about 7 at 60 Hz), so that density matches a very fast
+    flick.
+  - Ordinary movement at moderate speed samples a node every few px.
+  - Path layers on `line` don't care (straight either way). Instanced
+    layers show gaps (jitter: 6 copies with a 10 px spread around points
+    94 px apart), and `curve` shows 16 facets.
+  - Cap unchanged. Options:
+    - (a) Raise `capacity` (256 gives 64 nodes, 23 px apart; no code).
+    - (b) Count by time: `n = warp_ms` × the refresh rate, capped at
+      capacity/4. That samples like a real move of the same duration.
+    - (c) A larger share of the capacity. That costs older trail when the
+      ring is small.
+- **`line` always inserts now:** linear timing when `warp_bezier` is unset or
+  unknown, so every topology sees a warp the way it sees movement. Before,
+  unset `line` left one segment to the next sample. Instanced layers drew
+  nothing between the two ends, and path layers aged it as one segment.
+- **Tests** (`testWarpPath`):
+  - Births non-decreasing and within `[t0, now]` with exact landing, for
+    rests from 0 to 1e7 ms.
+  - Rests of 500, 5000 and 1e7 ms give an identical window. Zero rest gives
+    all births `now`. A 50 ms rest anchors at `t0`.
+  - `warp_ms` 1 still spreads births; 0 and negative collapse to `now`.
+  - The bug reproduction, against the old loop.
+  - Reload mid-warp (a changed value, monotonic across three warps) and the
+    default-count spacing.
+  - The old-loop comparison is positions only now (`samePositions`), and
+    covers a rested `from` as well.
 
 ## Open questions
 

@@ -671,7 +671,8 @@ static void testRing() {
 namespace {
     // main.cpp's insertWarpCurve as it was before warp_bezier, verbatim but
     // collecting instead of inserting: the reference for "linear matches the
-    // old output".
+    // old output" (positions; its births are the pre-warp_ms ones, spread
+    // over the whole time since the newest node).
     std::vector<warp::SNode> oldWarpCurve(const SCursorNode& prev, const SVec2f& p2, double nowMs, float minSpacingPx, size_t capacity) {
         const SVec2f p0    = prev.posPx;
         const float  chord = std::hypot(p2.x - p0.x, p2.y - p0.y);
@@ -707,6 +708,17 @@ namespace {
         return true;
     }
 
+    // Positions only: the old loop's births predate warp_ms.
+    bool samePositions(const std::vector<warp::SNode>& a, const std::vector<warp::SNode>& b) {
+        if (a.size() != b.size())
+            return false;
+        for (size_t i = 0; i < a.size(); ++i) {
+            if (!(a[i].posPx == b[i].posPx))
+                return false;
+        }
+        return true;
+    }
+
     bool allFinite(const std::vector<warp::SNode>& v) {
         return std::ranges::all_of(v, [](const auto& n) { return std::isfinite(n.posPx.x) && std::isfinite(n.posPx.y) && std::isfinite(n.birthMs); });
     }
@@ -732,28 +744,34 @@ static void testWarpPath() {
     using warp::eShape;
     const warp::FEase identity = [](float x) { return x; };
 
-    // Pre-warp node moving right; the target down and to the right.
+    // Pre-warp node moving right; the target down and to the right. The node
+    // is 40 ms old, younger than warp_ms (W, its default), so the window
+    // starts at it.
     const SCursorNode from{.posPx = {100.F, 200.F}, .birthTimeMs = 1000.0, .velocity = {0.5F, 0.F}, .distPx = 0.0, .seed = 1, .segmentStart = false};
     const SVec2f      to{900.F, 650.F};
     const double      now = 1040.0;
+    constexpr double  W   = 120.0;
 
-    // Linear matches the pre-easing output bit for bit: no curve, and the
-    // identity as the curve. Also with a zero-velocity start (the straight
-    // degenerate curve) and at the node cap.
+    // Linear positions match the pre-easing output bit for bit: no curve, and
+    // the identity as the curve. Also with a zero-velocity start (the
+    // straight degenerate curve), at the node cap, and after a long rest
+    // (positions don't depend on time).
     {
-        SCursorNode still = from;
-        still.velocity    = {0.F, 0.F};
-        for (const auto& [f, cap] : {std::pair{from, size_t{4096}}, std::pair{still, size_t{4096}}, std::pair{from, size_t{64}}}) {
+        SCursorNode still  = from;
+        still.velocity     = {0.F, 0.F};
+        SCursorNode rested = from;
+        rested.birthTimeMs = now - 5000.0;
+        for (const auto& [f, cap] : {std::pair{from, size_t{4096}}, std::pair{still, size_t{4096}}, std::pair{from, size_t{64}}, std::pair{rested, size_t{4096}}}) {
             const auto old = oldWarpCurve(f, to, now, 2.F, cap);
-            CHECK(sameNodes(warp::nodes(eShape::CURVE, f, to, now, 2.F, cap, {}), old));
-            CHECK(sameNodes(warp::nodes(eShape::CURVE, f, to, now, 2.F, cap, identity), old));
+            CHECK(samePositions(warp::nodes(eShape::CURVE, f, to, now, W, 2.F, cap, {}), old));
+            CHECK(samePositions(warp::nodes(eShape::CURVE, f, to, now, W, 2.F, cap, identity), old));
         }
-        CHECK(warp::nodes(eShape::CURVE, from, to, now, 2.F, 64, {}).size() == 16); // capped at capacity / 4
+        CHECK(warp::nodes(eShape::CURVE, from, to, now, W, 2.F, 64, {}).size() == 16); // capped at capacity / 4
 
         // Hyprland's own "linear" (0,0 / 1,1, AnimationManager.cpp:39) through
         // hyprutils: equal up to float rounding of its baked table.
         const auto old   = oldWarpCurve(from, to, now, 2.F, 4096);
-        const auto lin   = warp::nodes(eShape::CURVE, from, to, now, 2.F, 4096, bezier(0.F, 0.F, 1.F, 1.F));
+        const auto lin   = warp::nodes(eShape::CURVE, from, to, now, W, 2.F, 4096, bezier(0.F, 0.F, 1.F, 1.F));
         float      worst = 0.F;
         for (size_t i = 0; i < std::min(lin.size(), old.size()); ++i)
             worst = std::max(worst, std::hypot(lin[i].posPx.x - old[i].posPx.x, lin[i].posPx.y - old[i].posPx.y));
@@ -765,8 +783,8 @@ static void testWarpPath() {
     // times stay the real-time ones (only positions are eased).
     {
         const auto ease = bezier(0.42F, 0.F, 0.58F, 1.F);
-        const auto line = warp::nodes(eShape::LINE, from, to, now, 2.F, 4096, ease);
-        const auto lin  = warp::nodes(eShape::LINE, from, to, now, 2.F, 4096, identity);
+        const auto line = warp::nodes(eShape::LINE, from, to, now, W, 2.F, 4096, ease);
+        const auto lin  = warp::nodes(eShape::LINE, from, to, now, W, 2.F, 4096, identity);
         bool       mono = true;
         for (size_t i = 1; i < line.size(); ++i)
             mono = mono && along(line[i].posPx, from.posPx, to) >= along(line[i - 1].posPx, from.posPx, to);
@@ -782,7 +800,7 @@ static void testWarpPath() {
         // Curve path, starting perpendicular to the chord: x = s^2 * 800 is
         // monotonic in the Bezier parameter, so it has to be in time too.
         const SCursorNode up{.posPx = {0.F, 0.F}, .birthTimeMs = 0.0, .velocity = {0.F, 1.F}, .distPx = 0.0, .seed = 1, .segmentStart = false};
-        const auto        curve = warp::nodes(eShape::CURVE, up, {800.F, 0.F}, 50.0, 4.F, 4096, ease);
+        const auto        curve = warp::nodes(eShape::CURVE, up, {800.F, 0.F}, 50.0, W, 4.F, 4096, ease);
         bool              monoX = true;
         for (size_t i = 1; i < curve.size(); ++i)
             monoX = monoX && curve[i].posPx.x >= curve[i - 1].posPx.x;
@@ -793,7 +811,7 @@ static void testWarpPath() {
     // shrinks toward the target, and so does the speed the ring records
     // (ht_vSpeed), while ages stay real time.
     {
-        const auto line = warp::nodes(eShape::LINE, from, to, now, 2.F, 4096, bezier(0.F, 0.F, 0.2F, 1.F));
+        const auto line = warp::nodes(eShape::LINE, from, to, now, W, 2.F, 4096, bezier(0.F, 0.F, 0.2F, 1.F));
         CHECK(gap(line, 1) > gap(line, line.size() - 1));
         CTrailRing ring(4096, 3);
         ring.insert(from.posPx, from.birthTimeMs, false);
@@ -809,8 +827,8 @@ static void testWarpPath() {
     // (0.34,1.56 / 0.64,1) passes the target, easeInBack (0.36,0 /
     // 0.66,-0.56) backs up behind the start first.
     {
-        const auto outBack = warp::nodes(eShape::LINE, from, to, now, 2.F, 4096, bezier(0.34F, 1.56F, 0.64F, 1.F));
-        const auto inBack  = warp::nodes(eShape::LINE, from, to, now, 2.F, 4096, bezier(0.36F, 0.F, 0.66F, -0.56F));
+        const auto outBack = warp::nodes(eShape::LINE, from, to, now, W, 2.F, 4096, bezier(0.34F, 1.56F, 0.64F, 1.F));
+        const auto inBack  = warp::nodes(eShape::LINE, from, to, now, W, 2.F, 4096, bezier(0.36F, 0.F, 0.66F, -0.56F));
         float      hi = 0.F, lo = 1.F;
         for (const auto& n : outBack)
             hi = std::max(hi, along(n.posPx, from.posPx, to));
@@ -818,17 +836,17 @@ static void testWarpPath() {
             lo = std::min(lo, along(n.posPx, from.posPx, to));
         CHECK(hi > 1.05F && lo < -0.05F);
         CHECK(allFinite(outBack) && allFinite(inBack) && outBack.back().posPx == to && inBack.back().posPx == to);
-        CHECK(warp::nodes(eShape::CURVE, from, to, now, 2.F, 4096, bezier(0.34F, 1.56F, 0.64F, 1.F)).back().posPx == to);
+        CHECK(warp::nodes(eShape::CURVE, from, to, now, W, 2.F, 4096, bezier(0.34F, 1.56F, 0.64F, 1.F)).back().posPx == to);
 
         // Outside 0..1 the curve continues along its end tangents: control
         // point p1 = p0 + chord/2 along the velocity (+x here).
         const float  chord = std::hypot(to.x - from.posPx.x, to.y - from.posPx.y);
         const SVec2f p1{from.posPx.x + chord * 0.5F, from.posPx.y};
-        const auto   past   = warp::nodes(eShape::CURVE, from, to, now, 2.F, 4096, [](float) { return 1.25F; });
-        const auto   behind = warp::nodes(eShape::CURVE, from, to, now, 2.F, 4096, [](float) { return -0.5F; });
+        const auto   past   = warp::nodes(eShape::CURVE, from, to, now, W, 2.F, 4096, [](float) { return 1.25F; });
+        const auto   behind = warp::nodes(eShape::CURVE, from, to, now, W, 2.F, 4096, [](float) { return -0.5F; });
         CHECK(near(past.front().posPx, {to.x + (to.x - p1.x) * 0.5F, to.y + (to.y - p1.y) * 0.5F}, 0.01F));
         CHECK(near(behind.front().posPx, {from.posPx.x - (p1.x - from.posPx.x), from.posPx.y - (p1.y - from.posPx.y)}, 0.01F));
-        const auto pastLine = warp::nodes(eShape::LINE, from, to, now, 2.F, 4096, [](float) { return 1.25F; });
+        const auto pastLine = warp::nodes(eShape::LINE, from, to, now, W, 2.F, 4096, [](float) { return 1.25F; });
         CHECK(near(pastLine.front().posPx, {from.posPx.x + (to.x - from.posPx.x) * 1.25F, from.posPx.y + (to.y - from.posPx.y) * 1.25F}, 0.01F));
     }
 
@@ -838,15 +856,15 @@ static void testWarpPath() {
     {
         const float inf  = std::numeric_limits<float>::infinity();
         const float qnan = std::numeric_limits<float>::quiet_NaN();
-        const auto  lin  = warp::nodes(eShape::LINE, from, to, now, 2.F, 4096, {});
+        const auto  lin  = warp::nodes(eShape::LINE, from, to, now, W, 2.F, 4096, {});
         for (const auto shape : {eShape::LINE, eShape::CURVE}) {
             for (const float v : {qnan, inf, -inf, 1e30F, -1e30F, 0.F, 1.F}) {
-                const auto got = warp::nodes(shape, from, to, now, 2.F, 4096, [v](float) { return v; });
+                const auto got = warp::nodes(shape, from, to, now, W, 2.F, 4096, [v](float) { return v; });
                 CHECK(allFinite(got) && !got.empty() && got.back().posPx == to);
             }
         }
-        CHECK(sameNodes(warp::nodes(eShape::LINE, from, to, now, 2.F, 4096, [qnan](float) { return qnan; }), lin));
-        const auto huge = warp::nodes(eShape::LINE, from, to, now, 2.F, 4096, [](float) { return 1e30F; });
+        CHECK(sameNodes(warp::nodes(eShape::LINE, from, to, now, W, 2.F, 4096, [qnan](float) { return qnan; }), lin));
+        const auto huge = warp::nodes(eShape::LINE, from, to, now, W, 2.F, 4096, [](float) { return 1e30F; });
         CHECK(near(huge.front().posPx, {from.posPx.x + (to.x - from.posPx.x) * 5.F, from.posPx.y + (to.y - from.posPx.y) * 5.F}, 0.1F));
     }
 
@@ -855,7 +873,7 @@ static void testWarpPath() {
     // are still eased, and the ring computes no velocity across dt = 0.
     {
         for (const double at : {from.birthTimeMs, from.birthTimeMs - 5.0}) {
-            const auto got = warp::nodes(eShape::CURVE, from, to, at, 2.F, 4096, bezier(0.F, 0.F, 0.2F, 1.F));
+            const auto got = warp::nodes(eShape::CURVE, from, to, at, W, 2.F, 4096, bezier(0.F, 0.F, 0.2F, 1.F));
             CHECK(allFinite(got) && got.back().posPx == to);
             CHECK(std::ranges::all_of(got, [&](const auto& n) { return n.birthMs == from.birthTimeMs; }));
             CTrailRing ring(4096, 5);
@@ -870,9 +888,106 @@ static void testWarpPath() {
 
     // Node count: length / min_spacing, at least 1 (zero chord, or a ring too
     // small for a quarter), at most a quarter of the capacity.
-    CHECK(warp::nodes(eShape::LINE, from, from.posPx, now, 2.F, 4096, identity).size() == 1);
-    CHECK(warp::nodes(eShape::LINE, from, to, now, 2.F, 2, identity).size() == 1);
-    CHECK(warp::nodes(eShape::LINE, from, {500.F, 200.F}, now, 10.F, 4096, identity).size() == 40);
+    CHECK(warp::nodes(eShape::LINE, from, from.posPx, now, W, 2.F, 4096, identity).size() == 1);
+    CHECK(warp::nodes(eShape::LINE, from, to, now, W, 2.F, 2, identity).size() == 1);
+    CHECK(warp::nodes(eShape::LINE, from, {500.F, 200.F}, now, W, 10.F, 4096, identity).size() == 40);
+
+    // At the defaults (capacity 64, min_spacing 2) a 1500 px warp is capped
+    // at 16 nodes, 93.75 px apart.
+    {
+        const auto got = warp::nodes(eShape::LINE, from, {from.posPx.x + 1500.F, from.posPx.y}, now, W, 2.F, 64, {});
+        CHECK(got.size() == 16 && std::abs(gap(got, 1) - 93.75F) < 1e-3F);
+    }
+
+    // Birth times (warp_ms): window start = max(newest node's birth, now -
+    // warp_ms). Births never decrease, never precede the newest node, never
+    // pass now, and the last is now exactly; landing stays exact.
+    {
+        const auto births = [&](double idleMs, double warpMs) {
+            SCursorNode f = from;
+            f.birthTimeMs = now - idleMs;
+            return warp::nodes(eShape::CURVE, f, to, now, warpMs, 2.F, 4096, bezier(0.34F, 1.56F, 0.64F, 1.F));
+        };
+        for (const double idle : {0.0, 0.25, 50.0, 119.9, 120.0, 500.0, 5000.0, 1e7}) {
+            const auto   got = births(idle, W);
+            const double t0  = now - idle;
+            bool         ok  = !got.empty() && got.back().birthMs == now && got.back().posPx == to && allFinite(got);
+            for (size_t i = 0; i < got.size(); ++i)
+                ok = ok && got[i].birthMs >= t0 && got[i].birthMs <= now && (i == 0 || got[i].birthMs >= got[i - 1].birthMs);
+            CHECK(ok);
+        }
+
+        // A rest longer than warp_ms, short or very long, gives the same
+        // window: the last W ms, evenly.
+        const auto   shortRest = births(500.0, W), longRest = births(5000.0, W), veryLong = births(1e7, W);
+        const size_t n    = shortRest.size();
+        bool         same = n > 1 && longRest.size() == n && veryLong.size() == n;
+        for (size_t i = 0; same && i < n; ++i) {
+            const double expect = (now - W) + W * static_cast<double>(static_cast<float>(i + 1) / static_cast<float>(n));
+            same                = std::abs(shortRest[i].birthMs - expect) < 1e-6 && std::abs(longRest[i].birthMs - expect) < 1e-6 && std::abs(veryLong[i].birthMs - expect) < 1e-6;
+        }
+        CHECK(same);
+
+        // No rest (newest node born now): an empty window, every birth now.
+        CHECK(std::ranges::all_of(births(0.0, W), [&](const auto& b) { return b.birthMs == now; }));
+
+        // A newest node younger than warp_ms anchors the window at its birth.
+        const auto recent = births(50.0, W);
+        CHECK(std::abs(recent.front().birthMs - ((now - 50.0) + 50.0 * static_cast<double>(1.F / static_cast<float>(recent.size())))) < 1e-6);
+
+        // Duration minimum (warp_ms 1, the setting's lower bound): births
+        // still spread, over the last ms. Below it (0, negative: not
+        // reachable through the setting) they collapse to now.
+        const auto minimum = births(5000.0, 1.0);
+        CHECK(minimum.front().birthMs > now - 1.0 && minimum.front().birthMs < now && minimum.back().birthMs == now);
+        CHECK(std::ranges::all_of(births(5000.0, 0.0), [&](const auto& b) { return b.birthMs == now; }));
+        CHECK(std::ranges::all_of(births(5000.0, -10.0), [&](const auto& b) { return b.birthMs == now; }));
+    }
+
+    // The reported bug: after a rest longer than a layer's fade, the old
+    // births (spread over the whole rest) left only the last warp node
+    // visible. With warp_ms every node is, for a fade that covers warp_ms
+    // (500 ms, jitter's). Old loop as the control.
+    {
+        const double rest = 20000.0;
+        CTrailRing   ring(64, 21);
+        ring.insert(from.posPx, now - rest, false);
+        const auto got = warp::nodes(eShape::LINE, ring.newest(), to, now, W, 2.F, ring.capacity(), {});
+        for (const auto& b : got)
+            ring.insert(b.posPx, b.birthMs, false);
+        CHECK(got.size() == 16 && ring.visibleCount(now, 500.0) == got.size());
+
+        CTrailRing old(64, 21);
+        old.insert(from.posPx, now - rest, false);
+        for (const auto& b : oldWarpCurve(old.newest(), to, now, 2.F, old.capacity()))
+            old.insert(b.posPx, b.birthMs, false);
+        CHECK(old.visibleCount(now, 500.0) == 1);
+    }
+
+    // A reload mid-warp only changes the value the next warp reads; nothing
+    // carries over. Warp 1 after a rest at W; then warp_ms becomes 40: a
+    // warp 10 ms later anchors at warp 1's landing, one 3 s later spreads
+    // over 40 ms. Births never decrease across all three.
+    {
+        CTrailRing ring(1024, 4);
+        ring.insert(from.posPx, now - 5000.0, false);
+        for (const auto& b : warp::nodes(eShape::LINE, ring.newest(), to, now, W, 2.F, ring.capacity(), {}))
+            ring.insert(b.posPx, b.birthMs, false);
+        const auto soon = warp::nodes(eShape::LINE, ring.newest(), {300.F, 900.F}, now + 10.0, 40.0, 2.F, ring.capacity(), {});
+        CHECK(soon.front().birthMs > now && soon.back().birthMs == now + 10.0);
+        for (const auto& b : soon)
+            ring.insert(b.posPx, b.birthMs, false);
+        const auto later = warp::nodes(eShape::LINE, ring.newest(), to, now + 3000.0, 40.0, 2.F, ring.capacity(), {});
+        CHECK(later.front().birthMs > now + 3000.0 - 40.0 && later.back().birthMs == now + 3000.0);
+        for (const auto& b : later)
+            ring.insert(b.posPx, b.birthMs, false);
+        std::vector<SGpuNode> out;
+        ring.orderedCopy(out, now + 3000.0);
+        bool ordered = true;
+        for (size_t i = 1; i < out.size(); ++i)
+            ordered = ordered && out[i].birthMs >= out[i - 1].birthMs;
+        CHECK(ordered);
+    }
 
     // A warp starting before the previous one's fade is over: it starts where
     // the previous one landed (no jump, even after an overshoot), births never
@@ -882,13 +997,13 @@ static void testWarpPath() {
         CTrailRing ring(4096, 9);
         ring.insert(from.posPx, from.birthTimeMs, false);
         const auto back = bezier(0.34F, 1.56F, 0.64F, 1.F);
-        for (const auto& n : warp::nodes(eShape::CURVE, ring.newest(), to, now, 2.F, ring.capacity(), back))
+        for (const auto& n : warp::nodes(eShape::CURVE, ring.newest(), to, now, W, 2.F, ring.capacity(), back))
             ring.insert(n.posPx, n.birthMs, false);
         CHECK(ring.newest().posPx == to);
 
         const SCursorNode landed = ring.newest();
         const SVec2f      to2{300.F, 900.F};
-        const auto        second = warp::nodes(eShape::CURVE, landed, to2, now + 5.0, 2.F, ring.capacity(), back);
+        const auto        second = warp::nodes(eShape::CURVE, landed, to2, now + 5.0, W, 2.F, ring.capacity(), back);
         CHECK(!second.empty() && second.front().birthMs > landed.birthTimeMs);
         for (const auto& n : second)
             ring.insert(n.posPx, n.birthMs, false);
@@ -934,7 +1049,7 @@ static void testWarpPath() {
                         const auto src = source::make(kind, 512, 11);
                         src->insert(from.posPx, from.birthTimeMs, false); // the trail's end, itself a sampled emit point
                         const SVec2f target = toEmit ? emit : raw;
-                        const auto   got    = warp::nodes(shape, src->newest(), target, now, minSpacing, src->capacity(), ease);
+                        const auto   got    = warp::nodes(shape, src->newest(), target, now, W, minSpacing, src->capacity(), ease);
                         for (const auto& n : got)
                             src->insert(n.posPx, n.birthMs, false);
                         CHECK(allFinite(got) && got.back().posPx == target && src->newest().posPx == target);

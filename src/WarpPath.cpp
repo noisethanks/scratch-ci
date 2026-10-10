@@ -40,7 +40,7 @@ namespace hyprtail::warp {
         }
     }
 
-    std::vector<SNode> nodes(eShape shape, const SCursorNode& from, const SVec2f& to, double nowMs, float minSpacingPx, size_t capacity, const FEase& ease) {
+    std::vector<SNode> nodes(eShape shape, const SCursorNode& from, const SVec2f& to, double nowMs, double warpMs, float minSpacingPx, size_t capacity, const FEase& ease) {
         const SVec2f p0    = from.posPx;
         const SVec2f p2    = to;
         const float  chord = std::hypot(p2.x - p0.x, p2.y - p0.y);
@@ -55,10 +55,16 @@ namespace hyprtail::warp {
 
         // Length / min_spacing, capped at a quarter of the capacity (SPEC
         // §13.10). Clamped as a double so a huge chord can't overflow the int.
-        const double       cap  = std::max(1.0, static_cast<double>(capacity / 4));
-        const int          n    = static_cast<int>(std::clamp(static_cast<double>(std::round(chord / std::max(minSpacingPx, 0.01F))), 1.0, cap));
-        const double       t0   = from.birthTimeMs;
-        const double       span = std::max(0.0, nowMs - t0);
+        const double cap = std::max(1.0, static_cast<double>(capacity / 4));
+        const int    n   = static_cast<int>(std::clamp(static_cast<double>(std::round(chord / std::max(minSpacingPx, 0.01F))), 1.0, cap));
+
+        // The birth window (SPEC §13.10, warp_ms): the last warpMs before
+        // now, cut short at the newest node's birth so births stay
+        // monotonic. `last` caps every birth so rounding can't put one past
+        // now (or, with a clock that went backwards, before the newest node).
+        const double       start = std::max(from.birthTimeMs, nowMs - std::max(0.0, warpMs));
+        const double       span  = std::max(0.0, nowMs - start);
+        const double       last  = std::max(start, nowMs);
 
         std::vector<SNode> out;
         out.reserve(n);
@@ -73,9 +79,9 @@ namespace hyprtail::warp {
                 }
                 pos = shape == eShape::LINE ? lineAt(p0, p2, s) : curveAt(p0, p1, p2, s);
             }
-            // Births spread evenly between the previous node's birth and now,
-            // so the fade sweeps along the path in real time.
-            out.push_back({pos, t0 + span * t});
+            // Births spread evenly over the window, so the fade sweeps along
+            // the path in real time.
+            out.push_back({pos, i == n ? last : std::min(start + span * t, last)});
         }
         return out;
     }

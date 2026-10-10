@@ -35,7 +35,7 @@ namespace hyprtail::cfg {
         // Min/max are also enforced by Hyprland when parsing, with its own
         // config error; read() re-checks so a bad value can never reach us.
         struct SRegistered {
-            SP<CFloatValue>                 minSpacing, damagePadding;
+            SP<CFloatValue>                 minSpacing, damagePadding, warpMs;
             SP<CIntValue>                   capacity;
             SP<CStringValue>                warp, warpBezier;
             SP<CStringValue>                trail;
@@ -104,6 +104,8 @@ namespace hyprtail::cfg {
         r.warpBezier    = makeShared<CStringValue>("plugin:hyprtail:warp_bezier",
                                                    R"(name of a bezier curve (hl.curve) that times warp = "line" or "curve"; "" (default) = linear (SPEC section 13.10))",
                                                    DEFAULTS.warpBezier.c_str());
+        r.warpMs        = makeShared<CFloatValue>("plugin:hyprtail:warp_ms", "time a warp's trail points are spread over, ms (SPEC section 13.10)", DEFAULTS.warpMs,
+                                                  SFloatValueOptions{.min = 1.F, .max = 2000.F});
         r.damagePadding = makeShared<CFloatValue>("plugin:hyprtail:damage_padding", "extra damage padding on top of the stock extent and shader-declared padding, px",
                                                   DEFAULTS.damagePaddingPx, SFloatValueOptions{.min = 0.F, .max = 4096.F});
         r.trail    = makeShared<CStringValue>("plugin:hyprtail:trail",
@@ -139,8 +141,8 @@ namespace hyprtail::cfg {
                                                  DEFAULTS.screenshare.c_str());
 
         bool ok = true;
-        for (const SP<IValue>& v :
-             std::initializer_list<SP<IValue>>{r.capacity, r.minSpacing, r.warp, r.warpBezier, r.damagePadding, r.trail, r.params, r.screenshare, r.emitFrom, r.emitOffset})
+        for (const SP<IValue>& v : std::initializer_list<SP<IValue>>{r.capacity, r.minSpacing, r.warp, r.warpBezier, r.warpMs, r.damagePadding, r.trail, r.params, r.screenshare,
+                                                                     r.emitFrom, r.emitOffset})
             ok = add(handle, v) && ok;
         for (size_t i = 0; i < 4; ++i) {
             ok = add(handle, r.layerVertex[i]) && ok;
@@ -158,6 +160,7 @@ namespace hyprtail::cfg {
         SValues v = previous;
 
         v.minSpacingPx    = checkFloat(r.minSpacing, 0.F, 256.F, previous.minSpacingPx);
+        v.warpMs          = checkFloat(r.warpMs, 1.F, 2000.F, previous.warpMs);
         v.damagePaddingPx = checkFloat(r.damagePadding, 0.F, 4096.F, previous.damagePaddingPx);
 
         if (r.capacity) {

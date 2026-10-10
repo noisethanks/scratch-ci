@@ -519,27 +519,27 @@ static hyprtail::warp::FEase warpEase(const std::string& name) {
 // exact and every topology works without special casing -- the same argument
 // as `path smooth N`'s CPU-computed control points (§13.3). Both ends are
 // emit points: the newest node came from a sample or an earlier warp, and
-// `target` is the post-warp emitPoint(). Nothing to start from if the source
-// is empty: falls back to a plain connect at the next sample. (A spring chain
-// only keeps the last target, so for it this just moves the head's target
-// there.)
+// `target` is the post-warp emitPoint(). Births are spread over the last
+// warp_ms (warp::nodes). Generation and insertion stay separate: this inserts
+// everything now. Nothing to start from if the source is empty: falls back to
+// a plain connect at the next sample. (A spring chain only keeps the last
+// target, so for it this just moves the head's target there; warp_ms and
+// the easing have no visible effect on it.)
 static void insertWarpNodes(SPreset& p, hyprtail::warp::eShape shape, const SVec2f& target, double nowMs, const hyprtail::warp::FEase& ease) {
     if (p.source->empty())
         return;
 
     // A copy: insert() below replaces what newest() refers to.
     const SCursorNode prev = p.source->newest();
-    for (const auto& n : hyprtail::warp::nodes(shape, prev, target, nowMs, p.minSpacingPx, p.source->capacity(), ease))
+    for (const auto& n : hyprtail::warp::nodes(shape, prev, target, nowMs, p.warpMs, p.minSpacingPx, p.source->capacity(), ease))
         p.source->insert(n.posPx, n.birthMs, false);
 }
 
 // Programmatic warps (dispatchers, layouts, focus changes) go through here
 // (PointerController.cpp:16-29). warpMode decides what happens to the trail:
-// break starts a new segment, line connects with a straight sweep (the next
-// natural sample does that for free; with a resolved warp_bezier the sweep's
-// nodes are inserted here instead, so the timing can be eased), curve bakes
-// in a Bezier immediately. Only that decision is ours; the original always
-// runs, unwrapped.
+// break starts a new segment; line and curve insert their nodes here, along
+// the chord or a Bezier, timed by warp_ms and warp_bezier. Only that decision
+// is ours; the original always runs, unwrapped.
 // Coverage gap: warp sites that call CPointerManager::warpTo directly bypass
 // this and always connect (PointerWarp.cpp:76, InputCapture.cpp:206,
 // InputManager.cpp:2248, WorkspacePlacementController.cpp:356).
@@ -576,12 +576,9 @@ static void hkControllerWarpTo(const void* thisptr, const Vector2D& pos, bool fo
         switch (s_preset->warpMode) {
             // The next sample starts the new segment at its emit point.
             case eWarpMode::BREAK: s_preset->pendingBreak = true; break;
-            case eWarpMode::LINE:
-                // Unset or unknown curve: today's single segment, drawn by
-                // the next sample to its emit point, untouched.
-                if (const auto ease = warpEase(s_preset->warpBezier))
-                    insertWarpNodes(*s_preset, hyprtail::warp::eShape::LINE, target, nowMs, ease);
-                break;
+            // Unset or unknown warp_bezier: linear timing. Nodes along the
+            // chord either way, so every topology sees a warp like movement.
+            case eWarpMode::LINE: insertWarpNodes(*s_preset, hyprtail::warp::eShape::LINE, target, nowMs, warpEase(s_preset->warpBezier)); break;
             case eWarpMode::CURVE: insertWarpNodes(*s_preset, hyprtail::warp::eShape::CURVE, target, nowMs, warpEase(s_preset->warpBezier)); break;
         }
     });
@@ -1153,6 +1150,7 @@ static void applyConfig() {
     p.minSpacingPx    = s_config.minSpacingPx;
     p.warpMode        = s_config.warp;
     p.warpBezier      = s_config.warpBezier;
+    p.warpMs          = s_config.warpMs;
     p.damagePaddingPx = s_config.damagePaddingPx;
     p.emitFromNorm    = s_config.emitFromNorm;
     p.emitOffsetPx    = s_config.emitOffsetPx;
@@ -1224,6 +1222,7 @@ static hyprtail::status::SSnapshot statusSnapshot() {
         s.source.warpMode        = hyprtail::cfg::warpModeName(p.warpMode);
         s.source.warpBezier      = p.warpBezier;
         s.source.warpBezierState = p.warpBezier.empty() ? "none" : bezierDefined(p.warpBezier) ? "resolved" : "unknown";
+        s.source.warpMs          = p.warpMs;
         s.source.gpuFailed       = p.gpuFailed;
         s.source.stillMs         = nowMs - p.lastMotionMs;
 

@@ -32,8 +32,9 @@ namespace hyprtail::cfg {
         size_t      capacity        = 64;
         float       minSpacingPx    = 2.F;
         eWarpMode   warp            = eWarpMode::BREAK;
-        std::string warpBezier      = "";  // hl.curve name timing a line/curve warp (SPEC §13.10), "" = linear; looked up per warp
-        float       damagePaddingPx = 0.F; // on top of stock extent and shader-declared padding
+        std::string warpBezier      = "";    // hl.curve name timing a line/curve warp (SPEC §13.10), "" = linear; looked up per warp
+        float       warpMs          = 120.F; // ms a warp's node births are spread over (SPEC §13.10), 1..2000
+        float       damagePaddingPx = 0.F;   // on top of stock extent and shader-declared padding
 
         // Emit offset (SPEC §13.9). nullopt = "hotspot" (default, today's
         // behavior); otherwise a position normalized to the cursor image

@@ -51,6 +51,7 @@ namespace hyprtail::status {
             std::string warpMode     = "break";
             std::string warpBezier;               // warp_bezier as set, "" = none
             std::string warpBezierState = "none"; // "none", "resolved", or "unknown" (warps use linear timing)
+            double      warpMs          = 0.0;    // warp_ms
             bool        gpuFailed       = false;
             double      stillMs         = 0.0;
         } source;

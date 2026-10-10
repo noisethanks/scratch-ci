@@ -112,6 +112,7 @@ struct SPreset {
     float                    minSpacingPx    = 2.F;
     hyprtail::cfg::eWarpMode warpMode        = hyprtail::cfg::eWarpMode::BREAK; // SPEC §13.10
     std::string              warpBezier      = "";                              // hl.curve name, looked up per warp; "" = linear
+    float                    warpMs          = 120.F;                           // warp_ms: window a warp's births are spread over
     float                    damagePaddingPx = 0.F;                             // config, added to every layer's reach
 
     // Emit offset (SPEC §13.9): nullopt = hotspot. Applied at insert only;
